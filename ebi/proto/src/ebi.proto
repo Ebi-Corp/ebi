@@ -22,14 +22,14 @@ message ErrorData {
 message ClientQuery { //[ ] 
   string query = 1;
   FileOrd file_ord = 2;
-  uint64 workspace_id = 4;
+  bytes workspace_id = 4;
   bool partial = 5;
   RequestMetadata metadata = 6;
 }
 
 message PeerQuery { //[ ] 
   bytes query = 1;
-  uint64 workspace_id = 3;
+  bytes workspace_id = 3;
   RequestMetadata metadata = 4;
 }
 
@@ -253,6 +253,7 @@ enum OrderBy {
   MODIFIED = 2;
   ACCESSED = 3;
   CREATED = 4;
+  UNORDERED = 5;
 }
 
 message FileMetadata {

@@ -23,7 +23,6 @@ use uuid::Uuid;
 pub type RequestId = Uuid;
 
 //[!] Potentially, we could have a validation
-
 macro_rules! return_error {
     ($return_code:path, $response:ident, $request_uuid:expr, $error_data:ident) => {
         let return_code = $return_code;
@@ -38,7 +37,7 @@ macro_rules! return_error {
     };
 }
 
-async fn try_get_workspace(
+pub async fn try_get_workspace(
     rawid: &Vec<u8>,
     srv: &mut WorkspaceService,
 ) -> Result<WorkspaceRef, ReturnCode> {

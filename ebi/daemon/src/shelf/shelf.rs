@@ -3,6 +3,7 @@ use crate::tag::TagRef;
 use crate::workspace::ChangeSummary;
 use chrono::Duration;
 use iroh::NodeId;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::io;
@@ -25,7 +26,7 @@ pub enum ShelfType {
     Remote,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Ord, PartialOrd, Serialize, Deserialize)]
 pub enum ShelfOwner {
     Node(NodeId),
     Sync(SyncId),

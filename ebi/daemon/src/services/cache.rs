@@ -1,4 +1,4 @@
-use crate::query::{FileOrder, OrderedFileSummary};
+use crate::query::file_order::{FileOrder, OrderedFileSummary};
 use crate::services::peer::PeerService;
 use crate::tag::TagRef;
 use crate::workspace::{Workspace, WorkspaceId};
@@ -19,9 +19,9 @@ pub struct CacheService {
     workspaces: Arc<RwLock<HashMap<WorkspaceId, Workspace>>>,
 }
 
-enum RetrieveFiles<T: FileOrder + Clone> {
-    GetAll(WorkspaceId, T),
-    GetTag(WorkspaceId, T, TagRef),
+enum RetrieveFiles {
+    GetAll(WorkspaceId, FileOrder),
+    GetTag(WorkspaceId, FileOrder, TagRef),
 }
 
 enum Caching {
@@ -40,16 +40,16 @@ struct HashCache {
     hash: u64,
 }
 
-enum CommandRes<T: FileOrder + Clone> {
-    OrderedFiles(BTreeSet<OrderedFileSummary<T>>),
+enum CommandRes {
+    OrderedFiles(BTreeSet<OrderedFileSummary>),
 }
 
 enum CacheError {
     WorkspaceNotFound,
 }
 
-impl<T: FileOrder + Clone> Service<RetrieveFiles<T>> for CacheService {
-    type Response = BTreeSet<OrderedFileSummary<T>>;
+impl Service<RetrieveFiles> for CacheService {
+    type Response = BTreeSet<OrderedFileSummary>;
     type Error = CacheError;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
@@ -57,7 +57,7 @@ impl<T: FileOrder + Clone> Service<RetrieveFiles<T>> for CacheService {
         Poll::Ready(Ok(()))
     }
 
-    fn call(&mut self, req: RetrieveFiles<T>) -> Self::Future {
+    fn call(&mut self, req: RetrieveFiles) -> Self::Future {
         let _ = Box::pin(async move {
             match req {
                 RetrieveFiles::GetAll(work_id, _ord) => {

@@ -1,6 +1,7 @@
 use crate::shelf::shelf::ShelfOwner;
 use crate::tag::TagRef;
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
 #[cfg(unix)]
@@ -10,7 +11,7 @@ use std::os::windows::fs::MetadataExt;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileSummary {
     pub owner: ShelfOwner,
     pub path: PathBuf,
@@ -49,7 +50,7 @@ pub struct File {
     dtags: BTreeSet<TagRef>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileMetadata {
     pub size: u64,
     pub readonly: bool,
@@ -60,14 +61,14 @@ pub struct FileMetadata {
     pub windows: Option<WindowsMetadata>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UnixMetadata {
     permissions: u32,
     uid: u32,
     gid: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WindowsMetadata {
     attributes: u32,
 }

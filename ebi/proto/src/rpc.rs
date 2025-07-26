@@ -234,6 +234,8 @@ impl ReqCode for Request {
             Request::DeleteTag(_) => RequestCode::DeleteTag,
             Request::DetachTag(_) => RequestCode::DetachTag,
             Request::StripTag(_) => RequestCode::StripTag,
+            Request::ClientQuery(_) => RequestCode::ClientQuery,
+            Request::PeerQuery(_) => RequestCode::PeerQuery,
         }
     }
 }
@@ -256,6 +258,8 @@ pub enum Request {
     DeleteTag(DeleteTag),
     DetachTag(DetachTag),
     StripTag(StripTag),
+    ClientQuery(ClientQuery),
+    PeerQuery(PeerQuery),
 }
 
 impl_res_metadata!(
@@ -273,6 +277,7 @@ impl_res_metadata!(
     DeleteTagResponse,
     DetachTagResponse,
     StripTagResponse,
+    QueryResponse,
 );
 
 impl_req_metadata!(
@@ -290,6 +295,8 @@ impl_req_metadata!(
     DeleteTag,
     DetachTag,
     StripTag,
+    PeerQuery,
+    ClientQuery
 );
 
 #[derive(Debug)]

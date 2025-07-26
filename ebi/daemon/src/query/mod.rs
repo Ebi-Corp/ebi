@@ -1,56 +1,9 @@
-use crate::shelf::file::FileSummary;
+pub mod file_order;
+use crate::query::file_order::{FileOrder, OrderedFileSummary};
 use crate::tag::TagId;
 use crate::workspace::{TagErr, WorkspaceId};
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashSet};
-//use std::sync::{Arc, RwLock};
-
-#[derive(Debug)]
-pub enum Order {
-    Ascending,
-    Descending,
-}
-
-pub trait FileOrder {}
-
-#[derive(Debug)]
-pub struct Name {
-    pub order: Order,
-}
-
-impl FileOrder for Name {}
-
-#[derive(Debug)]
-pub struct Size {
-    pub order: Order,
-}
-
-impl FileOrder for Size {}
-
-#[derive(Debug)]
-pub struct Modified {
-    pub order: Order,
-}
-
-impl FileOrder for Modified {}
-
-#[derive(Debug)]
-pub struct Created {
-    pub order: Order,
-}
-
-impl FileOrder for Created {}
-
-#[derive(Debug)]
-pub struct Accessed {
-    pub order: Order,
-}
-
-impl FileOrder for Accessed {}
-
-#[derive(Debug)]
-pub struct Unordered;
-
-impl FileOrder for Unordered {}
 
 peg::parser! {
     grammar tag_query() for str {
@@ -78,7 +31,7 @@ peg::parser! {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 enum Formula {
     Proposition(Proposition),
     BinaryExpression(BinaryOp, Box<Formula>, Box<Formula>),
@@ -99,201 +52,39 @@ impl Formula {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 enum BinaryOp {
     AND,
     OR,
     XOR,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 enum UnaryOp {
     NOT,
 }
 
-#[derive(Debug, Eq, PartialEq, Hash, Clone)]
+#[derive(Debug, Eq, PartialEq, Hash, Clone, Serialize, Deserialize)]
 struct Proposition {
     tag_id: TagId,
 }
 
-#[derive(Debug, Clone)]
-pub struct OrderedFileSummary<FileOrder> {
-    file_summary: FileSummary,
-    order: FileOrder,
-}
-
-impl PartialEq for OrderedFileSummary<Name> {
-    fn eq(&self, other: &Self) -> bool {
-        self.file_summary.path.file_name() == other.file_summary.path.file_name() // path.file_name() is an Option (can, theoretically, be None)
-    }
-}
-
-impl Eq for OrderedFileSummary<Name> {}
-
-impl PartialOrd for OrderedFileSummary<Name> {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(
-            self.file_summary
-                .path
-                .file_name()
-                .unwrap()
-                .cmp(other.file_summary.path.file_name().unwrap()),
-        )
-    }
-}
-
-impl Ord for OrderedFileSummary<Name> {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.file_summary
-            .path
-            .file_name()
-            .unwrap()
-            .cmp(other.file_summary.path.file_name().unwrap())
-    }
-}
-
-impl PartialEq for OrderedFileSummary<Size> {
-    fn eq(&self, other: &Self) -> bool {
-        self.file_summary.metadata.size == other.file_summary.metadata.size
-    }
-}
-
-impl Eq for OrderedFileSummary<Size> {}
-
-impl PartialOrd for OrderedFileSummary<Size> {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(
-            self.file_summary
-                .metadata
-                .size
-                .cmp(&other.file_summary.metadata.size),
-        )
-    }
-}
-
-impl Ord for OrderedFileSummary<Size> {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.file_summary
-            .metadata
-            .size
-            .cmp(&other.file_summary.metadata.size)
-    }
-}
-
-impl PartialEq for OrderedFileSummary<Modified> {
-    fn eq(&self, other: &Self) -> bool {
-        self.file_summary.metadata.modified == other.file_summary.metadata.modified
-    }
-}
-
-impl Eq for OrderedFileSummary<Modified> {}
-
-impl PartialOrd for OrderedFileSummary<Modified> {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(
-            self.file_summary
-                .metadata
-                .modified
-                .cmp(&other.file_summary.metadata.modified),
-        )
-    }
-}
-
-impl Ord for OrderedFileSummary<Modified> {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.file_summary
-            .metadata
-            .modified
-            .cmp(&other.file_summary.metadata.modified)
-    }
-}
-
-impl PartialEq for OrderedFileSummary<Created> {
-    fn eq(&self, other: &Self) -> bool {
-        self.file_summary.metadata.created == other.file_summary.metadata.created
-    }
-}
-
-impl Eq for OrderedFileSummary<Created> {}
-
-impl PartialOrd for OrderedFileSummary<Created> {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(
-            self.file_summary
-                .metadata
-                .created
-                .cmp(&other.file_summary.metadata.created),
-        )
-    }
-}
-
-impl Ord for OrderedFileSummary<Created> {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.file_summary
-            .metadata
-            .created
-            .cmp(&other.file_summary.metadata.created)
-    }
-}
-
-impl PartialEq for OrderedFileSummary<Accessed> {
-    fn eq(&self, other: &Self) -> bool {
-        self.file_summary.metadata.accessed == other.file_summary.metadata.accessed
-    }
-}
-
-impl Eq for OrderedFileSummary<Accessed> {}
-
-impl PartialOrd for OrderedFileSummary<Accessed> {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(
-            self.file_summary
-                .metadata
-                .accessed
-                .cmp(&other.file_summary.metadata.accessed),
-        )
-    }
-}
-
-impl Ord for OrderedFileSummary<Accessed> {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.file_summary
-            .metadata
-            .accessed
-            .cmp(&other.file_summary.metadata.accessed)
-    }
-}
-
-impl PartialEq for OrderedFileSummary<Unordered> {
-    fn eq(&self, _other: &Self) -> bool {
-        true
-    }
-}
-
-impl Eq for OrderedFileSummary<Unordered> {}
-
-impl PartialOrd for OrderedFileSummary<Unordered> {
-    fn partial_cmp(&self, _other: &Self) -> Option<std::cmp::Ordering> {
-        Some(std::cmp::Ordering::Equal)
-    }
-}
-
-impl Ord for OrderedFileSummary<Unordered> {
-    fn cmp(&self, _other: &Self) -> std::cmp::Ordering {
-        std::cmp::Ordering::Equal
-    }
-}
-
-pub struct Query<T: FileOrder + Clone> {
+// [!] Own implementation of decode can enforce that BTreeSet contains files of the specified
+// FileOrder
+#[derive(Serialize, Deserialize)]
+pub struct Query {
     formula: Formula,
-    order: T,
-    result: Option<BTreeSet<OrderedFileSummary<T>>>,
+    order: FileOrder,
+    ascending: bool,
+    result: Option<BTreeSet<OrderedFileSummary>>,
 }
 
-impl<T: FileOrder + Clone> Query<T> {
-    pub fn new(query: &str, order: T) -> Result<Self, QueryErr> {
+impl Query {
+    pub fn new(query: &str, order: FileOrder, ascending: bool) -> Result<Self, QueryErr> {
         let formula = tag_query::expression(query).or_else(|_err| Err(QueryErr::SyntaxError))??;
+
         let mut query = Query {
             formula,
+            ascending,
             order,
             result: None,
         };
@@ -311,9 +102,8 @@ impl<T: FileOrder + Clone> Query<T> {
         &mut self,
         workspace_id: WorkspaceId,
         ret_service: R,
-    ) -> Result<BTreeSet<OrderedFileSummary<T>>, QueryErr>
+    ) -> Result<BTreeSet<OrderedFileSummary>, QueryErr>
     where
-        OrderedFileSummary<T>: Ord,
         R: RetrieveService + Clone,
     {
         Query::recursive_evaluate(self.formula.clone(), workspace_id, ret_service.clone()).await
@@ -323,9 +113,8 @@ impl<T: FileOrder + Clone> Query<T> {
         formula: Formula,
         workspace_id: WorkspaceId,
         ret_service: R,
-    ) -> Result<BTreeSet<OrderedFileSummary<T>>, QueryErr>
+    ) -> Result<BTreeSet<OrderedFileSummary>, QueryErr>
     where
-        OrderedFileSummary<T>: Ord,
         R: RetrieveService + Clone,
     {
         match formula {
@@ -337,7 +126,7 @@ impl<T: FileOrder + Clone> Query<T> {
                     let b =
                         Query::recursive_evaluate(*b.clone(), workspace_id, ret_service.clone())
                             .await?;
-                    let x: BTreeSet<OrderedFileSummary<T>> = a.difference(&b).cloned().collect();
+                    let x: BTreeSet<OrderedFileSummary> = a.difference(&b).cloned().collect();
                     Ok(x)
                 }
                 (Formula::UnaryExpression(UnaryOp::NOT, a), _) => {
@@ -347,7 +136,7 @@ impl<T: FileOrder + Clone> Query<T> {
                     let b =
                         Query::recursive_evaluate(*y.clone(), workspace_id, ret_service.clone())
                             .await?;
-                    let x: BTreeSet<OrderedFileSummary<T>> = b.difference(&a).cloned().collect();
+                    let x: BTreeSet<OrderedFileSummary> = b.difference(&a).cloned().collect();
                     Ok(x)
                 }
                 (a, b) => {
@@ -355,7 +144,7 @@ impl<T: FileOrder + Clone> Query<T> {
                         .await?;
                     let b = Query::recursive_evaluate(b.clone(), workspace_id, ret_service.clone())
                         .await?;
-                    let x: BTreeSet<OrderedFileSummary<T>> = a.intersection(&b).cloned().collect();
+                    let x: BTreeSet<OrderedFileSummary> = a.intersection(&b).cloned().collect();
                     Ok(x)
                 }
             },
@@ -364,7 +153,7 @@ impl<T: FileOrder + Clone> Query<T> {
                     .await?;
                 let b = Query::recursive_evaluate(*y.clone(), workspace_id, ret_service.clone())
                     .await?;
-                let x: BTreeSet<OrderedFileSummary<T>> = a.union(&b).cloned().collect();
+                let x: BTreeSet<OrderedFileSummary> = a.union(&b).cloned().collect();
                 Ok(x)
             }
             Formula::BinaryExpression(BinaryOp::XOR, x, y) => {
@@ -372,8 +161,7 @@ impl<T: FileOrder + Clone> Query<T> {
                     .await?;
                 let b = Query::recursive_evaluate(*y.clone(), workspace_id, ret_service.clone())
                     .await?;
-                let x: BTreeSet<OrderedFileSummary<T>> =
-                    a.symmetric_difference(&b).cloned().collect();
+                let x: BTreeSet<OrderedFileSummary> = a.symmetric_difference(&b).cloned().collect();
                 Ok(x)
             }
             Formula::UnaryExpression(UnaryOp::NOT, x) => {
@@ -382,7 +170,7 @@ impl<T: FileOrder + Clone> Query<T> {
                     .await
                     .map_err(|err| QueryErr::RuntimeError(err))?;
                 let b = Query::recursive_evaluate(*x.clone(), workspace_id, ret_service).await?;
-                let x: BTreeSet<OrderedFileSummary<T>> = a.difference(&b).cloned().collect();
+                let x: BTreeSet<OrderedFileSummary> = a.difference(&b).cloned().collect();
                 Ok(x)
             }
             Formula::Proposition(p) => ret_service
@@ -559,15 +347,11 @@ pub enum RetrieveErr {
 }
 
 pub trait RetrieveService {
-    async fn get_files<T: FileOrder>(
+    async fn get_files(
         &self,
         _tag_id: TagId,
         _workspace_id: WorkspaceId,
-    ) -> Result<BTreeSet<OrderedFileSummary<T>>, RetrieveErr> {
-        todo!();
-    }
+    ) -> Result<BTreeSet<OrderedFileSummary>, RetrieveErr>;
 
-    async fn get_all<T: FileOrder>(&self) -> Result<BTreeSet<OrderedFileSummary<T>>, RetrieveErr> {
-        todo!();
-    }
+    async fn get_all(&self) -> Result<BTreeSet<OrderedFileSummary>, RetrieveErr>;
 }
