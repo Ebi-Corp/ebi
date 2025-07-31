@@ -104,7 +104,7 @@ impl Service<ClientQuery> for QueryService {
 
             // Build PeerQuery request
 
-            if !req.partial {
+            if req.atomic {
                 for node_id in nodes {
                     match peer_srv.call((node_id, peer_req.clone())).await {
                         Ok(res) => parse_code(res.metadata().unwrap().return_code),

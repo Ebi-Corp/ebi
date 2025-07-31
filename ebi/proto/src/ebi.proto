@@ -23,7 +23,7 @@ message ClientQuery { //[ ]
   string query = 1;
   FileOrd file_ord = 2;
   bytes workspace_id = 4;
-  bool partial = 5;
+  bool atomic = 5;
   RequestMetadata metadata = 6;
 }
 
@@ -33,7 +33,14 @@ message PeerQuery { //[ ]
   RequestMetadata metadata = 4;
 }
 
-message QueryResponse { //[ ] 
+message PeerQueryResponse { //[ ] 
+  uint64 token = 1;
+  uint32 return_code = 2;
+  bytes files = 3;
+  ResponseMetadata metadata = 4;
+}
+
+message ClientQueryResponse { //[ ] 
   uint64 token = 1;
   uint32 packets = 2;
   ResponseMetadata metadata = 3;
@@ -45,11 +52,6 @@ message ClientQueryData { //[ ]
   repeated File files = 3;
 }
 
-message PeerQueryData { //[ ] 
-  uint64 token = 1;
-  uint32 return_code = 2;
-  bytes files = 3;
-}
 
 //[#] Workspace Operations 
 

@@ -277,7 +277,8 @@ impl_res_metadata!(
     DeleteTagResponse,
     DetachTagResponse,
     StripTagResponse,
-    QueryResponse,
+    PeerQueryResponse,
+    ClientQueryResponse
 );
 
 impl_req_metadata!(
