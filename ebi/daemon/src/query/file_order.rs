@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrderedFileSummary {
-    file_summary: FileSummary,
+    pub file_summary: FileSummary,
     order: FileOrder,
 }
 

@@ -63,14 +63,14 @@ pub struct FileMetadata {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UnixMetadata {
-    permissions: u32,
-    uid: u32,
-    gid: u32,
+    pub permissions: u32,
+    pub uid: u32,
+    pub gid: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WindowsMetadata {
-    attributes: u32,
+    pub attributes: u32,
 }
 
 impl FileMetadata {
