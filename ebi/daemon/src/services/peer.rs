@@ -19,6 +19,7 @@ use crate::services::rpc::RequestId;
 
 const HEADER_SIZE: usize = 10; //[!] Move to Constant file 
 
+#[derive(Debug)]
 pub enum PeerError {
     PeerNotFound,
     TimedOut,
@@ -55,6 +56,21 @@ async fn wait_call(mut watcher: Receiver<Uuid>, request_uuid: Uuid) {
         id = *watcher.borrow_and_update();
     }
 }
+
+impl Service<(NodeId, Data)> for PeerService {
+    type Response = ();
+    type Error = ();
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, req: (NodeId, Data)) -> Self::Future {
+        todo!();
+    }
+}
+
 impl Service<(NodeId, Request)> for PeerService {
     type Response = Response;
     type Error = PeerError;

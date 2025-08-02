@@ -24,10 +24,11 @@ pub type RequestId = Uuid;
 
 //[!] Potentially, we could have a validation
 macro_rules! return_error {
-    ($return_code:path, $response:ident, $request_uuid:expr, $error_data:ident) => {
+    ($return_code:path, $response:ident, $request_uuid:expr, $source_id:expr, $error_data:ident) => {
         let return_code = $return_code;
         let metadata = ResponseMetadata {
             request_uuid: $request_uuid,
+            source_id: $source_id,
             return_code: return_code as u32,
             $error_data,
         };
@@ -73,7 +74,7 @@ async fn try_get_tag(
     .await
 }
 
-fn parse_peer_id(bytes: &[u8]) -> Result<NodeId, ()> {
+pub fn parse_peer_id(bytes: &[u8]) -> Result<NodeId, ()> {
     let bytes: &[u8; 32] = bytes.try_into().map_err(|_| ())?;
     NodeId::from_bytes(bytes).map_err(|_| ())
 }
@@ -171,6 +172,7 @@ impl Service<DeleteTag> for RpcService {
         let metadata = req.metadata.clone().unwrap();
         let notify_queue = self.notify_queue.clone();
         let mut workspace_srv = self.workspace_srv.clone();
+        let source_id = self.daemon_info.id.as_bytes().to_vec();
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
@@ -180,6 +182,7 @@ impl Service<DeleteTag> for RpcService {
                     ReturnCode::WorkspaceNotFound, //[!] Change to UuidParseErr //[?] Why ??
                     DeleteTagResponse,
                     metadata.request_uuid,
+                    source_id,
                     error_data
                 );
             };
@@ -191,6 +194,7 @@ impl Service<DeleteTag> for RpcService {
                     ReturnCode::TagNotFound,
                     DeleteTagResponse,
                     metadata.request_uuid,
+                    source_id,
                     error_data
                 );
             };
@@ -243,6 +247,7 @@ impl Service<DeleteTag> for RpcService {
 
             let metadata = ResponseMetadata {
                 request_uuid: metadata.request_uuid,
+                source_id: source_id,
                 return_code: ReturnCode::Success as u32,
                 error_data,
             };
@@ -267,6 +272,7 @@ impl Service<StripTag> for RpcService {
         let notify_queue = self.notify_queue.clone();
         let mut peer_srv = self.peer_srv.clone();
         let mut workspace_srv = self.workspace_srv.clone();
+        let source_id = self.daemon_info.id.as_bytes().to_vec();
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
@@ -276,7 +282,7 @@ impl Service<StripTag> for RpcService {
             let shelf = match shelf_res {
                 Ok(shelf) => shelf,
                 Err(err) => {
-                    return_error!(err, StripTagResponse, metadata.request_uuid, error_data);
+                    return_error!(err, StripTagResponse, metadata.request_uuid, source_id, error_data);
                 }
             };
 
@@ -286,6 +292,7 @@ impl Service<StripTag> for RpcService {
                     ReturnCode::TagNotFound,
                     StripTagResponse,
                     metadata.request_uuid,
+                    source_id,
                     error_data
                 );
             };
@@ -342,6 +349,7 @@ impl Service<StripTag> for RpcService {
 
             let metadata = ResponseMetadata {
                 request_uuid: metadata.request_uuid,
+                source_id,
                 return_code: return_code as u32,
                 error_data,
             };
@@ -366,6 +374,7 @@ impl Service<DetachTag> for RpcService {
         let notify_queue = self.notify_queue.clone();
         let mut workspace_srv = self.workspace_srv.clone();
         let mut peer_srv = self.peer_srv.clone();
+        let source_id = self.daemon_info.id.as_bytes().to_vec();
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
             let shelf_res =
@@ -374,7 +383,7 @@ impl Service<DetachTag> for RpcService {
             let shelf = match shelf_res {
                 Ok(shelf) => shelf,
                 Err(err) => {
-                    return_error!(err, DetachTagResponse, metadata.request_uuid, error_data);
+                    return_error!(err, DetachTagResponse, metadata.request_uuid, source_id, error_data);
                 }
             };
 
@@ -384,6 +393,7 @@ impl Service<DetachTag> for RpcService {
                     ReturnCode::TagNotFound,
                     DetachTagResponse,
                     metadata.request_uuid,
+                    source_id,
                     error_data
                 );
             };
@@ -445,6 +455,7 @@ impl Service<DetachTag> for RpcService {
 
             let metadata = ResponseMetadata {
                 request_uuid: metadata.request_uuid,
+                source_id,
                 return_code: return_code as u32,
                 error_data,
             };
@@ -469,6 +480,7 @@ impl Service<AttachTag> for RpcService {
         let notify_queue = self.notify_queue.clone();
         let mut workspace_srv = self.workspace_srv.clone();
         let mut peer_srv = self.peer_srv.clone();
+        let source_id = self.daemon_info.id.as_bytes().to_vec();
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
             let shelf_res =
@@ -477,7 +489,7 @@ impl Service<AttachTag> for RpcService {
             let shelf = match shelf_res {
                 Ok(shelf) => shelf,
                 Err(err) => {
-                    return_error!(err, AttachTagResponse, metadata.request_uuid, error_data);
+                    return_error!(err, AttachTagResponse, metadata.request_uuid, source_id, error_data);
                 }
             };
 
@@ -487,6 +499,7 @@ impl Service<AttachTag> for RpcService {
                     ReturnCode::TagNotFound,
                     AttachTagResponse,
                     metadata.request_uuid,
+                    source_id,
                     error_data
                 );
             };
@@ -548,6 +561,7 @@ impl Service<AttachTag> for RpcService {
 
             let metadata = ResponseMetadata {
                 request_uuid: metadata.request_uuid,
+                source_id,
                 return_code: return_code as u32,
                 error_data,
             };
@@ -572,6 +586,7 @@ impl Service<RemoveShelf> for RpcService {
         let notify_queue = self.notify_queue.clone();
         let mut peer_srv = self.peer_srv.clone();
         let mut workspace_srv = self.workspace_srv.clone();
+        let source_id = self.daemon_info.id.as_bytes().to_vec();
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
@@ -581,6 +596,7 @@ impl Service<RemoveShelf> for RpcService {
                     ReturnCode::WorkspaceNotFound,
                     RemoveShelfResponse,
                     metadata.request_uuid,
+                    source_id,
                     error_data
                 );
             };
@@ -592,6 +608,7 @@ impl Service<RemoveShelf> for RpcService {
                     ReturnCode::ShelfNotFound,
                     RemoveShelfResponse,
                     metadata.request_uuid,
+                    source_id,
                     error_data
                 );
             };
@@ -654,6 +671,7 @@ impl Service<RemoveShelf> for RpcService {
 
             let metadata = ResponseMetadata {
                 request_uuid: metadata.request_uuid,
+                source_id,
                 return_code: return_code as u32,
                 error_data,
             };
@@ -679,6 +697,7 @@ impl Service<EditShelf> for RpcService {
         let notify_queue = self.notify_queue.clone();
         let mut peer_srv = self.peer_srv.clone();
         let mut workspace_srv = self.workspace_srv.clone();
+        let source_id = self.daemon_info.id.as_bytes().to_vec();
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
@@ -687,7 +706,7 @@ impl Service<EditShelf> for RpcService {
             let shelf = match shelf_res {
                 Ok(shelf) => shelf,
                 Err(err) => {
-                    return_error!(err, EditShelfResponse, metadata.request_uuid, error_data);
+                    return_error!(err, EditShelfResponse, metadata.request_uuid, source_id, error_data);
                 }
             };
 
@@ -739,6 +758,7 @@ impl Service<EditShelf> for RpcService {
 
             let metadata = ResponseMetadata {
                 request_uuid: metadata.request_uuid,
+                source_id,
                 return_code: return_code as u32,
                 error_data,
             };
@@ -765,7 +785,7 @@ impl Service<AddShelf> for RpcService {
         let notify_queue = self.notify_queue.clone();
         let daemon_info = self.daemon_info.clone();
         let mut peer_srv = self.peer_srv.clone();
-
+        let source_id = self.daemon_info.id.as_bytes().to_vec();
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
             let mut shelf_id: Option<ShelfId> = None;
@@ -775,16 +795,17 @@ impl Service<AddShelf> for RpcService {
                     ReturnCode::WorkspaceNotFound,
                     AddShelfResponse,
                     metadata.request_uuid,
+                    source_id,
                     error_data
                 );
             };
 
             let Ok(peer_id) = parse_peer_id(&req.peer_id.clone()) else {
                 return_error!(
-                    ReturnCode::PeerNotFound, //[!] Change to UuidParseErr, peer validation is done
-                    //in WorkspaceService
+                    ReturnCode::PeerNotFound, //[!] Change to UuidParseErr, peer validation is done in WorkspaceService
                     AddShelfResponse,
                     metadata.request_uuid,
+                    source_id,
                     error_data
                 );
             };
@@ -835,6 +856,7 @@ impl Service<AddShelf> for RpcService {
             }
             let metadata = ResponseMetadata {
                 request_uuid: metadata.request_uuid,
+                source_id,
                 return_code: return_code as u32,
                 error_data,
             };
@@ -858,7 +880,8 @@ impl Service<DeleteWorkspace> for RpcService {
     fn call(&mut self, req: DeleteWorkspace) -> Self::Future {
         let mut workspace_srv = self.workspace_srv.clone();
         let metadata = req.metadata.unwrap();
-        let notify_queue = self.notify_queue.clone();
+        let notify_queue = self.notify_queue.clone();        
+        let source_id = self.daemon_info.id.as_bytes().to_vec();
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
@@ -867,6 +890,7 @@ impl Service<DeleteWorkspace> for RpcService {
                     ReturnCode::WorkspaceNotFound,
                     DeleteWorkspaceResponse,
                     metadata.request_uuid,
+                    source_id,
                     error_data
                 );
             };
@@ -876,6 +900,7 @@ impl Service<DeleteWorkspace> for RpcService {
                     ReturnCode::WorkspaceNotFound,
                     DeleteWorkspaceResponse,
                     metadata.request_uuid,
+                    source_id,
                     error_data
                 );
             };
@@ -890,6 +915,7 @@ impl Service<DeleteWorkspace> for RpcService {
 
             let metadata = ResponseMetadata {
                 request_uuid: metadata.request_uuid,
+                source_id,
                 return_code: ReturnCode::Success as u32,
                 error_data: None,
             };
@@ -913,6 +939,7 @@ impl Service<EditTag> for RpcService {
         let mut workspace_srv = self.workspace_srv.clone();
         let metadata = req.metadata.unwrap();
         let notify_queue = self.notify_queue.clone();
+        let source_id = self.daemon_info.id.as_bytes().to_vec();
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
@@ -920,7 +947,7 @@ impl Service<EditTag> for RpcService {
             let tag = match tag_res {
                 Ok(tag) => tag,
                 Err(err) => {
-                    return_error!(err, EditTagResponse, metadata.request_uuid, error_data);
+                    return_error!(err, EditTagResponse, metadata.request_uuid, source_id, error_data);
                 }
             };
 
@@ -933,6 +960,7 @@ impl Service<EditTag> for RpcService {
                             ReturnCode::ParentNotFound,
                             EditTagResponse,
                             metadata.request_uuid,
+                            source_id,
                             error_data
                         );
                     };
@@ -948,6 +976,7 @@ impl Service<EditTag> for RpcService {
                     ReturnCode::TagNameEmpty,
                     EditTagResponse,
                     metadata.request_uuid,
+                    source_id,
                     error_data
                 );
             }
@@ -973,6 +1002,7 @@ impl Service<EditTag> for RpcService {
 
             let metadata = ResponseMetadata {
                 request_uuid: metadata.request_uuid,
+                source_id,
                 return_code: return_code as u32,
                 error_data: None,
             };
@@ -996,6 +1026,7 @@ impl Service<EditWorkspace> for RpcService {
         let mut workspace_srv = self.workspace_srv.clone();
         let metadata = req.metadata.unwrap();
         let notify_queue = self.notify_queue.clone();
+        let source_id = self.daemon_info.id.as_bytes().to_vec();
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
@@ -1005,6 +1036,7 @@ impl Service<EditWorkspace> for RpcService {
                     ReturnCode::WorkspaceNotFound,
                     EditWorkspaceResponse,
                     metadata.request_uuid,
+                    source_id,
                     error_data
                 );
             };
@@ -1014,6 +1046,7 @@ impl Service<EditWorkspace> for RpcService {
                 let return_code = ReturnCode::WorkspaceNameEmpty; // Name is Empty 
                 let metadata = ResponseMetadata {
                     request_uuid: metadata.request_uuid,
+                    source_id,
                     return_code: return_code as u32,
                     error_data,
                 };
@@ -1042,6 +1075,7 @@ impl Service<EditWorkspace> for RpcService {
 
             let metadata = ResponseMetadata {
                 request_uuid: metadata.request_uuid,
+                source_id,
                 return_code: return_code as u32,
                 error_data: None,
             };
@@ -1064,6 +1098,7 @@ impl Service<GetShelves> for RpcService {
     fn call(&mut self, req: GetShelves) -> Self::Future {
         let mut workspace_srv = self.workspace_srv.clone();
         let metadata = req.metadata.unwrap();
+        let source_id = self.daemon_info.id.as_bytes().to_vec();
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
@@ -1073,6 +1108,7 @@ impl Service<GetShelves> for RpcService {
                     ReturnCode::WorkspaceNotFound,
                     GetShelvesResponse,
                     metadata.request_uuid,
+                    source_id,
                     error_data
                 );
             };
@@ -1108,6 +1144,7 @@ impl Service<GetShelves> for RpcService {
 
             let metadata = ResponseMetadata {
                 request_uuid: metadata.request_uuid,
+                source_id,
                 return_code: ReturnCode::Success as u32,
                 error_data: None,
             };
@@ -1131,6 +1168,7 @@ impl Service<GetWorkspaces> for RpcService {
     fn call(&mut self, req: GetWorkspaces) -> Self::Future {
         let mut workspace_srv = self.workspace_srv.clone();
         let metadata = req.metadata.unwrap();
+        let source_id = self.daemon_info.id.as_bytes().to_vec();
         Box::pin(async move {
             let workspace_ls = workspace_srv
                 .call(crate::services::workspace::GetWorkspaces {})
@@ -1139,6 +1177,7 @@ impl Service<GetWorkspaces> for RpcService {
 
             let metadata = ResponseMetadata {
                 request_uuid: metadata.request_uuid,
+                source_id,
                 return_code: ReturnCode::Success as u32,
                 error_data: None,
             };
@@ -1163,6 +1202,7 @@ impl Service<CreateWorkspace> for RpcService {
         let mut workspace_srv = self.workspace_srv.clone();
         let notify_queue = self.notify_queue.clone();
         let metadata = req.metadata.clone().unwrap();
+        let source_id = self.daemon_info.id.as_bytes().to_vec();
         Box::pin(async move {
             let id = workspace_srv
                 .call(crate::services::workspace::CreateWorkspace {
@@ -1182,6 +1222,7 @@ impl Service<CreateWorkspace> for RpcService {
 
             let metadata = ResponseMetadata {
                 request_uuid: metadata.request_uuid,
+                source_id,
                 return_code: ReturnCode::Success as u32,
                 error_data: None,
             };
@@ -1206,6 +1247,7 @@ impl Service<CreateTag> for RpcService {
         let mut workspace_srv = self.workspace_srv.clone();
         let notify_queue = self.notify_queue.clone();
         let metadata = req.metadata.clone().unwrap();
+        let source_id = self.daemon_info.id.as_bytes().to_vec();
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
@@ -1215,6 +1257,7 @@ impl Service<CreateTag> for RpcService {
                     ReturnCode::WorkspaceNotFound,
                     CreateTagResponse,
                     metadata.request_uuid,
+                    source_id,
                     error_data
                 );
             };
@@ -1227,6 +1270,7 @@ impl Service<CreateTag> for RpcService {
                             ReturnCode::ParentNotFound,
                             CreateTagResponse,
                             metadata.request_uuid,
+                            source_id,
                             error_data
                         );
                     };
@@ -1246,6 +1290,7 @@ impl Service<CreateTag> for RpcService {
                     ReturnCode::ParentNotFound,
                     CreateTagResponse,
                     metadata.request_uuid,
+                    source_id,
                     error_data
                 );
             };
@@ -1259,6 +1304,7 @@ impl Service<CreateTag> for RpcService {
                     ReturnCode::TagNameDuplicate,
                     CreateTagResponse,
                     metadata.request_uuid,
+                    source_id,
                     error_data
                 );
             };
@@ -1273,6 +1319,7 @@ impl Service<CreateTag> for RpcService {
             // If the tag was created successfully, return the response with the tag ID
             let metadata = ResponseMetadata {
                 request_uuid: metadata.request_uuid,
+                source_id,
                 return_code: ReturnCode::Success as u32, // Success
                 error_data: None,
             };

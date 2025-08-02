@@ -105,7 +105,7 @@ impl Query {
 
     //[!] Tags should be Validated inside the QueryService
 
-    pub async fn evaluate<R>(
+    pub async fn evaluate<R>( //[/] Only local shelves
         &mut self,
         workspace_id: WorkspaceId,
         ret_service: R,
@@ -595,12 +595,12 @@ impl Formula {
 pub enum QueryErr {
     SyntaxError,               // The Query is incorrectly formatted
     ParseError,                // A Tag_ID is not a valid UUID
-    KeyError(TagErr),          // The Query uses tags which do not exist
     RuntimeError(RetrieveErr), // The Query could not be executed
 }
 
 //[!] Wrapper for a cacheservice.call() ?
 
+#[derive(Debug)]
 pub enum RetrieveErr {
     CacheError,
 }

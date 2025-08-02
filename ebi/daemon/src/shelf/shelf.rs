@@ -1,10 +1,10 @@
 use crate::shelf::node::Node;
-use crate::tag::TagRef;
+use crate::tag::{TagId, TagRef};
 use crate::workspace::ChangeSummary;
 use chrono::Duration;
 use iroh::NodeId;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::ffi::OsStr;
 use std::io;
 use std::path::PathBuf;
@@ -60,6 +60,11 @@ pub struct Shelf {
 }
 
 impl Shelf {
+
+    pub fn get_tags(&self) -> HashSet<TagId> {
+        todo!(); //[TODO] Cuckoo Table 
+    }
+    
     pub async fn edit_info(&mut self, new_name: Option<String>, new_description: Option<String>) {
         if let Some(name) = new_name {
             self.info.name = name;
@@ -68,6 +73,7 @@ impl Shelf {
             self.info.description = description;
         }
     }
+
     pub fn new(
         remote: bool,
         path: PathBuf,
