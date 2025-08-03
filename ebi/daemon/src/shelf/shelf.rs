@@ -3,6 +3,8 @@ use crate::tag::{TagId, TagRef};
 use crate::workspace::ChangeSummary;
 use chrono::Duration;
 use iroh::NodeId;
+use rand_chacha::{ChaCha12Rng, rand_core::SeedableRng};
+use scalable_cuckoo_filter::{ScalableCuckooFilter, ScalableCuckooFilterBuilder};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashSet};
 use std::ffi::OsStr;
@@ -17,8 +19,12 @@ use super::file::FileRef;
 
 pub type ShelfId = Uuid;
 
+const SEED: u64 = 0; // [TODO] Move seed to proper initialization
+
 pub type ShelfRef = Arc<RwLock<Shelf>>;
 pub type ShelfDataRef = Arc<RwLock<ShelfData>>;
+pub type TagFilter =
+    ScalableCuckooFilter<TagId, scalable_cuckoo_filter::DefaultHasher, ChaCha12Rng>;
 
 #[derive(Clone, Debug)]
 pub enum ShelfType {
@@ -56,15 +62,11 @@ pub struct Shelf {
     pub shelf_type: ShelfType,
     pub shelf_owner: ShelfOwner,
     pub config: ShelfConfig,
+    pub filter_tags: TagFilter,
     pub info: ShelfInfo,
 }
 
 impl Shelf {
-
-    pub fn get_tags(&self) -> HashSet<TagId> {
-        todo!(); //[TODO] Cuckoo Table 
-    }
-    
     pub async fn edit_info(&mut self, new_name: Option<String>, new_description: Option<String>) {
         if let Some(name) = new_name {
             self.info.name = name;
@@ -93,6 +95,8 @@ impl Shelf {
             shelf_type,
             shelf_owner,
             config: config.unwrap_or(ShelfConfig::default()),
+            filter_tags: generate_tag_filter(), // [!] these values should be set
+            // more carefully and be configurable
             info: ShelfInfo {
                 id,
                 name,
@@ -102,6 +106,12 @@ impl Shelf {
         };
         Ok(shelf)
     }
+}
+pub fn generate_tag_filter() -> TagFilter {
+    let builder = ScalableCuckooFilterBuilder::new();
+    let rng = ChaCha12Rng::seed_from_u64(SEED);
+    let builder = builder.rng(rng);
+    builder.finish::<TagId>()
 }
 
 #[derive(Debug)]

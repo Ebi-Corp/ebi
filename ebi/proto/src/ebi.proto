@@ -9,9 +9,8 @@ message RequestMetadata {
 
 message ResponseMetadata {
   bytes request_uuid = 1;
-  bytes source_id = 2;
-  uint32 return_code = 3;
-  optional ErrorData error_data = 4;
+  uint32 return_code = 2;
+  optional ErrorData error_data = 3;
 }
 
 message ErrorData {
@@ -48,9 +47,9 @@ message ClientQueryResponse { //[ ]
 
 message ClientQueryData { //[ ] 
   bytes token = 1;
-  uint32 return_code = 2;
-  repeated File files = 3;
-  optional ErrorData error_data = 4;
+  repeated File files = 2;
+  ResponseMetadata metadata = 3;
+
 }
 
 

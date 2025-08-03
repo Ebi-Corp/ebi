@@ -618,7 +618,9 @@ dependencies = [
  "paste",
  "peg",
  "rand 0.8.5",
+ "rand_chacha 0.9.0",
  "regex",
+ "scalable_cuckoo_filter",
  "serde",
  "tokio",
  "tower",
@@ -3035,6 +3037,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "scalable_cuckoo_filter"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e16607f6609cacdb061b016749d329b3a0dd953e0470903cf8243f4a78ebad59"
+dependencies = [
+ "rand 0.9.1",
+ "serde",
+ "serde_bytes",
+ "siphasher",
+]
+
+[[package]]
 name = "scoped-tls"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3071,6 +3085,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5f0e2c6ed6606019b4e29e69dbaba95b11854410e5347d525002456dbbb786b6"
 dependencies = [
  "serde_derive",
+]
+
+[[package]]
+name = "serde_bytes"
+version = "0.11.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8437fd221bde2d4ca316d61b90e337e9e702b3820b87d63caa9ba6c02bd06d96"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
@@ -3181,6 +3204,12 @@ checksum = "dee851d0e5e7af3721faea1843e8015e820a234f81fda3dea9247e15bac9a86a"
 dependencies = [
  "bitflags 2.9.1",
 ]
+
+[[package]]
+name = "siphasher"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "56199f7ddabf13fe5074ce809e7d3f42b42ae711800501b5b16ea82ad029c39d"
 
 [[package]]
 name = "slab"

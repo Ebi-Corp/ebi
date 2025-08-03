@@ -64,7 +64,8 @@ enum UnaryOp {
 }
 
 #[derive(Debug, Eq, PartialEq, Hash, Clone, Serialize, Deserialize)]
-struct Proposition { //[!] Allow for tag_id to be empty, so we can represent Tautologies/Contradictions
+struct Proposition {
+    //[!] Allow for tag_id to be empty, so we can represent Tautologies/Contradictions
     tag_id: TagId,
 }
 
@@ -94,18 +95,17 @@ impl Query {
     pub fn get_tags(&self) -> HashSet<TagId> {
         self.formula.get_tags()
     }
-
-    pub async fn may_hold(
+    pub fn may_hold(
         &mut self,
-        tags: HashSet<TagId>, // Tags that may be present in a shelf (can contain false positives)
-    ) -> bool
-    {
+        tags: &HashSet<TagId>, // Tags that may be present in a shelf (can contain false positives)
+    ) -> bool {
         self.formula.may_hold(tags)
     }
 
     //[!] Tags should be Validated inside the QueryService
 
-    pub async fn evaluate<R>( //[/] Only local shelves
+    pub async fn evaluate<R>(
+        //[/] Only local shelves
         &mut self,
         workspace_id: WorkspaceId,
         ret_service: R,
@@ -127,47 +127,83 @@ impl Query {
         match formula {
             Formula::BinaryExpression(BinaryOp::AND, x, y) => match (*x.clone(), *y.clone()) {
                 (_, Formula::UnaryExpression(UnaryOp::NOT, b)) => {
-                    let a =
-                        Query::recursive_evaluate(*x.clone(), workspace_id, ret_service.clone())
-                            .await?;
-                    let b =
-                        Query::recursive_evaluate(*b.clone(), workspace_id, ret_service.clone())
-                            .await?;
+                    let a = Box::pin(Query::recursive_evaluate(
+                        *x.clone(),
+                        workspace_id,
+                        ret_service.clone(),
+                    ))
+                    .await?;
+                    let b = Box::pin(Query::recursive_evaluate(
+                        *b.clone(),
+                        workspace_id,
+                        ret_service.clone(),
+                    ))
+                    .await?;
                     let x: BTreeSet<OrderedFileSummary> = a.difference(&b).cloned().collect();
                     Ok(x)
                 }
                 (Formula::UnaryExpression(UnaryOp::NOT, a), _) => {
-                    let a =
-                        Query::recursive_evaluate(*a.clone(), workspace_id, ret_service.clone())
-                            .await?;
-                    let b =
-                        Query::recursive_evaluate(*y.clone(), workspace_id, ret_service.clone())
-                            .await?;
+                    let a = Box::pin(Query::recursive_evaluate(
+                        *a.clone(),
+                        workspace_id,
+                        ret_service.clone(),
+                    ))
+                    .await?;
+                    let b = Box::pin(Query::recursive_evaluate(
+                        *y.clone(),
+                        workspace_id,
+                        ret_service.clone(),
+                    ))
+                    .await?;
                     let x: BTreeSet<OrderedFileSummary> = b.difference(&a).cloned().collect();
                     Ok(x)
                 }
                 (a, b) => {
-                    let a = Query::recursive_evaluate(a.clone(), workspace_id, ret_service.clone())
-                        .await?;
-                    let b = Query::recursive_evaluate(b.clone(), workspace_id, ret_service.clone())
-                        .await?;
+                    let a = Box::pin(Query::recursive_evaluate(
+                        a.clone(),
+                        workspace_id,
+                        ret_service.clone(),
+                    ))
+                    .await?;
+                    let b = Box::pin(Query::recursive_evaluate(
+                        b.clone(),
+                        workspace_id,
+                        ret_service.clone(),
+                    ))
+                    .await?;
                     let x: BTreeSet<OrderedFileSummary> = a.intersection(&b).cloned().collect();
                     Ok(x)
                 }
             },
             Formula::BinaryExpression(BinaryOp::OR, x, y) => {
-                let a = Query::recursive_evaluate(*x.clone(), workspace_id, ret_service.clone())
-                    .await?;
-                let b = Query::recursive_evaluate(*y.clone(), workspace_id, ret_service.clone())
-                    .await?;
+                let a = Box::pin(Query::recursive_evaluate(
+                    *x.clone(),
+                    workspace_id,
+                    ret_service.clone(),
+                ))
+                .await?;
+                let b = Box::pin(Query::recursive_evaluate(
+                    *y.clone(),
+                    workspace_id,
+                    ret_service.clone(),
+                ))
+                .await?;
                 let x: BTreeSet<OrderedFileSummary> = a.union(&b).cloned().collect();
                 Ok(x)
             }
             Formula::BinaryExpression(BinaryOp::XOR, x, y) => {
-                let a = Query::recursive_evaluate(*x.clone(), workspace_id, ret_service.clone())
-                    .await?;
-                let b = Query::recursive_evaluate(*y.clone(), workspace_id, ret_service.clone())
-                    .await?;
+                let a = Box::pin(Query::recursive_evaluate(
+                    *x.clone(),
+                    workspace_id,
+                    ret_service.clone(),
+                ))
+                .await?;
+                let b = Box::pin(Query::recursive_evaluate(
+                    *y.clone(),
+                    workspace_id,
+                    ret_service.clone(),
+                ))
+                .await?;
                 let x: BTreeSet<OrderedFileSummary> = a.symmetric_difference(&b).cloned().collect();
                 Ok(x)
             }
@@ -176,12 +212,17 @@ impl Query {
                     .get_all()
                     .await
                     .map_err(|err| QueryErr::RuntimeError(err))?;
-                let b = Query::recursive_evaluate(*x.clone(), workspace_id, ret_service).await?;
+                let b = Box::pin(Query::recursive_evaluate(
+                    *x.clone(),
+                    workspace_id,
+                    ret_service,
+                ))
+                .await?;
                 let x: BTreeSet<OrderedFileSummary> = a.difference(&b).cloned().collect();
                 Ok(x)
             }
             Formula::Proposition(p) => ret_service
-                .get_files(p.tag_id, workspace_id)
+                .get_tagged(p.tag_id, workspace_id)
                 .await
                 .map_err(|err| QueryErr::RuntimeError(err)),
         }
@@ -216,7 +257,7 @@ impl Formula {
                                     true,
                                 );
                             }
-                        } 
+                        }
                         // Absorption Law: A AND (? OR A) ⊨ A
                         if let Formula::Proposition(Proposition { tag_id }) = *b {
                             if tag_id == p.tag_id {
@@ -225,7 +266,7 @@ impl Formula {
                                     true,
                                 );
                             }
-                        } 
+                        }
                         let simplified_a = Formula::recursive_simplify(*a.clone());
                         let simplified_b = Formula::recursive_simplify(*b.clone());
                         return (
@@ -244,10 +285,7 @@ impl Formula {
                     // Idempotency Law: A AND A ⊨ A
                     Formula::Proposition(Proposition { tag_id }) => {
                         if tag_id == p.tag_id {
-                            return (
-                                Formula::Proposition(Proposition { tag_id: p.tag_id }),
-                                true,
-                            );
+                            return (Formula::Proposition(Proposition { tag_id: p.tag_id }), true);
                         }
                         let simplified_y = Formula::recursive_simplify(*y.clone());
                         return (
@@ -271,7 +309,7 @@ impl Formula {
                             simplified_x.1 || simplified_y.1,
                         );
                     }
-                }
+                },
                 Formula::BinaryExpression(BinaryOp::OR, a, b) => match *y {
                     Formula::Proposition(p) => {
                         // Absorption Law: (A OR ?) AND A ⊨ A
@@ -302,7 +340,7 @@ impl Formula {
                                     Box::new(simplified_a.0),
                                     Box::new(simplified_b.0),
                                 )),
-                                Box::new(Formula::Proposition(p))
+                                Box::new(Formula::Proposition(p)),
                             ),
                             simplified_a.1 || simplified_b.1,
                         );
@@ -319,7 +357,7 @@ impl Formula {
                             simplified_x.1 || simplified_y.1,
                         );
                     }
-                }
+                },
                 // De Morgan's Law: (NOT A) AND (NOT B) ⊨ NOT (A OR B)
                 Formula::UnaryExpression(UnaryOp::NOT, a) => match *y {
                     Formula::UnaryExpression(UnaryOp::NOT, b) => (
@@ -398,10 +436,7 @@ impl Formula {
                     // Idempotency Law: A OR A ⊨ A
                     Formula::Proposition(Proposition { tag_id }) => {
                         if tag_id == p.tag_id {
-                            return (
-                                Formula::Proposition(Proposition { tag_id: p.tag_id }),
-                                true,
-                            );
+                            return (Formula::Proposition(Proposition { tag_id: p.tag_id }), true);
                         }
                         let simplified_y = Formula::recursive_simplify(*y.clone());
                         return (
@@ -425,7 +460,7 @@ impl Formula {
                             simplified_x.1 || simplified_y.1,
                         );
                     }
-                }
+                },
                 Formula::BinaryExpression(BinaryOp::AND, a, b) => match *y {
                     Formula::Proposition(p) => {
                         // Absorption Law: (A AND ?) OR A ⊨ A
@@ -456,7 +491,7 @@ impl Formula {
                                     Box::new(simplified_a.0),
                                     Box::new(simplified_b.0),
                                 )),
-                                Box::new(Formula::Proposition(p))
+                                Box::new(Formula::Proposition(p)),
                             ),
                             simplified_a.1 || simplified_b.1,
                         );
@@ -473,7 +508,7 @@ impl Formula {
                             simplified_x.1 || simplified_y.1,
                         );
                     }
-                }
+                },
                 // De Morgan's Law: (NOT A) OR (NOT B) ⊨ NOT (A AND B)
                 Formula::UnaryExpression(UnaryOp::NOT, a) => match *y {
                     Formula::UnaryExpression(UnaryOp::NOT, b) => (
@@ -566,25 +601,29 @@ impl Formula {
         }
     }
 
-    fn may_hold(&self, tags: HashSet<TagId>) -> bool {
+    fn may_hold(&self, tags: &HashSet<TagId>) -> bool {
         match self {
-            Formula::BinaryExpression(BinaryOp::AND, x, y) => { // Both tags must be present
-                x.may_hold(tags.clone()) && y.may_hold(tags)
+            Formula::BinaryExpression(BinaryOp::AND, x, y) => {
+                // Both tags must be present
+                x.may_hold(tags) && y.may_hold(tags)
             }
-            Formula::BinaryExpression(BinaryOp::OR, x, y) => {  // At least one tag must be present
-                x.may_hold(tags.clone()) || y.may_hold(tags)
+            Formula::BinaryExpression(BinaryOp::OR, x, y) => {
+                // At least one tag must be present
+                x.may_hold(tags) || y.may_hold(tags)
             }
-            Formula::BinaryExpression(BinaryOp::XOR, x, y) => { // At least one tag must be present
-                x.may_hold(tags.clone()) || y.may_hold(tags)
+            Formula::BinaryExpression(BinaryOp::XOR, x, y) => {
+                // At least one tag must be present
+                x.may_hold(tags) || y.may_hold(tags)
             }
-            Formula::UnaryExpression(UnaryOp::NOT, _) => { // The tag may be present
-                /* 
+            Formula::UnaryExpression(UnaryOp::NOT, _) => {
+                // The tag may be present
+                /*
                 This should actually return false if the expression under the NOT is a tautology
                 Tautology detection can be reduced to the SAT problem (φ is a tautology iff ¬φ is NOT satisfiable)
                 SAT has been proven to be NP-Complete
                 Not really worth the effort for a network optimisation heuristic
                 */
-                true 
+                true
             }
             Formula::Proposition(p) => tags.contains(&p.tag_id), // The tag must be present
         }
@@ -606,10 +645,10 @@ pub enum RetrieveErr {
 }
 
 pub trait RetrieveService {
-    async fn get_files(
+    async fn get_tagged(
         &self,
-        _tag_id: TagId,
-        _workspace_id: WorkspaceId,
+        tag_id: TagId,
+        workspace_id: WorkspaceId,
     ) -> Result<BTreeSet<OrderedFileSummary>, RetrieveErr>;
 
     async fn get_all(&self) -> Result<BTreeSet<OrderedFileSummary>, RetrieveErr>;

@@ -1,6 +1,9 @@
 use crate::query::file_order::{FileOrder, OrderedFileSummary};
 use crate::services::peer::PeerService;
-use crate::tag::TagRef;
+use crate::services::workspace::{WorkspaceService, GetShelf, GetTag};
+use crate::shelf::shelf::{ShelfId, ShelfRef, ShelfType};
+use crate::shelf::file::{FileRef, FileSummary};
+use crate::tag::TagId;
 use crate::workspace::{Workspace, WorkspaceId};
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
@@ -15,17 +18,17 @@ use tower::Service;
 
 #[derive(Clone)]
 pub struct CacheService {
-    peer_service: PeerService,
-    workspaces: Arc<RwLock<HashMap<WorkspaceId, Workspace>>>,
+    peer_srv: PeerService,
+    workspace_srv: WorkspaceService,
 }
 
-enum RetrieveFiles {
+pub enum RetrieveFiles {
     GetAll(WorkspaceId, FileOrder),
-    GetTag(WorkspaceId, FileOrder, TagRef),
+    GetTagged(WorkspaceId, FileOrder, Vec<ShelfId>, TagId),
 }
 
 enum Caching {
-    IsCacheValid(Option<TagRef>, HashCache),
+    IsCacheValid(Option<TagId>, HashCache),
 }
 enum RetrieveData {
     GetDir(PathBuf),
@@ -44,7 +47,8 @@ enum CommandRes {
     OrderedFiles(BTreeSet<OrderedFileSummary>),
 }
 
-enum CacheError {
+#[derive(Debug)]
+pub enum CacheError {
     WorkspaceNotFound,
 }
 
@@ -58,19 +62,45 @@ impl Service<RetrieveFiles> for CacheService {
     }
 
     fn call(&mut self, req: RetrieveFiles) -> Self::Future {
-        let _ = Box::pin(async move {
+        let mut workspace_srv = self.workspace_srv.clone();
+        Box::pin(async move {
             match req {
-                RetrieveFiles::GetAll(work_id, _ord) => {
-                    if let Some(_workspace) = &self.workspaces.read().unwrap().get(&work_id) {
-                        todo!();
-                    } else {
-                        return CacheError::WorkspaceNotFound;
-                    }
+                RetrieveFiles::GetAll(work_id, ord) => {
+                    todo!();
                 }
-                RetrieveFiles::GetTag(_work_id, _ord, _tag) => {}
+
+                RetrieveFiles::GetTagged(workspace_id, order, shelves, tag_id) => {
+                    let mut shelf_refs = Vec::<ShelfRef>::new();
+                    let tag_ref = workspace_srv.call(GetTag {
+                        workspace_id, tag_id
+                    }).await.unwrap();
+                    for shelf_id in shelves {
+                        shelf_refs.push(
+                            workspace_srv
+                                .call(GetShelf {
+                                    workspace_id,
+                                    shelf_id,
+                                })
+                                .await
+                                .unwrap(),
+                        )
+                    }
+                    let mut tagged = BTreeSet::<OrderedFileSummary>::new();
+                    for shelf in shelf_refs {
+                        let shelf_r = shelf.read().await;
+                        let shelf_owner = shelf_r.shelf_owner.clone();
+                        let ShelfType::Local(data_ref) = shelf_r.shelf_type.clone() else {
+                            return Err(CacheError::WorkspaceNotFound) 
+                        };
+                        let mut shelf_tagged = data_ref.read().await.retrieve(tag_ref.clone()).await;
+                        drop(data_ref);
+                        drop(shelf_r);
+                        tagged.append(&mut shelf_tagged.into_iter().map(|x| OrderedFileSummary { file_summary: FileSummary::from(x, shelf_owner.clone()), order: order.clone()  }).collect());
+
+                    }
+                    Ok(tagged)
+                }
             }
-            todo!();
-        });
-        todo!();
+        })
     }
 }
