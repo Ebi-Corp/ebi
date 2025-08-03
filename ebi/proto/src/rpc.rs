@@ -1,9 +1,9 @@
 use bytes::BufMut;
+use core::fmt;
 use enum_dispatch::enum_dispatch;
 use paste::paste;
 use prost::EncodeError;
 pub use prost::Message;
-use core::fmt;
 use std::convert::TryFrom;
 
 macro_rules! impl_try_from {
@@ -30,6 +30,11 @@ macro_rules! impl_res_metadata {
                 impl ResMetadata for $variant {
                     fn metadata(&self) -> Option<ResponseMetadata> {
                         self.metadata.clone()
+                    }
+                }
+                impl Encode for $variant {
+                    fn encode(&self, buf: &mut impl BufMut) -> Result<(), EncodeError> {
+                        Message::encode(self, buf)
                     }
                 }
             )*
@@ -78,7 +83,7 @@ pub enum ReturnCode {
     WorkspaceNameEmpty = 304,
     ShelfCreationIOError = 501,
     PathNotDir = 502,
-    ParseError = isize::MAX
+    ParseError = isize::MAX,
 }
 
 pub fn parse_code(code: u32) -> ReturnCode {
@@ -157,7 +162,7 @@ pub enum RequestCode {
     DeleteTag = 13,
     AttachTag = 14,
     DetachTag = 15,
-    StripTag = 16
+    StripTag = 16,
 }
 
 #[enum_dispatch]
@@ -199,7 +204,7 @@ pub enum Response {
     DetachTagResponse(DetachTagResponse),
     StripTagResponse(StripTagResponse),
     PeerQueryResponse(PeerQueryResponse),
-    ClientQueryResponse(ClientQueryResponse)
+    ClientQueryResponse(ClientQueryResponse),
 }
 
 impl fmt::Debug for Response {
@@ -271,6 +276,14 @@ impl ReqCode for Request {
     }
 }
 
+impl ReqCode for Data {
+    fn request_code(&self) -> RequestCode {
+        match self {
+            Data::ClientQueryData(_) => RequestCode::ClientQuery,
+        }
+    }
+}
+
 //[TODO] Create using a Procedural Macro
 #[derive(Clone)]
 #[enum_dispatch(ReqMetadata, Encode)]
@@ -309,7 +322,8 @@ impl_res_metadata!(
     DetachTagResponse,
     StripTagResponse,
     PeerQueryResponse,
-    ClientQueryResponse
+    ClientQueryResponse,
+    ClientQueryData
 );
 
 impl_req_metadata!(
@@ -331,14 +345,16 @@ impl_req_metadata!(
     ClientQuery
 );
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum DataCode {
     ClientQueryData = 1,
     PeerQueryData = 2,
 }
 
+#[derive(Debug, Clone)]
+#[enum_dispatch(ResMetadata, Encode)]
 pub enum Data {
-    ClientQueryData(ClientQueryData)
+    ClientQueryData(ClientQueryData),
 }
 
 #[derive(Debug)]

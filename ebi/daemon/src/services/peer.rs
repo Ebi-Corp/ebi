@@ -59,7 +59,7 @@ async fn wait_call(mut watcher: Receiver<Uuid>, request_uuid: Uuid) {
 
 impl Service<(NodeId, Data)> for PeerService {
     type Response = ();
-    type Error = ();
+    type Error = PeerError;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -67,7 +67,31 @@ impl Service<(NodeId, Data)> for PeerService {
     }
 
     fn call(&mut self, req: (NodeId, Data)) -> Self::Future {
-        todo!();
+        let peers = self.peers.clone();
+        Box::pin(async move {
+            let r_lock = peers.read().await;
+            let r_peer = r_lock.get(&req.0).ok_or_else(|| PeerError::PeerNotFound)?;
+            let sender = r_peer.sender.clone();
+            let mut payload = Vec::new();
+            let request_uuid = Uuid::now_v7();
+
+            let req = req.1.clone();
+            // [TODO] metadata of requests should be checked for in a validation service
+            req.metadata().as_mut().unwrap().request_uuid = request_uuid.as_bytes().to_vec();
+            req.encode(&mut payload).unwrap();
+            let mut buffer = vec![0; HEADER_SIZE];
+            buffer[0] = MessageType::Data as u8;
+            buffer[1] = req.request_code() as u8;
+            let size = payload.len() as u64;
+            buffer[2..HEADER_SIZE].copy_from_slice(&size.to_le_bytes());
+            buffer.extend_from_slice(&payload);
+
+            sender
+                .send((request_uuid, buffer))
+                .await
+                .map_err(|_| PeerError::ConnectionClosed)?;
+            Ok(())
+        })
     }
 }
 
@@ -95,7 +119,6 @@ impl Service<(NodeId, Request)> for PeerService {
             let req = req.1.clone();
             // [TODO] metadata of requests should be checked for in a validation service
             req.metadata().as_mut().unwrap().request_uuid = request_uuid.as_bytes().to_vec();
-            req.metadata().as_mut().unwrap().relayed = true; // All requests sent via the PeerService are relayed
             req.encode(&mut payload).unwrap();
             let mut buffer = vec![0; HEADER_SIZE];
             buffer[0] = MessageType::Request as u8;

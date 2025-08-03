@@ -30,7 +30,7 @@ impl FileSummary {
 }
 
 impl FileSummary {
-    fn from(value: FileRef, shelf: ShelfOwner) -> Self {
+    pub fn from(value: FileRef, shelf: ShelfOwner) -> Self {
         let file = value.file_ref.read().unwrap();
         FileSummary::new(shelf, file.path.clone(), file.metadata.clone())
     }
