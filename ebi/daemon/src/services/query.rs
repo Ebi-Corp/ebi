@@ -117,8 +117,8 @@ impl Retriever {
         let shelf_owner = self.shelf_owner.clone();
         let tags = shelf_r.root.tags.iter().flat_map(|(tag_ref, set)| {
             let cached = self.cache.retrieve(tag_ref);
-            if cached.is_some() {
-                cached.unwrap()
+            if let Some(cached) = cached {
+                cached
             } else {
                 set.iter()
                     .map(|f| OrderedFileSummary {
@@ -130,8 +130,8 @@ impl Retriever {
         });
         let dtags = shelf_r.root.dtag_files.iter().flat_map(|(tag_ref, set)| {
             let cached = self.cache.retrieve(tag_ref);
-            if cached.is_some() {
-                cached.unwrap()
+            if let Some(cached) = cached {
+                cached
             } else {
                 set.iter()
                     .map(|f| OrderedFileSummary {
@@ -155,9 +155,9 @@ impl Service<PeerQuery> for QueryService {
     }
 
     fn call(&mut self, req: PeerQuery) -> Self::Future {
-        let mut workspace_srv = self.workspace_srv.clone();
-        let mut peer_srv = self.peer_srv.clone();
-        let node_id = self.daemon_info.id.clone();
+        let workspace_srv = self.workspace_srv.clone();
+        let peer_srv = self.peer_srv.clone();
+        let node_id = self.daemon_info.id;
         Box::pin(async move {});
         todo!();
     }
@@ -175,7 +175,7 @@ impl Service<ClientQuery> for QueryService {
     fn call(&mut self, req: ClientQuery) -> Self::Future {
         let mut workspace_srv = self.workspace_srv.clone();
         let mut peer_srv = self.peer_srv.clone();
-        let node_id = self.daemon_info.id.clone();
+        let node_id = self.daemon_info.id;
         let cache = self.cache.clone();
         Box::pin(async move {
             let query_str = req.query;
@@ -269,7 +269,7 @@ impl Service<ClientQuery> for QueryService {
             for s_id in local_shelves {
                 let workspace = workspace.clone();
                 let workspace_r = workspace.read().await;
-                let shelf = workspace_r.shelves.get(&s_id).clone();
+                let shelf = workspace_r.shelves.get(&s_id);
                 if let Some(shelf) = shelf {
                     let shelf_r = shelf.read().await;
                     let shelf_type = shelf_r.shelf_type.clone();
@@ -642,12 +642,7 @@ impl Service<ClientQuery> for QueryService {
                                                         )}).collect(),
                                                         metadata: Some(ResponseMetadata {
                                                             return_code: ReturnCode::Success as u32,
-                                                            error_data: match res_metadata.error_data {
-                                                                Some(err) => {
-                                                                    Some(err)
-                                                                },
-                                                                None => None
-                                                            },
+                                                            error_data: res_metadata.error_data,
                                                             request_uuid: Uuid::now_v7().into(),
                                                         })
                                                     }))).await;

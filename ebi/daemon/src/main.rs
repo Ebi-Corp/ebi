@@ -224,7 +224,7 @@ async fn handle_client<U: AsyncReadExt + Unpin, B: AsyncWriteExt + Unpin>(
         println!("size: {}", size);
         let mut buffer = vec![0u8; size as usize];
         let _bytes_read = match r_socket.read_exact(&mut buffer).await {
-            Ok(n) if n == 0 => 0,
+            Ok(0) => 0,
             Ok(n) => n,
             Err(e) => {
                 println!("{:?}", e);

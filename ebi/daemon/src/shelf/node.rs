@@ -64,7 +64,7 @@ impl Node {
     }
 
     pub fn attach(&mut self, tag: TagRef, file: FileRef) -> bool {
-        let set = self.tags.entry(tag).or_insert_with(|| BTreeSet::new());
+        let set = self.tags.entry(tag).or_default();
         set.insert(file.clone())
     }
 

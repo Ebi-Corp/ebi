@@ -38,20 +38,20 @@ macro_rules! return_error {
 }
 
 pub async fn try_get_workspace(
-    rawid: &Vec<u8>,
+    rawid: &[u8],
     srv: &mut WorkspaceService,
 ) -> Result<WorkspaceRef, ReturnCode> {
-    let id = uuid(rawid.clone()).map_err(|_| ReturnCode::WorkspaceNotFound)?; //[!] Change to UuidParseErr //[?] Why ??
+    let id = uuid(rawid.to_owned()).map_err(|_| ReturnCode::WorkspaceNotFound)?; //[!] Change to UuidParseErr //[?] Why ??
     srv.call(GetWorkspace { id }).await
 }
 
 async fn try_get_shelf(
-    w_rawid: &Vec<u8>,
-    s_rawid: &Vec<u8>,
+    w_rawid: &[u8],
+    s_rawid: &[u8],
     srv: &mut WorkspaceService,
 ) -> Result<ShelfRef, ReturnCode> {
-    let shelf_id = uuid(s_rawid.clone()).map_err(|_| ReturnCode::ShelfNotFound)?;
-    let workspace_id = uuid(w_rawid.clone()).map_err(|_| ReturnCode::WorkspaceNotFound)?;
+    let shelf_id = uuid(s_rawid.to_owned()).map_err(|_| ReturnCode::ShelfNotFound)?;
+    let workspace_id = uuid(w_rawid.to_owned()).map_err(|_| ReturnCode::WorkspaceNotFound)?;
     srv.call(GetShelf {
         shelf_id,
         workspace_id,
@@ -60,12 +60,12 @@ async fn try_get_shelf(
 }
 
 async fn try_get_tag(
-    w_rawid: &Vec<u8>,
-    t_rawid: &Vec<u8>,
+    w_rawid: &[u8],
+    t_rawid: &[u8],
     srv: &mut WorkspaceService,
 ) -> Result<TagRef, ReturnCode> {
-    let tag_id = uuid(t_rawid.clone()).map_err(|_| ReturnCode::ShelfNotFound)?;
-    let workspace_id = uuid(w_rawid.clone()).map_err(|_| ReturnCode::WorkspaceNotFound)?;
+    let tag_id = uuid(t_rawid.to_owned()).map_err(|_| ReturnCode::ShelfNotFound)?;
+    let workspace_id = uuid(w_rawid.to_owned()).map_err(|_| ReturnCode::WorkspaceNotFound)?;
     srv.call(GetTag {
         tag_id,
         workspace_id,
@@ -78,10 +78,10 @@ pub fn parse_peer_id(bytes: &[u8]) -> Result<NodeId, ()> {
     NodeId::from_bytes(bytes).map_err(|_| ())
 }
 
-fn val_tag_id(workspace: &RwLockReadGuard<Workspace>, bytes: &Vec<u8>) -> Option<TagId> {
-    uuid(bytes.clone())
+fn val_tag_id(workspace: &RwLockReadGuard<Workspace>, bytes: &[u8]) -> Option<TagId> {
+    uuid(bytes.to_owned())
         .ok()
-        .filter(|id| workspace.tags.contains_key(&id))
+        .filter(|id| workspace.tags.contains_key(id))
 }
 
 //[!] Handle poisoned locks
@@ -148,7 +148,7 @@ impl Service<Response> for RpcService {
         let responses = self.responses.clone();
         let broadcast = self.broadcast.clone();
         Box::pin(async move {
-            let res = Response::from(req);
+            let res = req;
             let metadata = res.metadata().ok_or(())?;
             let uuid = Uuid::try_from(metadata.request_uuid).map_err(|_| ())?;
             responses.write().await.insert(uuid, res);
@@ -817,12 +817,7 @@ impl Service<AddShelf> for RpcService {
                 }
             };
 
-            let encoded_shelf_id;
-            if shelf_id.is_some() {
-                encoded_shelf_id = Some(shelf_id.unwrap().as_bytes().to_vec());
-            } else {
-                encoded_shelf_id = None;
-            }
+            let encoded_shelf_id = shelf_id.map(|shelf_id| shelf_id.as_bytes().to_vec());
 
             if return_code == ReturnCode::Success {
                 notify_queue.write().await.push_back({
@@ -1045,9 +1040,9 @@ impl Service<EditWorkspace> for RpcService {
                 return_code: return_code as u32,
                 error_data: None,
             };
-            return Ok(EditWorkspaceResponse {
+            Ok(EditWorkspaceResponse {
                 metadata: Some(metadata),
-            });
+            })
         })
     }
 }
@@ -1184,10 +1179,10 @@ impl Service<CreateWorkspace> for RpcService {
                 return_code: ReturnCode::Success as u32,
                 error_data: None,
             };
-            return Ok(CreateWorkspaceResponse {
+            Ok(CreateWorkspaceResponse {
                 workspace_id: id.as_bytes().to_vec(),
                 metadata: Some(metadata),
-            });
+            })
         })
     }
 }
@@ -1275,10 +1270,10 @@ impl Service<CreateTag> for RpcService {
                 return_code: ReturnCode::Success as u32, // Success
                 error_data: None,
             };
-            return Ok(CreateTagResponse {
+            Ok(CreateTagResponse {
                 tag_id: Some(id.as_bytes().to_vec()),
                 metadata: Some(metadata),
-            });
+            })
         })
     }
 }

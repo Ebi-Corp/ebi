@@ -50,7 +50,7 @@ impl Formula {
                 .cloned()
                 .collect::<HashSet<TagId>>(),
             Formula::UnaryExpression(_, x) => x.get_tags(),
-            Formula::Proposition(p) => HashSet::from([p.tag_id.clone()]),
+            Formula::Proposition(p) => HashSet::from([p.tag_id]),
         }
     }
 }
@@ -82,7 +82,7 @@ pub struct Query {
 
 impl Query {
     pub fn new(query: &str, order: FileOrder, ascending: bool) -> Result<Self, QueryErr> {
-        let formula = tag_query::expression(query).or_else(|_err| Err(QueryErr::SyntaxError))??;
+        let formula = tag_query::expression(query).map_err(|_err| QueryErr::SyntaxError)??;
 
         let mut query = Query {
             formula,
@@ -158,7 +158,7 @@ impl Query {
                 let a = ret_srv
                     .get_all()
                     .await
-                    .map_err(|err| QueryErr::RuntimeError(err))?;
+                    .map_err(QueryErr::RuntimeError)?;
                 let b = Box::pin(Query::recursive_evaluate(*x.clone(), ret_srv)).await?;
                 let x: BTreeSet<OrderedFileSummary> = a.difference(&b).cloned().collect();
                 Ok(x)
@@ -166,11 +166,11 @@ impl Query {
             Formula::Proposition(p) => ret_srv
                 .get(p.tag_id)
                 .await
-                .map_err(|err| QueryErr::RuntimeError(err)),
+                .map_err(QueryErr::RuntimeError),
         }
     }
 
-    fn simplify(&mut self) -> () {
+    fn simplify(&mut self) {
         loop {
             let simplified_formula = Formula::recursive_simplify(self.formula.clone());
             self.formula = simplified_formula.0;
@@ -186,7 +186,7 @@ impl Formula {
         // Further simplification is possible but NP-Hard
         match formula {
             Formula::Proposition(_) => {
-                return (formula, false);
+                (formula, false)
             }
             Formula::BinaryExpression(BinaryOp::AND, x, y) => match *x.clone() {
                 Formula::Proposition(p) => match *y {
@@ -211,7 +211,7 @@ impl Formula {
                         }
                         let simplified_a = Formula::recursive_simplify(*a.clone());
                         let simplified_b = Formula::recursive_simplify(*b.clone());
-                        return (
+                        (
                             Formula::BinaryExpression(
                                 BinaryOp::AND,
                                 Box::new(Formula::Proposition(p)),
@@ -222,7 +222,7 @@ impl Formula {
                                 )),
                             ),
                             simplified_a.1 || simplified_b.1,
-                        );
+                        )
                     }
                     // Idempotency Law: A AND A ⊨ A
                     Formula::Proposition(Proposition { tag_id }) => {
@@ -230,26 +230,26 @@ impl Formula {
                             return (Formula::Proposition(Proposition { tag_id: p.tag_id }), true);
                         }
                         let simplified_y = Formula::recursive_simplify(*y.clone());
-                        return (
+                        (
                             Formula::BinaryExpression(
                                 BinaryOp::OR,
                                 Box::new(Formula::Proposition(p)),
                                 Box::new(simplified_y.0),
                             ),
                             simplified_y.1,
-                        );
+                        )
                     }
                     _ => {
                         let simplified_x = Formula::recursive_simplify(*x.clone());
                         let simplified_y = Formula::recursive_simplify(*y.clone());
-                        return (
+                        (
                             Formula::BinaryExpression(
                                 BinaryOp::AND,
                                 Box::new(simplified_x.0),
                                 Box::new(simplified_y.0),
                             ),
                             simplified_x.1 || simplified_y.1,
-                        );
+                        )
                     }
                 },
                 Formula::BinaryExpression(BinaryOp::OR, a, b) => match *y {
@@ -274,7 +274,7 @@ impl Formula {
                         }
                         let simplified_a = Formula::recursive_simplify(*a.clone());
                         let simplified_b = Formula::recursive_simplify(*b.clone());
-                        return (
+                        (
                             Formula::BinaryExpression(
                                 BinaryOp::AND,
                                 Box::new(Formula::BinaryExpression(
@@ -285,19 +285,19 @@ impl Formula {
                                 Box::new(Formula::Proposition(p)),
                             ),
                             simplified_a.1 || simplified_b.1,
-                        );
+                        )
                     }
                     _ => {
                         let simplified_x = Formula::recursive_simplify(*x.clone());
                         let simplified_y = Formula::recursive_simplify(*y.clone());
-                        return (
+                        (
                             Formula::BinaryExpression(
                                 BinaryOp::AND,
                                 Box::new(simplified_x.0),
                                 Box::new(simplified_y.0),
                             ),
                             simplified_x.1 || simplified_y.1,
-                        );
+                        )
                     }
                 },
                 // De Morgan's Law: (NOT A) AND (NOT B) ⊨ NOT (A OR B)
@@ -362,7 +362,7 @@ impl Formula {
                         }
                         let simplified_a = Formula::recursive_simplify(*a.clone());
                         let simplified_b = Formula::recursive_simplify(*b.clone());
-                        return (
+                        (
                             Formula::BinaryExpression(
                                 BinaryOp::OR,
                                 Box::new(Formula::Proposition(p)),
@@ -373,7 +373,7 @@ impl Formula {
                                 )),
                             ),
                             simplified_a.1 || simplified_b.1,
-                        );
+                        )
                     }
                     // Idempotency Law: A OR A ⊨ A
                     Formula::Proposition(Proposition { tag_id }) => {
@@ -381,26 +381,26 @@ impl Formula {
                             return (Formula::Proposition(Proposition { tag_id: p.tag_id }), true);
                         }
                         let simplified_y = Formula::recursive_simplify(*y.clone());
-                        return (
+                        (
                             Formula::BinaryExpression(
                                 BinaryOp::OR,
                                 Box::new(Formula::Proposition(p)),
                                 Box::new(simplified_y.0),
                             ),
                             simplified_y.1,
-                        );
+                        )
                     }
                     _ => {
                         let simplified_x = Formula::recursive_simplify(*x.clone());
                         let simplified_y = Formula::recursive_simplify(*y.clone());
-                        return (
+                        (
                             Formula::BinaryExpression(
                                 BinaryOp::OR,
                                 Box::new(simplified_x.0),
                                 Box::new(simplified_y.0),
                             ),
                             simplified_x.1 || simplified_y.1,
-                        );
+                        )
                     }
                 },
                 Formula::BinaryExpression(BinaryOp::AND, a, b) => match *y {
@@ -425,7 +425,7 @@ impl Formula {
                         }
                         let simplified_a = Formula::recursive_simplify(*a.clone());
                         let simplified_b = Formula::recursive_simplify(*b.clone());
-                        return (
+                        (
                             Formula::BinaryExpression(
                                 BinaryOp::OR,
                                 Box::new(Formula::BinaryExpression(
@@ -436,19 +436,19 @@ impl Formula {
                                 Box::new(Formula::Proposition(p)),
                             ),
                             simplified_a.1 || simplified_b.1,
-                        );
+                        )
                     }
                     _ => {
                         let simplified_x = Formula::recursive_simplify(*x.clone());
                         let simplified_y = Formula::recursive_simplify(*y.clone());
-                        return (
+                        (
                             Formula::BinaryExpression(
                                 BinaryOp::OR,
                                 Box::new(simplified_x.0),
                                 Box::new(simplified_y.0),
                             ),
                             simplified_x.1 || simplified_y.1,
-                        );
+                        )
                     }
                 },
                 // De Morgan's Law: (NOT A) OR (NOT B) ⊨ NOT (A AND B)

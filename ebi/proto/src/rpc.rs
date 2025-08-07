@@ -83,7 +83,7 @@ pub enum ReturnCode {
     WorkspaceNameEmpty = 304,
     ShelfCreationIOError = 501,
     PathNotDir = 502,
-    ParseError = isize::MAX,
+    ParseError = i32::MAX as isize
 }
 
 pub fn parse_code(code: u32) -> ReturnCode {

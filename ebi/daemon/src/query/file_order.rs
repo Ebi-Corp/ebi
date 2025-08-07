@@ -32,41 +32,7 @@ impl Eq for OrderedFileSummary {}
 
 impl PartialOrd for OrderedFileSummary {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        match self.order {
-            FileOrder::Name => Some(
-                self.file_summary
-                    .path
-                    .file_name()
-                    .unwrap()
-                    .cmp(other.file_summary.path.file_name().unwrap()),
-            ),
-            FileOrder::Created => Some(
-                self.file_summary
-                    .metadata
-                    .created
-                    .cmp(&other.file_summary.metadata.created),
-            ),
-            FileOrder::Modified => Some(
-                self.file_summary
-                    .metadata
-                    .modified
-                    .cmp(&other.file_summary.metadata.modified),
-            ),
-            FileOrder::Accessed => Some(
-                self.file_summary
-                    .metadata
-                    .accessed
-                    .cmp(&other.file_summary.metadata.accessed),
-            ),
-            FileOrder::Size => Some(
-                self.file_summary
-                    .metadata
-                    .size
-                    .cmp(&other.file_summary.metadata.size),
-            ),
-
-            FileOrder::Unordered => None,
-        }
+        Some(self.cmp(other))
     }
 }
 
