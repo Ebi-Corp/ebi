@@ -76,8 +76,8 @@ struct Proposition {
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Query {
     formula: Formula,
-    order: FileOrder,
-    ascending: bool,
+    pub order: FileOrder,
+    pub ascending: bool,
 }
 
 impl Query {
