@@ -1,9 +1,12 @@
 pub mod file_order;
 use crate::query::file_order::{FileOrder, OrderedFileSummary};
+use crate::services::query::Retriever;
 use crate::tag::TagId;
-use crate::workspace::{TagErr, WorkspaceId};
+use rand_chacha::ChaCha12Rng;
+use scalable_cuckoo_filter::{DefaultHasher, ScalableCuckooFilter};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashSet};
+use std::sync::Arc;
 
 peg::parser! {
     grammar tag_query() for str {
@@ -70,12 +73,11 @@ struct Proposition {
 }
 
 //[/] Own implementation of decode can enforce that BTreeSet contains files of the specified FileOrder
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Query {
     formula: Formula,
     order: FileOrder,
     ascending: bool,
-    result: Option<BTreeSet<OrderedFileSummary>>,
 }
 
 impl Query {
@@ -86,7 +88,6 @@ impl Query {
             formula,
             ascending,
             order,
-            result: None,
         };
         query.simplify();
         Ok(query)
@@ -97,132 +98,73 @@ impl Query {
     }
     pub fn may_hold(
         &mut self,
-        tags: &HashSet<TagId>, // Tags that may be present in a shelf (can contain false positives)
+        tags: &ScalableCuckooFilter<TagId, DefaultHasher, ChaCha12Rng>, // Tags that may be present in a shelf (can contain false positives)
     ) -> bool {
         self.formula.may_hold(tags)
     }
 
     //[!] Tags should be Validated inside the QueryService
 
-    pub async fn evaluate<R>(
+    pub async fn evaluate(
         //[/] Only local shelves
         &mut self,
-        workspace_id: WorkspaceId,
-        ret_service: R,
-    ) -> Result<BTreeSet<OrderedFileSummary>, QueryErr>
-    where
-        R: RetrieveService + Clone,
-    {
-        Query::recursive_evaluate(self.formula.clone(), workspace_id, ret_service.clone()).await
+        retriever: Retriever,
+    ) -> Result<BTreeSet<OrderedFileSummary>, QueryErr> {
+        Query::recursive_evaluate(self.formula.clone(), Arc::new(retriever)).await
     }
 
-    async fn recursive_evaluate<R>(
+    async fn recursive_evaluate(
         formula: Formula,
-        workspace_id: WorkspaceId,
-        ret_service: R,
-    ) -> Result<BTreeSet<OrderedFileSummary>, QueryErr>
-    where
-        R: RetrieveService + Clone,
-    {
+        ret_srv: Arc<Retriever>,
+    ) -> Result<BTreeSet<OrderedFileSummary>, QueryErr> {
         match formula {
             Formula::BinaryExpression(BinaryOp::AND, x, y) => match (*x.clone(), *y.clone()) {
                 (_, Formula::UnaryExpression(UnaryOp::NOT, b)) => {
-                    let a = Box::pin(Query::recursive_evaluate(
-                        *x.clone(),
-                        workspace_id,
-                        ret_service.clone(),
-                    ))
-                    .await?;
-                    let b = Box::pin(Query::recursive_evaluate(
-                        *b.clone(),
-                        workspace_id,
-                        ret_service.clone(),
-                    ))
-                    .await?;
+                    let a =
+                        Box::pin(Query::recursive_evaluate(*x.clone(), ret_srv.clone())).await?;
+                    let b =
+                        Box::pin(Query::recursive_evaluate(*b.clone(), ret_srv.clone())).await?;
                     let x: BTreeSet<OrderedFileSummary> = a.difference(&b).cloned().collect();
                     Ok(x)
                 }
                 (Formula::UnaryExpression(UnaryOp::NOT, a), _) => {
-                    let a = Box::pin(Query::recursive_evaluate(
-                        *a.clone(),
-                        workspace_id,
-                        ret_service.clone(),
-                    ))
-                    .await?;
-                    let b = Box::pin(Query::recursive_evaluate(
-                        *y.clone(),
-                        workspace_id,
-                        ret_service.clone(),
-                    ))
-                    .await?;
+                    let a =
+                        Box::pin(Query::recursive_evaluate(*a.clone(), ret_srv.clone())).await?;
+                    let b =
+                        Box::pin(Query::recursive_evaluate(*y.clone(), ret_srv.clone())).await?;
                     let x: BTreeSet<OrderedFileSummary> = b.difference(&a).cloned().collect();
                     Ok(x)
                 }
                 (a, b) => {
-                    let a = Box::pin(Query::recursive_evaluate(
-                        a.clone(),
-                        workspace_id,
-                        ret_service.clone(),
-                    ))
-                    .await?;
-                    let b = Box::pin(Query::recursive_evaluate(
-                        b.clone(),
-                        workspace_id,
-                        ret_service.clone(),
-                    ))
-                    .await?;
+                    let a = Box::pin(Query::recursive_evaluate(a.clone(), ret_srv.clone())).await?;
+                    let b = Box::pin(Query::recursive_evaluate(b.clone(), ret_srv.clone())).await?;
                     let x: BTreeSet<OrderedFileSummary> = a.intersection(&b).cloned().collect();
                     Ok(x)
                 }
             },
             Formula::BinaryExpression(BinaryOp::OR, x, y) => {
-                let a = Box::pin(Query::recursive_evaluate(
-                    *x.clone(),
-                    workspace_id,
-                    ret_service.clone(),
-                ))
-                .await?;
-                let b = Box::pin(Query::recursive_evaluate(
-                    *y.clone(),
-                    workspace_id,
-                    ret_service.clone(),
-                ))
-                .await?;
+                let a = Box::pin(Query::recursive_evaluate(*x.clone(), ret_srv.clone())).await?;
+                let b = Box::pin(Query::recursive_evaluate(*y.clone(), ret_srv.clone())).await?;
                 let x: BTreeSet<OrderedFileSummary> = a.union(&b).cloned().collect();
                 Ok(x)
             }
             Formula::BinaryExpression(BinaryOp::XOR, x, y) => {
-                let a = Box::pin(Query::recursive_evaluate(
-                    *x.clone(),
-                    workspace_id,
-                    ret_service.clone(),
-                ))
-                .await?;
-                let b = Box::pin(Query::recursive_evaluate(
-                    *y.clone(),
-                    workspace_id,
-                    ret_service.clone(),
-                ))
-                .await?;
+                let a = Box::pin(Query::recursive_evaluate(*x.clone(), ret_srv.clone())).await?;
+                let b = Box::pin(Query::recursive_evaluate(*y.clone(), ret_srv.clone())).await?;
                 let x: BTreeSet<OrderedFileSummary> = a.symmetric_difference(&b).cloned().collect();
                 Ok(x)
             }
             Formula::UnaryExpression(UnaryOp::NOT, x) => {
-                let a = ret_service
+                let a = ret_srv
                     .get_all()
                     .await
                     .map_err(|err| QueryErr::RuntimeError(err))?;
-                let b = Box::pin(Query::recursive_evaluate(
-                    *x.clone(),
-                    workspace_id,
-                    ret_service,
-                ))
-                .await?;
+                let b = Box::pin(Query::recursive_evaluate(*x.clone(), ret_srv)).await?;
                 let x: BTreeSet<OrderedFileSummary> = a.difference(&b).cloned().collect();
                 Ok(x)
             }
-            Formula::Proposition(p) => ret_service
-                .get_tagged(p.tag_id, workspace_id)
+            Formula::Proposition(p) => ret_srv
+                .get(p.tag_id)
                 .await
                 .map_err(|err| QueryErr::RuntimeError(err)),
         }
@@ -601,7 +543,7 @@ impl Formula {
         }
     }
 
-    fn may_hold(&self, tags: &HashSet<TagId>) -> bool {
+    fn may_hold(&self, tags: &ScalableCuckooFilter<TagId, DefaultHasher, ChaCha12Rng>) -> bool {
         match self {
             Formula::BinaryExpression(BinaryOp::AND, x, y) => {
                 // Both tags must be present
@@ -642,14 +584,5 @@ pub enum QueryErr {
 #[derive(Debug)]
 pub enum RetrieveErr {
     CacheError,
-}
-
-pub trait RetrieveService {
-    async fn get_tagged(
-        &self,
-        tag_id: TagId,
-        workspace_id: WorkspaceId,
-    ) -> Result<BTreeSet<OrderedFileSummary>, RetrieveErr>;
-
-    async fn get_all(&self) -> Result<BTreeSet<OrderedFileSummary>, RetrieveErr>;
+    TagParseError,
 }
