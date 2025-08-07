@@ -163,7 +163,7 @@ impl Service<GetShelf> for WorkspaceService {
             if let Some(shelf) = workspace.clone().read().await.shelves.get(&req.shelf_id) {
                 Ok(shelf.clone())
             } else {
-                return Err(ReturnCode::ShelfNotFound);
+                Err(ReturnCode::ShelfNotFound)
             }
         })
     }
@@ -241,15 +241,14 @@ impl Service<AssignShelf> for WorkspaceService {
             let shelf_ref = match node_path.get_mut(&req.path) {
                 Some(ex_shelf_id) => {
                     // [/] Unwraps are safe as workspace and shelf id are known to exist here
-                    shelf_id = ex_shelf_id.clone();
-                    let workspace_id = shelf_assignment
+                    shelf_id = *ex_shelf_id;
+                    let workspace_id = *shelf_assignment
                         .read()
                         .await
                         .get(ex_shelf_id)
                         .unwrap()
                         .first()
-                        .unwrap()
-                        .clone();
+                        .unwrap();
                     workspaces
                         .read()
                         .await
@@ -263,21 +262,21 @@ impl Service<AssignShelf> for WorkspaceService {
                         .clone()
                 }
                 None => {
-                    let path = PathBuf::from(req.path.clone());
+                    let path = req.path.clone();
                     let Ok(shelf) = Shelf::new(
                         req.remote,
                         path,
                         req.name.unwrap_or_else(|| {
-                            PathBuf::from(req.path.clone())
+                            req.path.clone()
                                 .components()
-                                .last()
+                                .next_back()
                                 .and_then(|comp| comp.as_os_str().to_str())
                                 .unwrap_or_default()
                                 .to_string()
                         }),
                         ShelfOwner::Node(req.node_id),
                         None,
-                        req.description.unwrap_or_else(|| "".to_string()),
+                        req.description.unwrap_or_default(),
                     ) else {
                         return Err(ReturnCode::ShelfCreationIOError);
                     };
@@ -295,7 +294,7 @@ impl Service<AssignShelf> for WorkspaceService {
             let mut shelf_assignment_w = shelf_assignment.write().await;
             shelf_assignment_w
                 .entry(shelf_id)
-                .and_modify(|v| v.push(req.workspace_id.clone()))
+                .and_modify(|v| v.push(req.workspace_id))
                 .or_insert(Vec::from(&[req.workspace_id]));
 
             drop(shelf_assignment_w);
@@ -366,7 +365,7 @@ impl Service<GetTag> for WorkspaceService {
             if let Some(tag) = workspace.clone().read().await.tags.get(&req.tag_id) {
                 Ok(tag.clone())
             } else {
-                return Err(ReturnCode::TagNotFound);
+                Err(ReturnCode::TagNotFound)
             }
         })
     }

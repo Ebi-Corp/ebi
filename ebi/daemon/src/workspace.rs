@@ -38,7 +38,7 @@ impl Workspace {
         parent: Option<TagRef>,
     ) -> Result<TagId, ReturnCode> {
         let id = Uuid::now_v7();
-        if self.lookup.get(&name).is_some() {
+        if self.lookup.contains_key(&name) {
             return Err(ReturnCode::TagNameDuplicate);
         }
         let tag = Tag {
@@ -47,9 +47,9 @@ impl Workspace {
             name: name.clone(),
             parent,
         };
-        self.lookup.insert(name, id.clone());
+        self.lookup.insert(name, id);
         self.tags.insert(
-            id.clone(),
+            id,
             TagRef {
                 tag_ref: Arc::new(std::sync::RwLock::new(tag)),
             },
@@ -58,7 +58,7 @@ impl Workspace {
     }
 
     pub fn get_tag(&mut self, name: &str) -> Result<TagRef, TagErr> {
-        let id = self.lookup.get(&name.to_string());
+        let id = self.lookup.get(name);
         if let Some(id) = id {
             let tag_ref = self.tags.get(id).cloned();
             Ok(tag_ref.unwrap())
@@ -67,14 +67,14 @@ impl Workspace {
         }
     }
 
-    pub async fn refresh(&mut self, _shelf: ShelfId, _change: ChangeSummary) -> () {
+    pub async fn refresh(&mut self, _shelf: ShelfId, _change: ChangeSummary) {
         todo!();
     }
 
     // Private function to be used in refresh
     fn get_or_create(&mut self, tag_data: TagData) -> TagRef {
         match self.lookup.get(&tag_data.name) {
-            Some(tag_id) => self.tags.get(&tag_id).unwrap().clone(),
+            Some(tag_id) => self.tags.get(tag_id).unwrap().clone(),
             None => {
                 let tag_id = self
                     .create_tag(tag_data.priority, tag_data.name, None)

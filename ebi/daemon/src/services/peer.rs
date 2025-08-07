@@ -70,7 +70,7 @@ impl Service<(NodeId, Data)> for PeerService {
         let peers = self.peers.clone();
         Box::pin(async move {
             let r_lock = peers.read().await;
-            let r_peer = r_lock.get(&req.0).ok_or_else(|| PeerError::PeerNotFound)?;
+            let r_peer = r_lock.get(&req.0).ok_or(PeerError::PeerNotFound)?;
             let sender = r_peer.sender.clone();
             let mut payload = Vec::new();
             let request_uuid = Uuid::now_v7();
@@ -109,7 +109,7 @@ impl Service<(NodeId, Request)> for PeerService {
         let responses = self.responses.clone();
         Box::pin(async move {
             let r_lock = peers.read().await;
-            let r_peer = r_lock.get(&req.0).ok_or_else(|| PeerError::PeerNotFound)?;
+            let r_peer = r_lock.get(&req.0).ok_or(PeerError::PeerNotFound)?;
             let sender = r_peer.sender.clone();
             let watcher = r_peer.watcher.clone();
             drop(r_lock);

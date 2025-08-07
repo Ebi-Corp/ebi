@@ -94,7 +94,7 @@ impl Shelf {
         let shelf = Shelf {
             shelf_type,
             shelf_owner,
-            config: config.unwrap_or(ShelfConfig::default()),
+            config: config.unwrap_or_default(),
             filter_tags: generate_tag_filter(), // [TODO] Filter parameters (size, ...) should be configurable
             info: ShelfInfo {
                 id,
@@ -149,8 +149,8 @@ impl ShelfInfo {
             .to_string_lossy()
             .to_string();
         let default_description = "".to_string();
-        let name = name.unwrap_or_else(|| default_name);
-        let description = description.unwrap_or_else(|| default_description);
+        let name = name.unwrap_or(default_name);
+        let description = description.unwrap_or(default_description);
         ShelfInfo {
             id,
             name,
@@ -185,13 +185,13 @@ impl ShelfData {
             .tags
             .get(&tag)
             .cloned()
-            .unwrap_or_else(|| BTreeSet::<FileRef>::new());
+            .unwrap_or(BTreeSet::<FileRef>::new());
         let mut dres = self
             .root
             .dtag_files
             .get(&tag)
             .cloned()
-            .unwrap_or_else(|| BTreeSet::<FileRef>::new());
+            .unwrap_or(BTreeSet::<FileRef>::new());
         res.append(&mut dres);
         res
     }
@@ -223,7 +223,7 @@ impl ShelfData {
                 let child = curr_node
                     .directories
                     .remove(&dir)
-                    .ok_or_else(|| UpdateErr::PathNotFound)?;
+                    .ok_or(UpdateErr::PathNotFound)?;
 
                 // Store the current node (ownership moved)
                 node_v.push((dir.to_path_buf(), curr_node));
@@ -236,7 +236,7 @@ impl ShelfData {
         let file = curr_node
             .files
             .get(&path)
-            .ok_or_else(|| UpdateErr::FileNotFound)?;
+            .ok_or(UpdateErr::FileNotFound)?;
         let file = file.clone();
         let res = file.file_ref.write().unwrap().attach(tag.clone());
 
@@ -270,7 +270,7 @@ impl ShelfData {
                 let child = curr_node
                     .directories
                     .remove(&dir)
-                    .ok_or_else(|| UpdateErr::PathNotFound)?;
+                    .ok_or(UpdateErr::PathNotFound)?;
                 // Store the current node (ownership moved)
                 node_v.push((dir.to_path_buf(), curr_node));
 
@@ -282,7 +282,7 @@ impl ShelfData {
         let file = curr_node
             .files
             .get(&path)
-            .ok_or_else(|| UpdateErr::FileNotFound)?;
+            .ok_or(UpdateErr::FileNotFound)?;
         let file = file.clone();
         let res = file.file_ref.write().unwrap().detach(tag.clone());
         for (pbuf, mut node) in node_v.into_iter().rev() {
@@ -309,7 +309,7 @@ impl ShelfData {
             let child = curr_node
                 .directories
                 .get_mut(&dir)
-                .ok_or_else(|| UpdateErr::PathNotFound)?;
+                .ok_or(UpdateErr::PathNotFound)?;
             if child.dtags.contains(&dtag) {
                 dtagged_parent = true;
             }
@@ -329,7 +329,7 @@ impl ShelfData {
             let child = curr_node
                 .directories
                 .remove(&dir)
-                .ok_or_else(|| UpdateErr::PathNotFound)?;
+                .ok_or(UpdateErr::PathNotFound)?;
             // Store the current node (ownership moved)
             node_v.push((dir.to_path_buf(), curr_node));
             // Move to the child node
@@ -351,14 +351,14 @@ impl ShelfData {
                 let set = node
                     .dtag_files
                     .entry(dtag)
-                    .or_insert_with(|| BTreeSet::new());
+                    .or_default();
                 files.iter().for_each(|f| {
                     set.insert(f.clone());
                 });
             }
 
             add_dtag_files(node, dtag, files.clone());
-            return files;
+            files
         }
 
         let files = recursive_attach(&mut curr_node, dtag.clone());
@@ -367,7 +367,7 @@ impl ShelfData {
             let set = node
                 .dtag_files
                 .entry(dtag.clone())
-                .or_insert_with(|| BTreeSet::new());
+                .or_insert_with(BTreeSet::new);
             set.append(&mut files.clone());
             let child = std::mem::replace(&mut curr_node, node);
             curr_node.directories.insert(pbuf, child);
@@ -392,7 +392,7 @@ impl ShelfData {
             let child = curr_node
                 .directories
                 .get_mut(&dir)
-                .ok_or_else(|| UpdateErr::PathNotFound)?;
+                .ok_or( UpdateErr::PathNotFound)?;
             if child.dtags.contains(&dtag) {
                 dtagged_parent = true;
             }
@@ -412,7 +412,7 @@ impl ShelfData {
             let child = curr_node
                 .directories
                 .remove(&dir)
-                .ok_or_else(|| UpdateErr::PathNotFound)?;
+                .ok_or( UpdateErr::PathNotFound)?;
             // Store the current node (ownership moved)
             node_v.push((dir.to_path_buf(), curr_node));
             // Move to the child node
@@ -437,36 +437,30 @@ impl ShelfData {
 
             fn remove_dtag_files(node: &mut Node, dtag: TagRef, files: BTreeSet<FileRef>) {
                 let set = node.dtag_files.get_mut(&dtag);
-                match set {
-                    Some(set) => {
-                        files.iter().for_each(|f| {
-                            set.remove(f);
-                        });
-                        if set.is_empty() {
-                            node.dtag_files.remove(&dtag);
-                        }
+                if let Some(set) = set {
+                    files.iter().for_each(|f| {
+                        set.remove(f);
+                    });
+                    if set.is_empty() {
+                        node.dtag_files.remove(&dtag);
                     }
-                    None => (), // Critical Internal Error
                 }
             }
 
             remove_dtag_files(node, dtag, files.clone());
-            return files;
+            files
         }
 
         let files = recursive_detach(&mut curr_node, dtag.clone());
 
         for (pbuf, mut node) in node_v.into_iter().rev() {
             let set = node.dtag_files.get_mut(&dtag.clone());
-            match set {
-                Some(set) => {
-                    files.iter().for_each(|f| {
-                        set.remove(f);
-                    });
-                    let child = std::mem::replace(&mut curr_node, node);
-                    curr_node.directories.insert(pbuf, child);
-                }
-                None => (), // Internal Error
+            if let Some(set) = set {
+                files.iter().for_each(|f| {
+                    set.remove(f);
+                });
+                let child = std::mem::replace(&mut curr_node, node);
+                curr_node.directories.insert(pbuf, child);
             }
         }
 
@@ -489,7 +483,7 @@ impl ShelfData {
             let child = curr_node
                 .directories
                 .get_mut(&dir)
-                .ok_or_else(|| UpdateErr::PathNotFound)?;
+                .ok_or(UpdateErr::PathNotFound)?;
             curr_node = child;
         }
 
@@ -527,7 +521,7 @@ pub fn merge<T: Clone + Ord>(mut files: Vec<BTreeSet<T>>) -> BTreeSet<T> {
     }
 
     while files.len() > 1 {
-        let mut next_round = Vec::with_capacity((files.len() + 1) / 2);
+        let mut next_round = Vec::with_capacity(files.len().div_ceil(2));
         let mut chunks = files.chunks_exact(2);
 
         if let Some(remainder) = chunks.remainder().first() {
