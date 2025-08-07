@@ -35,7 +35,7 @@ macro_rules! generate_request_match {
                         let req = <$req_ty>::decode(&$buffer[..]).unwrap();
                         if let Ok(response) = $service.call(req).await {
                             let mut payload = Vec::new();
-                            ebi_proto::rpc::Message::encode(&response, &mut payload);
+                            let _ = ebi_proto::rpc::Message::encode(&response, &mut payload);
                             let mut response_buf = vec![0; HEADER_SIZE];
                             response_buf[0] = MessageType::Response as u8;
                             response_buf[1] = RequestCode::[<$req_ty>]  as u8;

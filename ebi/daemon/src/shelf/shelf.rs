@@ -6,7 +6,7 @@ use iroh::NodeId;
 use rand_chacha::{ChaCha12Rng, rand_core::SeedableRng};
 use scalable_cuckoo_filter::{ScalableCuckooFilter, ScalableCuckooFilterBuilder};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashSet};
+use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::io;
 use std::path::PathBuf;
@@ -95,8 +95,7 @@ impl Shelf {
             shelf_type,
             shelf_owner,
             config: config.unwrap_or(ShelfConfig::default()),
-            filter_tags: generate_tag_filter(), // [!] these values should be set
-            // more carefully and be configurable
+            filter_tags: generate_tag_filter(), // [TODO] Filter parameters (size, ...) should be configurable
             info: ShelfInfo {
                 id,
                 name,
@@ -107,6 +106,7 @@ impl Shelf {
         Ok(shelf)
     }
 }
+
 pub fn generate_tag_filter() -> TagFilter {
     let builder = ScalableCuckooFilterBuilder::new();
     let rng = ChaCha12Rng::seed_from_u64(SEED);
@@ -116,8 +116,8 @@ pub fn generate_tag_filter() -> TagFilter {
 
 #[derive(Debug)]
 pub struct ShelfData {
-    root: Node,
-    root_path: PathBuf,
+    pub root: Node,
+    pub root_path: PathBuf,
 }
 
 impl PartialEq for ShelfData {
@@ -166,6 +166,17 @@ impl ShelfData {
             root: Node::new(path.clone())?,
             root_path: path.clone(),
         })
+    }
+
+    pub async fn files(&self) -> BTreeSet<FileRef> {
+        let tag_trees: Vec<BTreeSet<FileRef>> = self
+            .root
+            .tags
+            .values()
+            .cloned()
+            .chain(self.root.dtag_files.values().cloned())
+            .collect();
+        merge(tag_trees)
     }
 
     pub async fn retrieve(&self, tag: TagRef) -> BTreeSet<FileRef> {
@@ -504,4 +515,41 @@ pub enum UpdateErr {
     PathNotFound,
     FileNotFound,
     PathNotDir,
+}
+
+pub fn merge<T: Clone + Ord>(mut files: Vec<BTreeSet<T>>) -> BTreeSet<T> {
+    //[?] Is the tournament-style Merge-Sort approach the most efficient method ??
+    //[/] BTreeSets are not guaranteed to be the same size
+    //[TODO] Time & Space Complexity analysis
+
+    if files.is_empty() {
+        return BTreeSet::<T>::new();
+    }
+
+    while files.len() > 1 {
+        let mut next_round = Vec::with_capacity((files.len() + 1) / 2);
+        let mut chunks = files.chunks_exact(2);
+
+        if let Some(remainder) = chunks.remainder().first() {
+            next_round.push(remainder.clone());
+        }
+
+        for chunk in chunks.by_ref() {
+            //[TODO] Parallelise merge
+            let a = &chunk[0];
+            let b = &chunk[1];
+
+            // Merging the smaller set into the larger one is more efficient
+            let merged_tree = if a.len() <= b.len() {
+                b.union(a).cloned().collect()
+            } else {
+                a.union(b).cloned().collect()
+            };
+            next_round.push(merged_tree);
+        }
+
+        files = next_round;
+    }
+
+    files[0].clone()
 }
