@@ -147,7 +147,7 @@ impl Retriever {
 
 impl Service<PeerQuery> for QueryService {
     type Response = PeerQueryResponse;
-    type Error = (); //[!] Query Request Errors
+    type Error = ReturnCode;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -155,11 +155,131 @@ impl Service<PeerQuery> for QueryService {
     }
 
     fn call(&mut self, req: PeerQuery) -> Self::Future {
-        let workspace_srv = self.workspace_srv.clone();
-        let peer_srv = self.peer_srv.clone();
+        let mut workspace_srv = self.workspace_srv.clone();
         let node_id = self.daemon_info.id;
-        Box::pin(async move {});
-        todo!();
+        let cache = self.cache.clone();
+        Box::pin(async move {
+            let Ok(workspace) = try_get_workspace(&req.workspace_id, &mut workspace_srv).await
+            else {
+                return Err(ReturnCode::WorkspaceNotFound);
+            };
+
+            let serialized_query = req.query;
+            let config = bincode::config::standard(); // [TODO] this should be set globally
+            let (query, _): (Query, usize) = borrow_decode_from_slice(&serialized_query, config).map_err(|_| ReturnCode::MalformedRequest)?; //[!] Decode Error 
+
+            let file_order = query.order.clone();
+            
+            let shelves = &workspace.read().await.shelves;
+            let mut local_shelves = HashSet::<ShelfId>::new();
+            for (shelf_id, shelf) in shelves {
+                let shelf_r = shelf.read().await;
+                let shelf_owner = shelf_r.shelf_owner.clone();
+                drop(shelf_r);
+                match shelf_owner {
+                    ShelfOwner::Node(node_owner) => {
+                        if node_owner == node_id {
+                            local_shelves.insert(*shelf_id);
+                        }
+                    }
+                    ShelfOwner::Sync(_) => {} // [?] Should PeerQuery deal with Sync shelves ?? 
+                }
+            }
+
+            let mut local_futures = JoinSet::new();
+            for s_id in local_shelves {
+                let workspace = workspace.clone();
+                let workspace_r = workspace.read().await;
+                let shelf = workspace_r.shelves.get(&s_id);
+                if let Some(shelf) = shelf {
+                    let shelf_r = shelf.read().await;
+                    let shelf_type = shelf_r.shelf_type.clone();
+                    let workspace = workspace.clone();
+                    let cache = cache.clone();
+                    let shelf_owner = shelf_r.shelf_owner.clone();
+                    let file_order = file_order.clone();
+                    let mut query = query.clone();
+                    match shelf_type {
+                        ShelfType::Remote => {
+                            continue;
+                        }
+                        ShelfType::Local(data) => {
+                            local_futures.spawn(async move {
+                                let retriever = Retriever::new(
+                                    workspace,
+                                    cache,
+                                    shelf_owner,
+                                    data.clone(),
+                                    file_order,
+                                );
+                                query.evaluate(retriever).await
+                            });
+                        }
+                    }
+                }
+            }
+
+            let mut errors = Vec::new();
+            let mut files = Vec::new();
+
+            while let Some(result) = local_futures.join_next().await {
+                match result {
+                    Err(err) => errors.push(format!(
+                        "[{:?}] Thread error: {:?}",
+                        node_id,
+                        err
+                    )),
+                    Ok(result) => match result {
+                        Ok(res) => files.push(res),
+                        Err(QueryErr::SyntaxError) => {
+                            errors.push(format!(
+                                "[{:?}] Query Parse Error ",
+                                node_id.as_bytes().to_vec()
+                            ));
+                        }
+                        Err(QueryErr::ParseError) => {
+                            errors.push(format!(
+                                "[{:?}] Tag Parse Error ",
+                                node_id.as_bytes().to_vec()
+                            ));
+                        }
+                        Err(QueryErr::RuntimeError(ret_err)) => {
+                            errors.push(format!(
+                                "[{:?}] Runtime Error: {:?}",
+                                node_id.as_bytes().to_vec(),
+                                ret_err
+                            ));
+                        }
+                    },
+                }
+            }
+
+            let files: BTreeSet<OrderedFileSummary> = merge(files);
+            if let Ok(files) = encode_to_vec(&files, config).map_err(|_| ReturnCode::ParseError) {
+                Ok(PeerQueryResponse {
+                    files,
+                    metadata: Some(ResponseMetadata {
+                            request_uuid: Uuid::now_v7().into(),
+                            return_code: ReturnCode::Success as u32, // [?] Should this always be success ?? 
+                            error_data: Some(ErrorData {
+                                error_data: errors
+                            })
+                        })
+                })
+            } else {
+                Ok(PeerQueryResponse {
+                    files: Vec::<u8>::new(),
+                    metadata: Some(ResponseMetadata {
+                            request_uuid: Uuid::now_v7().into(),
+                            return_code: ReturnCode::PeerServiceError as u32, // [!] Encode Error 
+                            error_data: Some(ErrorData {
+                                error_data: errors
+                            })
+                        })
+                })
+            }
+
+        })
     }
 }
 
@@ -307,7 +427,7 @@ impl Service<ClientQuery> for QueryService {
                         match result {
                             Err(err) => errors.push(format!(
                                 "[{:?}] Thread error: {:?}",
-                                node_tasks.get(&err.id()).unwrap(),
+                                node_id,
                                 err
                             )),
                             Ok(result) => match result {

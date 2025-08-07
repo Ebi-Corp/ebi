@@ -34,9 +34,8 @@ message PeerQuery { //[ ]
 }
 
 message PeerQueryResponse { //[ ] 
-  uint32 return_code = 1;
-  bytes files = 2;
-  ResponseMetadata metadata = 3;
+  bytes files = 1;
+  ResponseMetadata metadata = 2;
 }
 
 message ClientQueryResponse { //[ ] 
