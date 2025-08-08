@@ -10,7 +10,7 @@ message RequestMetadata {
 message ResponseMetadata {
   bytes request_uuid = 1;
   uint32 return_code = 2;
-  optional ErrorData error_data = 3;
+  optional ErrorData error_data = 3; //[!] Only used for queries, move into Response/Data ??
 }
 
 message ErrorData {
@@ -19,7 +19,7 @@ message ErrorData {
 
 //[#] Query Protocol 
 
-message ClientQuery { //[ ] 
+message ClientQuery { //[x] 
   string query = 1;
   FileOrd file_ord = 2;
   bytes workspace_id = 4;
@@ -27,24 +27,24 @@ message ClientQuery { //[ ]
   RequestMetadata metadata = 6;
 }
 
-message PeerQuery { //[ ] 
+message PeerQuery { //[x] 
   bytes query = 1;
   bytes workspace_id = 3;
   RequestMetadata metadata = 4;
 }
 
-message PeerQueryResponse { //[ ] 
+message PeerQueryResponse { //[x] 
   bytes files = 1;
   ResponseMetadata metadata = 2;
 }
 
-message ClientQueryResponse { //[ ] 
+message ClientQueryResponse { //[x] 
   bytes token = 1;
   uint32 packets = 2;
   ResponseMetadata metadata = 3;
 }
 
-message ClientQueryData { //[ ] 
+message ClientQueryData { //[x] 
   bytes token = 1;
   repeated File files = 2;
   ResponseMetadata metadata = 3;

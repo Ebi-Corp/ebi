@@ -1,30 +1,30 @@
 use crate::query::file_order::{FileOrder, OrderedFileSummary};
 use crate::query::{Query, QueryErr, RetrieveErr};
-use crate::services::cache::CacheServiceRef;
+use crate::services::cache::CacheService;
 use crate::services::peer::{PeerError, PeerService};
 use crate::services::rpc::{DaemonInfo, parse_peer_id, try_get_workspace};
-use crate::services::workspace::{WorkspaceService};
+use crate::services::workspace::WorkspaceService;
 use crate::shelf::file::FileSummary;
-use crate::shelf::shelf::{ShelfDataRef, ShelfId, ShelfOwner, ShelfType, merge};
+use crate::shelf::{ShelfDataRef, ShelfId, ShelfOwner, ShelfType, merge};
 use crate::tag::TagId;
 use crate::workspace::WorkspaceRef;
 use bincode::{serde::borrow_decode_from_slice, serde::encode_to_vec};
 use chrono::{DateTime, Utc};
 use ebi_proto::rpc::{
-    ClientQuery, ClientQueryData, Data, Empty, ErrorData, File,
-    FileMetadata, PeerQuery, PeerQueryResponse, Request, RequestMetadata, ResMetadata,
-    Response, ResponseMetadata, ReturnCode, UnixMetadata, WindowsMetadata, parse_code,
+    ClientQuery, ClientQueryData, Data, Empty, ErrorData, File, FileMetadata, PeerQuery, Request,
+    RequestMetadata, ResMetadata, Response, ResponseMetadata, ReturnCode, UnixMetadata,
+    WindowsMetadata, parse_code,
 };
 use iroh::NodeId;
 use std::collections::HashMap;
 use std::collections::{BTreeSet, HashSet};
+use std::vec;
 use std::{
     future::Future,
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
 };
-use std::vec;
 use tokio::task::JoinSet;
 use tower::Service;
 use uuid::Uuid;
@@ -33,17 +33,17 @@ type TaskID = u64;
 pub type TokenId = Uuid;
 
 #[derive(Clone)]
-struct QueryService {
-    peer_srv: PeerService,
-    cache: CacheServiceRef,
-    workspace_srv: WorkspaceService,
-    daemon_info: Arc<DaemonInfo>,
+pub struct QueryService {
+    pub peer_srv: PeerService,
+    pub cache: CacheService,
+    pub workspace_srv: WorkspaceService,
+    pub daemon_info: Arc<DaemonInfo>,
 }
 
 #[derive(Clone)]
 pub struct Retriever {
     workspace: WorkspaceRef,
-    cache: CacheServiceRef,
+    cache: CacheService,
     shelf_owner: ShelfOwner,
     shelf_data: ShelfDataRef,
     order: FileOrder,
@@ -52,7 +52,7 @@ pub struct Retriever {
 impl Retriever {
     pub fn new(
         workspace: WorkspaceRef,
-        cache: CacheServiceRef, //[?] Requires lock ??
+        cache: CacheService, //[?] Requires lock ??
         shelf_owner: ShelfOwner,
         shelf_data: ShelfDataRef,
         order: FileOrder,
@@ -146,7 +146,7 @@ impl Retriever {
 }
 
 impl Service<PeerQuery> for QueryService {
-    type Response = PeerQueryResponse;
+    type Response = (BTreeSet<OrderedFileSummary>, Vec<String>);
     type Error = ReturnCode;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
@@ -166,10 +166,11 @@ impl Service<PeerQuery> for QueryService {
 
             let serialized_query = req.query;
             let config = bincode::config::standard(); // [TODO] this should be set globally
-            let (query, _): (Query, usize) = borrow_decode_from_slice(&serialized_query, config).map_err(|_| ReturnCode::MalformedRequest)?; //[!] Decode Error 
+            let (query, _): (Query, usize) = borrow_decode_from_slice(&serialized_query, config)
+                .map_err(|_| ReturnCode::MalformedRequest)?; //[!] Decode Error 
 
             let file_order = query.order.clone();
-            
+
             let shelves = &workspace.read().await.shelves;
             let mut local_shelves = HashSet::<ShelfId>::new();
             for (shelf_id, shelf) in shelves {
@@ -182,7 +183,7 @@ impl Service<PeerQuery> for QueryService {
                             local_shelves.insert(*shelf_id);
                         }
                     }
-                    ShelfOwner::Sync(_) => {} // [?] Should PeerQuery deal with Sync shelves ?? 
+                    ShelfOwner::Sync(_) => {} // [?] Should PeerQuery deal with Sync shelves ??
                 }
             }
 
@@ -224,11 +225,7 @@ impl Service<PeerQuery> for QueryService {
 
             while let Some(result) = local_futures.join_next().await {
                 match result {
-                    Err(err) => errors.push(format!(
-                        "[{:?}] Thread error: {:?}",
-                        node_id,
-                        err
-                    )),
+                    Err(err) => errors.push(format!("[{:?}] Thread error: {:?}", node_id, err)),
                     Ok(result) => match result {
                         Ok(res) => files.push(res),
                         Err(QueryErr::SyntaxError) => {
@@ -255,30 +252,7 @@ impl Service<PeerQuery> for QueryService {
             }
 
             let files: BTreeSet<OrderedFileSummary> = merge(files);
-            if let Ok(files) = encode_to_vec(&files, config).map_err(|_| ReturnCode::ParseError) {
-                Ok(PeerQueryResponse {
-                    files,
-                    metadata: Some(ResponseMetadata {
-                            request_uuid: Uuid::now_v7().into(),
-                            return_code: ReturnCode::Success as u32, // [?] Should this always be success ?? 
-                            error_data: Some(ErrorData {
-                                error_data: errors
-                            })
-                        })
-                })
-            } else {
-                Ok(PeerQueryResponse {
-                    files: Vec::<u8>::new(),
-                    metadata: Some(ResponseMetadata {
-                            request_uuid: Uuid::now_v7().into(),
-                            return_code: ReturnCode::PeerServiceError as u32, // [!] Encode Error 
-                            error_data: Some(ErrorData {
-                                error_data: errors
-                            })
-                        })
-                })
-            }
-
+            Ok((files, errors))
         })
     }
 }
@@ -425,11 +399,9 @@ impl Service<ClientQuery> for QueryService {
 
                     while let Some(result) = local_futures.join_next().await {
                         match result {
-                            Err(err) => errors.push(format!(
-                                "[{:?}] Thread error: {:?}",
-                                node_id,
-                                err
-                            )),
+                            Err(err) => {
+                                errors.push(format!("[{:?}] Thread error: {:?}", node_id, err))
+                            }
                             Ok(result) => match result {
                                 Ok(res) => files.push(res),
                                 Err(QueryErr::SyntaxError) => {

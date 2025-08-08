@@ -1,5 +1,7 @@
 #![allow(dead_code)]
+use crate::services::cache::CacheService;
 use crate::services::peer::{Client, Peer, PeerService};
+use crate::services::query::QueryService;
 use crate::services::rpc::{DaemonInfo, RequestId, RpcService, TaskID};
 use crate::services::workspace::WorkspaceService;
 use anyhow::Result;
@@ -105,22 +107,31 @@ async fn main() -> Result<()> {
     let (broadcast, watcher) = watch::channel::<RequestId>(Uuid::now_v7());
     //[/] The Peer service subscribes to the ResponseHandler when a request is sent.
     //[/] It is then notified when a response is received so it can acquire the read lock on the Response map.
-
+    let daemon_info = Arc::new(DaemonInfo::new(id, "".to_string()));
+    let workspace_srv = WorkspaceService {
+        workspaces: Arc::new(RwLock::new(HashMap::new())),
+        shelf_assignment: Arc::new(RwLock::new(HashMap::new())),
+        paths: Arc::new(RwLock::new(HashMap::new())),
+    };
+    let peer_srv = PeerService {
+        peers: peers.clone(),
+        clients: clients.clone(),
+        responses: responses.clone(),
+    };
+    let query_srv = QueryService {
+        peer_srv: peer_srv.clone(),
+        cache: CacheService {},
+        workspace_srv: workspace_srv.clone(),
+        daemon_info: daemon_info.clone(),
+    };
     let service = ServiceBuilder::new().service(RpcService {
-        daemon_info: Arc::new(DaemonInfo::new(id, "".to_string())),
-        peer_srv: PeerService {
-            peers: peers.clone(),
-            clients: clients.clone(),
-            responses: responses.clone(),
-        },
+        daemon_info: daemon_info.clone(),
+        peer_srv: peer_srv.clone(),
+        workspace_srv: workspace_srv.clone(),
+        query_srv,
         responses: responses.clone(),
         notify_queue: notify_queue.clone(),
         tasks: tasks.clone(),
-        workspace_srv: WorkspaceService {
-            workspaces: Arc::new(RwLock::new(HashMap::new())),
-            shelf_assignment: Arc::new(RwLock::new(HashMap::new())),
-            paths: Arc::new(RwLock::new(HashMap::new())),
-        },
         broadcast: broadcast.clone(),
         watcher: watcher.clone(),
     });

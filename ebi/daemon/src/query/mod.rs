@@ -155,18 +155,12 @@ impl Query {
                 Ok(x)
             }
             Formula::UnaryExpression(UnaryOp::NOT, x) => {
-                let a = ret_srv
-                    .get_all()
-                    .await
-                    .map_err(QueryErr::RuntimeError)?;
+                let a = ret_srv.get_all().await.map_err(QueryErr::RuntimeError)?;
                 let b = Box::pin(Query::recursive_evaluate(*x.clone(), ret_srv)).await?;
                 let x: BTreeSet<OrderedFileSummary> = a.difference(&b).cloned().collect();
                 Ok(x)
             }
-            Formula::Proposition(p) => ret_srv
-                .get(p.tag_id)
-                .await
-                .map_err(QueryErr::RuntimeError),
+            Formula::Proposition(p) => ret_srv.get(p.tag_id).await.map_err(QueryErr::RuntimeError),
         }
     }
 
@@ -185,9 +179,7 @@ impl Formula {
     fn recursive_simplify(formula: Formula) -> (Formula, bool) {
         // Further simplification is possible but NP-Hard
         match formula {
-            Formula::Proposition(_) => {
-                (formula, false)
-            }
+            Formula::Proposition(_) => (formula, false),
             Formula::BinaryExpression(BinaryOp::AND, x, y) => match *x.clone() {
                 Formula::Proposition(p) => match *y {
                     Formula::BinaryExpression(BinaryOp::OR, a, b) => {

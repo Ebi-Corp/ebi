@@ -1,10 +1,12 @@
 use crate::services::peer::PeerService;
+use crate::services::query::QueryService;
 use crate::services::workspace::{
     AssignShelf, GetShelf, GetTag, GetWorkspace, RemoveWorkspace, UnassignShelf, WorkspaceService,
 };
-use crate::shelf::shelf::{ShelfId, ShelfOwner, ShelfRef, ShelfType, UpdateErr};
+use crate::shelf::{ShelfId, ShelfOwner, ShelfRef, ShelfType, UpdateErr};
 use crate::tag::{TagId, TagRef};
 use crate::workspace::{Workspace, WorkspaceRef};
+use bincode::serde::encode_to_vec;
 use ebi_proto::rpc::*;
 use iroh::NodeId;
 use std::collections::{HashMap, VecDeque};
@@ -91,6 +93,7 @@ pub struct RpcService {
     pub daemon_info: Arc<DaemonInfo>,
     pub peer_srv: PeerService,
     pub workspace_srv: WorkspaceService,
+    pub query_srv: QueryService,
     pub tasks: Arc<HashMap<TaskID, JoinHandle<()>>>,
 
     // [!] This should be Mutexes. reason about read-write ratio
@@ -154,6 +157,96 @@ impl Service<Response> for RpcService {
             responses.write().await.insert(uuid, res);
             broadcast.send(uuid).map_err(|_| ())?;
             Ok(())
+        })
+    }
+}
+
+impl Service<ClientQuery> for RpcService {
+    type Response = ClientQueryResponse;
+    type Error = ReturnCode;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, req: ClientQuery) -> Self::Future {
+        let mut query_srv = self.query_srv.clone();
+        Box::pin(async move {
+            let Some(metadata) = req.clone().metadata else {
+                return Err(ReturnCode::MalformedRequest);
+            };
+
+            match query_srv.call(req).await {
+                Ok((token, packets)) => Ok(ClientQueryResponse {
+                    token: token.as_bytes().to_vec(),
+                    packets,
+                    metadata: Some(ResponseMetadata {
+                        request_uuid: metadata.request_uuid,
+                        return_code: ReturnCode::Success as u32,
+                        error_data: None,
+                    }),
+                }),
+                Err(ret_code) => Ok(ClientQueryResponse {
+                    token: vec![0],
+                    packets: 0,
+                    metadata: Some(ResponseMetadata {
+                        request_uuid: metadata.request_uuid,
+                        return_code: ret_code as u32,
+                        error_data: None,
+                    }),
+                }),
+            }
+        })
+    }
+}
+
+impl Service<PeerQuery> for RpcService {
+    type Response = PeerQueryResponse;
+    type Error = ReturnCode;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, req: PeerQuery) -> Self::Future {
+        let mut query_srv = self.query_srv.clone();
+        Box::pin(async move {
+            let config = bincode::config::standard(); // [TODO] this should be set globally
+            match query_srv.call(req).await {
+                Ok((files, errors)) => {
+                    if let Ok(files) =
+                        encode_to_vec(&files, config).map_err(|_| ReturnCode::ParseError)
+                    {
+                        Ok(PeerQueryResponse {
+                            files,
+                            metadata: Some(ResponseMetadata {
+                                request_uuid: Uuid::now_v7().into(),
+                                return_code: ReturnCode::Success as u32, // [?] Should this always be success ??
+                                error_data: Some(ErrorData { error_data: errors }),
+                            }),
+                        })
+                    } else {
+                        Ok(PeerQueryResponse {
+                            files: Vec::<u8>::new(),
+                            metadata: Some(ResponseMetadata {
+                                request_uuid: Uuid::now_v7().into(),
+                                return_code: ReturnCode::PeerServiceError as u32, // [!] Encode Error
+                                error_data: Some(ErrorData { error_data: errors }),
+                            }),
+                        })
+                    }
+                }
+                Err(ret_code) => Ok(PeerQueryResponse {
+                    files: Vec::<u8>::new(),
+                    metadata: Some(ResponseMetadata {
+                        request_uuid: Uuid::now_v7().into(),
+                        return_code: ret_code as u32,
+                        error_data: None,
+                    }),
+                }),
+            }
         })
     }
 }
@@ -1074,7 +1167,7 @@ impl Service<GetShelves> for RpcService {
 
             let mut shelves = Vec::new();
             let workspace_r = workspace.read().await;
-            // [!] Can be changed with iter mut + impl Into<rpc::Shelf> for shelf::Shelf
+            // [!] Can be changed with iter mut + impl Into<rpc::Shelf> for shelf
             for (id, shelf) in &workspace_r.shelves {
                 let shelf_r = shelf.read().await;
                 let shelf_owner = shelf_r.shelf_owner.clone();
