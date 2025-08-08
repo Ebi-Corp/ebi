@@ -1,5 +1,5 @@
 use crate::shelf::file::FileRef;
-use crate::shelf::shelf::{Shelf, ShelfId};
+use crate::shelf::{Shelf, ShelfId};
 use crate::tag::{Tag, TagData, TagId, TagRef};
 use ebi_proto::rpc::ReturnCode;
 use std::collections::HashMap;

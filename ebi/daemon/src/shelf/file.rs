@@ -1,4 +1,4 @@
-use crate::shelf::shelf::ShelfOwner;
+use crate::shelf::ShelfOwner;
 use crate::tag::TagRef;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

@@ -1,4 +1,4 @@
-use crate::shelf::shelf::{Shelf, ShelfId, ShelfOwner, ShelfRef};
+use crate::shelf::{Shelf, ShelfId, ShelfOwner, ShelfRef};
 use crate::tag::{TagId, TagRef};
 use crate::workspace::{Workspace, WorkspaceId, WorkspaceRef};
 use ebi_proto::rpc::*;
@@ -267,7 +267,8 @@ impl Service<AssignShelf> for WorkspaceService {
                         req.remote,
                         path,
                         req.name.unwrap_or_else(|| {
-                            req.path.clone()
+                            req.path
+                                .clone()
                                 .components()
                                 .next_back()
                                 .and_then(|comp| comp.as_os_str().to_str())
