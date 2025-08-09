@@ -486,6 +486,7 @@ impl Service<DetachTag> for RpcService {
             let _shelf_config = shelf_r.config.clone();
             let shelf_owner = shelf_r.shelf_owner.clone();
             drop(shelf_r);
+            let tag_id = tag_ref.tag_ref.read().unwrap().id;
 
             //[/] Business Logic
             let return_code = {
@@ -503,8 +504,13 @@ impl Service<DetachTag> for RpcService {
                             //[TODO] Sync Notification
                         }
                         match result {
-                            Ok(true) => ReturnCode::Success,                          // Success
-                            Ok(false) => ReturnCode::NotTagged, // File not tagged
+                            Ok((true, true)) => {
+                                let mut shelf_w = shelf.write().await;
+                                shelf_w.filter_tags.remove(&tag_id); // [!] Might change based on cuckoo filter sync logic
+                                ReturnCode::Success
+                            }
+                            Ok((false, true)) => ReturnCode::Success,
+                            Ok((_, false)) => ReturnCode::NotTagged, // File not tagged
                             Err(UpdateErr::PathNotFound) => ReturnCode::PathNotFound, // Path not found
                             Err(UpdateErr::FileNotFound) => ReturnCode::FileNotFound, // File not found
                             Err(UpdateErr::PathNotDir) => ReturnCode::PathNotDir, // "Nothing ever happens" -Chudda
@@ -514,7 +520,7 @@ impl Service<DetachTag> for RpcService {
                         match shelf_owner {
                             ShelfOwner::Node(peer_id) => {
                                 match peer_srv.call((peer_id, Request::from(req))).await {
-                                    Ok(res) => parse_code(res.metadata().unwrap().return_code),
+                                    Ok(res) => parse_code(res.metadata().unwrap().return_code), // [!] Cuckoo filter should be updated with a sync mechanism
                                     Err(_) => ReturnCode::PeerServiceError, //[!] Generic error, expand with PeerService errors
                                 }
                             }
@@ -589,6 +595,7 @@ impl Service<AttachTag> for RpcService {
             let shelf_owner = shelf_r.shelf_owner.clone();
             let _shelf_config = shelf_r.config.clone();
             drop(shelf_r);
+            let tag_id = tag_ref.tag_ref.read().unwrap().id;
 
             //[/] Business Logic
             let return_code = {
@@ -606,8 +613,13 @@ impl Service<AttachTag> for RpcService {
                             //[TODO] Sync Notification
                         }
                         match result {
-                            Ok(true) => ReturnCode::Success,                          // Success
-                            Ok(false) => ReturnCode::TagAlreadyAttached, // File not tagged
+                            Ok((true, true)) => {
+                                let mut shelf_w = shelf.write().await;
+                                shelf_w.filter_tags.insert(&tag_id);
+                                ReturnCode::Success
+                            } // Success
+                            Ok((true, false)) => ReturnCode::Success,
+                            Ok((false, _)) => ReturnCode::TagAlreadyAttached, // File not tagged
                             Err(UpdateErr::PathNotFound) => ReturnCode::PathNotFound, // Path not found
                             Err(UpdateErr::FileNotFound) => ReturnCode::FileNotFound, // File not found
                             Err(UpdateErr::PathNotDir) => ReturnCode::PathNotDir, // "Nothing ever happens" -Chudda
@@ -617,7 +629,7 @@ impl Service<AttachTag> for RpcService {
                         match shelf_owner {
                             ShelfOwner::Node(peer_id) => {
                                 match peer_srv.call((peer_id, Request::from(req))).await {
-                                    Ok(res) => parse_code(res.metadata().unwrap().return_code),
+                                    Ok(res) => parse_code(res.metadata().unwrap().return_code), // [!] Cuckoo filter should be updated with a sync mechanism
                                     Err(_) => ReturnCode::PeerServiceError, //[!] Generic error, expand with PeerService errors
                                 }
                             }
