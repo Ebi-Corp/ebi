@@ -207,7 +207,8 @@ impl ShelfData {
         //[TODO] Run automatic tagging on all new or modified files in the shelf
     }
 
-    pub fn attach(&mut self, path: PathBuf, tag: TagRef) -> Result<bool, UpdateErr> {
+    pub fn attach(&mut self, path: PathBuf, tag: TagRef) -> Result<(bool, bool), UpdateErr> {
+        // [/] newly attached to (shelf, file)
         let stripped_path = path
             .strip_prefix(&self.root_path)
             .map_err(|_| UpdateErr::PathNotFound)?
@@ -237,21 +238,23 @@ impl ShelfData {
 
         let file = curr_node.files.get(&path).ok_or(UpdateErr::FileNotFound)?;
         let file = file.clone();
-        let res = file.file_ref.write().unwrap().attach(tag.clone());
+        let file_attached = file.file_ref.write().unwrap().attach(tag.clone());
+        let mut shelf_attached = false;
 
         for (pbuf, mut node) in node_v.into_iter().rev() {
-            if res {
-                node.attach(tag.clone(), file.clone());
+            if file_attached {
+                shelf_attached = node.attach(tag.clone(), file.clone());
             }
             let child = std::mem::replace(&mut curr_node, node);
             curr_node.directories.insert(pbuf, child);
         }
 
         self.root = curr_node;
-        Ok(res)
+        Ok((shelf_attached, file_attached))
     }
 
-    pub fn detach(&mut self, path: PathBuf, tag: TagRef) -> Result<bool, UpdateErr> {
+    pub fn detach(&mut self, path: PathBuf, tag: TagRef) -> Result<(bool, bool), UpdateErr> {
+        // [/] newly detached from (shelf, file)
         let stripped_path = path
             .strip_prefix(&self.root_path)
             .map_err(|_| UpdateErr::PathNotFound)?
@@ -280,20 +283,22 @@ impl ShelfData {
 
         let file = curr_node.files.get(&path).ok_or(UpdateErr::FileNotFound)?;
         let file = file.clone();
-        let res = file.file_ref.write().unwrap().detach(tag.clone());
+        let file_detached = file.file_ref.write().unwrap().detach(tag.clone());
+        let mut shelf_detached = false;
         for (pbuf, mut node) in node_v.into_iter().rev() {
-            if res {
-                node.detach(tag.clone(), Some(file.clone()));
+            if file_detached {
+                shelf_detached = node.detach(tag.clone(), Some(file.clone()));
             }
             let child = std::mem::replace(&mut curr_node, node);
             curr_node.directories.insert(pbuf, child);
         }
 
         self.root = curr_node;
-        Ok(res)
+        Ok((shelf_detached, file_detached))
     }
 
-    pub fn attach_dtag(&mut self, path: PathBuf, dtag: TagRef) -> Result<bool, UpdateErr> {
+    pub fn attach_dtag(&mut self, path: PathBuf, dtag: TagRef) -> Result<(bool, bool), UpdateErr> {
+        // [/] newly attached to (shelf, dir)
         let dpath = path
             .strip_prefix(&self.root_path)
             .map_err(|_| UpdateErr::PathNotFound)?;
@@ -312,12 +317,13 @@ impl ShelfData {
             curr_node = child;
         }
         if dtagged_parent {
-            return Ok(curr_node.attach_dtag(dtag.clone()));
+            return Ok((false, curr_node.attach_dtag(dtag.clone())));
         }
 
         let mut node_v: Vec<(PathBuf, Node)> = Vec::new();
         // Take ownership
         let mut curr_node = std::mem::take(&mut self.root);
+        let shelf_attached = !curr_node.dtag_files.contains_key(&dtag);
 
         // if dpath is none, dir must be self.root
         for dir in dpath.components() {
@@ -332,7 +338,7 @@ impl ShelfData {
             curr_node = child;
         }
 
-        let res = curr_node.attach_dtag(dtag.clone());
+        let dir_attached = curr_node.attach_dtag(dtag.clone());
 
         fn recursive_attach(node: &mut Node, dtag: TagRef) -> BTreeSet<FileRef> {
             let mut files = node.files.values().cloned().collect::<BTreeSet<FileRef>>();
@@ -370,10 +376,11 @@ impl ShelfData {
             f.file_ref.write().unwrap().attach_dtag(dtag.clone());
         });
 
-        Ok(res)
+        Ok((shelf_attached, dir_attached))
     }
 
-    pub fn detach_dtag(&mut self, path: PathBuf, dtag: TagRef) -> Result<bool, UpdateErr> {
+    pub fn detach_dtag(&mut self, path: PathBuf, dtag: TagRef) -> Result<(bool, bool), UpdateErr> {
+        // eliminated from (shelf, file)
         let dpath = path
             .strip_prefix(&self.root_path)
             .map_err(|_| UpdateErr::PathNotFound)?;
@@ -392,7 +399,7 @@ impl ShelfData {
             curr_node = child;
         }
         if dtagged_parent {
-            return Ok(curr_node.detach_dtag(dtag.clone()));
+            return Ok((false, curr_node.detach_dtag(dtag.clone())));
         }
 
         let mut node_v: Vec<(PathBuf, Node)> = Vec::new();
@@ -412,7 +419,7 @@ impl ShelfData {
             curr_node = child;
         }
 
-        let res = curr_node.detach_dtag(dtag.clone());
+        let dir_detached = curr_node.detach_dtag(dtag.clone());
 
         fn recursive_detach(node: &mut Node, dtag: TagRef) -> BTreeSet<FileRef> {
             // Stop detaching the dtag when encountering a child node already dtagged with it
@@ -461,7 +468,9 @@ impl ShelfData {
             f.file_ref.write().unwrap().detach_dtag(dtag.clone());
         });
 
-        Ok(res)
+        let shelf_detached = !self.root.dtag_files.contains_key(&dtag);
+
+        Ok((shelf_detached, dir_detached))
     }
 
     pub fn strip(&mut self, path: PathBuf, tag: TagRef) -> Result<(), UpdateErr> {
@@ -540,4 +549,3 @@ pub fn merge<T: Clone + Ord>(mut files: Vec<BTreeSet<T>>) -> BTreeSet<T> {
 
     files[0].clone()
 }
-

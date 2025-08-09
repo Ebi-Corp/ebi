@@ -1,5 +1,6 @@
 use crate::shelf::file::{File, FileMetadata, FileRef};
 use crate::tag::TagRef;
+use std::collections::hash_map::Entry;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io;
 use std::path::PathBuf;
@@ -64,8 +65,10 @@ impl Node {
     }
 
     pub fn attach(&mut self, tag: TagRef, file: FileRef) -> bool {
+        let existed = matches!(self.tags.entry(tag.clone()), Entry::Occupied(_));
         let set = self.tags.entry(tag).or_default();
-        set.insert(file.clone())
+        set.insert(file.clone());
+        !existed
     }
 
     pub fn detach(&mut self, tag: TagRef, file: Option<FileRef>) -> bool {
