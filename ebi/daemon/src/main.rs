@@ -4,6 +4,7 @@ use crate::services::peer::{Client, Peer, PeerService};
 use crate::services::query::QueryService;
 use crate::services::rpc::{DaemonInfo, RequestId, RpcService, TaskID};
 use crate::services::workspace::WorkspaceService;
+use crate::shelf::{ShelfId};
 use anyhow::Result;
 use ebi_proto::rpc::*;
 use iroh::{Endpoint, NodeId, SecretKey};
@@ -17,6 +18,7 @@ use tokio::sync::RwLock;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tower::{Service, ServiceBuilder};
+use std::path::PathBuf;
 use uuid::Uuid;
 
 mod query;
@@ -42,6 +44,7 @@ macro_rules! generate_request_match {
                             response_buf[0] = MessageType::Response as u8;
                             response_buf[1] = RequestCode::[<$req_ty>]  as u8;
                             let size = payload.len() as u64;
+                            println!("response size: {}", size);
                             response_buf[2..HEADER_SIZE].copy_from_slice(&size.to_le_bytes());
                             response_buf.extend_from_slice(&payload);
                             let _ = $socket.write_all(&response_buf).await;
@@ -51,7 +54,7 @@ macro_rules! generate_request_match {
                 Ok(_) => {
                     todo!();
                 }
-                Err(_) => {
+                Err(e) => {
                     println!("Unknown response code: {}", $msg_code);
                 }
             }
@@ -108,10 +111,12 @@ async fn main() -> Result<()> {
     //[/] The Peer service subscribes to the ResponseHandler when a request is sent.
     //[/] It is then notified when a response is received so it can acquire the read lock on the Response map.
     let daemon_info = Arc::new(DaemonInfo::new(id, "".to_string()));
+    let mut paths = HashMap::<NodeId, HashMap<PathBuf, ShelfId>>::new();
+    paths.insert(id, HashMap::new());
     let workspace_srv = WorkspaceService {
         workspaces: Arc::new(RwLock::new(HashMap::new())),
         shelf_assignment: Arc::new(RwLock::new(HashMap::new())),
-        paths: Arc::new(RwLock::new(HashMap::new())),
+        paths: Arc::new(RwLock::new(paths))
     };
     let peer_srv = PeerService {
         peers: peers.clone(),
@@ -142,9 +147,9 @@ async fn main() -> Result<()> {
                 let (mut read, mut write) = stream.into_split();
                 let (tx, mut rx) = mpsc::channel::<(Uuid, Vec<u8>)>(64);
                 let client = Client {
-                    hash: 0,
+                    id,
                     addr,
-                    send: tx.clone(),
+                    sender: tx.clone(),
                     watcher: watcher.clone()
                 };
                 clients.write().await.push(client);
@@ -253,6 +258,8 @@ async fn handle_client<U: AsyncReadExt + Unpin, B: AsyncWriteExt + Unpin>(
                     service,
                     w_socket,
                     CreateTag,
+                    ClientQuery,
+                    PeerQuery,
                     CreateWorkspace,
                     EditWorkspace,
                     GetWorkspaces,

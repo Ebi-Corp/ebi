@@ -42,9 +42,9 @@ pub struct Peer {
 }
 
 pub struct Client {
-    pub hash: u64,
+    pub id: NodeId,
     pub addr: SocketAddr,
-    pub send: Sender<(Uuid, Vec<u8>)>,
+    pub sender: Sender<(Uuid, Vec<u8>)>,
     pub watcher: Receiver<Uuid>,
 }
 
@@ -68,10 +68,19 @@ impl Service<(NodeId, Data)> for PeerService {
 
     fn call(&mut self, req: (NodeId, Data)) -> Self::Future {
         let peers = self.peers.clone();
+        let clients = self.clients.clone();
         Box::pin(async move {
-            let r_lock = peers.read().await;
-            let r_peer = r_lock.get(&req.0).ok_or(PeerError::PeerNotFound)?;
-            let sender = r_peer.sender.clone();
+            let sender = {
+                let c_lock = clients.read().await;
+                let r_client = c_lock.iter().find(|c| c.id == req.0);
+                if let Some(client) = r_client {
+                    client.sender.clone()
+                } else {
+                    let p_lock = peers.read().await;
+                    p_lock.get(&req.0).ok_or(PeerError::PeerNotFound)?.sender.clone()
+                }
+            };
+
             let mut payload = Vec::new();
             let request_uuid = Uuid::now_v7();
 

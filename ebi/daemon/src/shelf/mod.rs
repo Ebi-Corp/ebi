@@ -217,6 +217,7 @@ impl ShelfData {
         let mut node_v: Vec<(PathBuf, Node)> = Vec::new();
         // Take ownership
         let mut curr_node = std::mem::take(&mut self.root);
+        let shelf_attached = !self.root.tags.contains_key(&tag);
 
         // if stripped_path is none, file must be self.root
         if let Some(path) = stripped_path {
@@ -239,11 +240,10 @@ impl ShelfData {
         let file = curr_node.files.get(&path).ok_or(UpdateErr::FileNotFound)?;
         let file = file.clone();
         let file_attached = file.file_ref.write().unwrap().attach(tag.clone());
-        let mut shelf_attached = false;
 
         for (pbuf, mut node) in node_v.into_iter().rev() {
             if file_attached {
-                shelf_attached = node.attach(tag.clone(), file.clone());
+                node.attach(tag.clone(), file.clone());
             }
             let child = std::mem::replace(&mut curr_node, node);
             curr_node.directories.insert(pbuf, child);
