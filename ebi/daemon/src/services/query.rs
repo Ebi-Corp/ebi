@@ -1,7 +1,7 @@
 use crate::query::file_order::{FileOrder, OrderedFileSummary};
 use crate::query::{Query, QueryErr, RetrieveErr};
 use crate::services::cache::CacheService;
-use crate::services::peer::{PeerError, PeerService};
+use crate::services::peer::PeerService;
 use crate::services::rpc::{DaemonInfo, parse_peer_id, try_get_workspace};
 use crate::services::workspace::WorkspaceService;
 use crate::shelf::file::FileSummary;
@@ -9,11 +9,9 @@ use crate::shelf::{ShelfDataRef, ShelfId, ShelfOwner, ShelfType, merge};
 use crate::tag::TagId;
 use crate::workspace::WorkspaceRef;
 use bincode::{serde::borrow_decode_from_slice, serde::encode_to_vec};
-use chrono::{DateTime, Utc};
 use ebi_proto::rpc::{
-    ClientQuery, ClientQueryData, Data, Empty, ErrorData, File, FileMetadata, PeerQuery, Request,
-    RequestMetadata, ResMetadata, Response, ResponseMetadata, ReturnCode, UnixMetadata,
-    WindowsMetadata, parse_code,
+    ClientQuery, ClientQueryData, Data, ErrorData, File, PeerQuery, Request, RequestMetadata,
+    Response, ResponseMetadata, ReturnCode, parse_code,
 };
 use iroh::NodeId;
 use std::collections::HashMap;
@@ -73,31 +71,32 @@ impl Retriever {
             } else {
                 let shelf_r = self.shelf_data.read().await;
                 let shelf_owner = self.shelf_owner.clone();
-                let mut tags = if let Some(tag_set) = shelf_r.root.tags.get(tag_ref) {
-                    tag_set
-                        .iter()
-                        .map(|f| OrderedFileSummary {
-                            file_summary: FileSummary::from(f.clone(), shelf_owner.clone()),
-                            order: self.order.clone(),
-                        })
-                        .collect::<BTreeSet<OrderedFileSummary>>()
-                } else {
-                    BTreeSet::new()
-                };
-
-                let mut dtags = if let Some(dtag_set) = shelf_r.root.dtag_files.get(tag_ref) {
-                    dtag_set
-                        .iter()
-                        .map(|f| OrderedFileSummary {
-                            file_summary: FileSummary::from(f.clone(), shelf_owner.clone()),
-                            order: self.order.clone(),
-                        })
-                        .collect::<BTreeSet<OrderedFileSummary>>()
-                } else {
-                    BTreeSet::new()
-                };
-
+                let tags = shelf_r.root.tags.get(tag_ref).cloned(); // [\] we are cloning a set of pointers, which is reasonabily cheap, but this section might be analyzed with the respective non-clone version
+                let dtags = shelf_r.root.dtag_files.get(tag_ref).cloned();
                 drop(shelf_r);
+
+                let mut tags = match tags {
+                    Some(tag_set) => tag_set
+                        .iter()
+                        .map(|f| OrderedFileSummary {
+                            file_summary: FileSummary::from(f.clone(), shelf_owner.clone()),
+                            order: self.order.clone(),
+                        })
+                        .collect::<BTreeSet<OrderedFileSummary>>(),
+                    None => BTreeSet::new(),
+                };
+
+                let mut dtags = match dtags {
+                    Some(dtag_set) => dtag_set
+                        .iter()
+                        .map(|f| OrderedFileSummary {
+                            file_summary: FileSummary::from(f.clone(), shelf_owner.clone()),
+                            order: self.order.clone(),
+                        })
+                        .collect::<BTreeSet<OrderedFileSummary>>(),
+                    None => BTreeSet::new(),
+                };
+
                 if tags.len() >= dtags.len() {
                     tags.extend(dtags);
                     Ok(tags)
@@ -115,7 +114,11 @@ impl Retriever {
         //[!] Check cache
         let shelf_r = self.shelf_data.read().await;
         let shelf_owner = self.shelf_owner.clone();
-        let tags = shelf_r.root.tags.iter().flat_map(|(tag_ref, set)| {
+        let tags = shelf_r.root.tags.clone(); // [\] we are cloning a set of pointers, which is reasonabily cheap, but this section might be analyzed with the respective non-clone version
+        let dtags = shelf_r.root.dtag_files.clone();
+        drop(shelf_r);
+
+        let tags = tags.iter().flat_map(|(tag_ref, set)| {
             let cached = self.cache.retrieve(tag_ref);
             if let Some(cached) = cached {
                 cached
@@ -128,7 +131,7 @@ impl Retriever {
                     .collect::<BTreeSet<OrderedFileSummary>>()
             }
         });
-        let dtags = shelf_r.root.dtag_files.iter().flat_map(|(tag_ref, set)| {
+        let dtags = dtags.iter().flat_map(|(tag_ref, set)| {
             let cached = self.cache.retrieve(tag_ref);
             if let Some(cached) = cached {
                 cached
@@ -195,9 +198,10 @@ impl Service<PeerQuery> for QueryService {
                 if let Some(shelf) = shelf {
                     let shelf_r = shelf.read().await;
                     let shelf_type = shelf_r.shelf_type.clone();
+                    let shelf_owner = shelf_r.shelf_owner.clone();
+                    drop(shelf_r);
                     let workspace = workspace.clone();
                     let cache = cache.clone();
-                    let shelf_owner = shelf_r.shelf_owner.clone();
                     let file_order = file_order.clone();
                     let mut query = query.clone();
                     match shelf_type {
@@ -259,7 +263,7 @@ impl Service<PeerQuery> for QueryService {
 
 impl Service<ClientQuery> for QueryService {
     type Response = (TokenId, u32);
-    type Error = ebi_proto::rpc::ReturnCode; //[!] Query Request Errors
+    type Error = ReturnCode; //[!] Query Request Errors
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -268,7 +272,7 @@ impl Service<ClientQuery> for QueryService {
 
     fn call(&mut self, req: ClientQuery) -> Self::Future {
         let mut workspace_srv = self.workspace_srv.clone();
-        let mut peer_srv = self.peer_srv.clone();
+        let peer_srv = self.peer_srv.clone();
         let node_id = self.daemon_info.id;
         let cache = self.cache.clone();
         Box::pin(async move {
@@ -303,12 +307,12 @@ impl Service<ClientQuery> for QueryService {
                 drop(shelf_r);
                 match shelf_owner {
                     ShelfOwner::Node(node_owner) => {
-                        if node_owner != node_id {
-                            if query.may_hold(&filter) {
+                        if query.may_hold(&filter) {
+                            if node_owner != node_id {
                                 nodes.insert(node_owner);
+                            } else {
+                                local_shelves.insert(*shelf_id);
                             }
-                        } else {
-                            local_shelves.insert(*shelf_id);
                         }
                     }
                     ShelfOwner::Sync(_) => {} // [TODO] Sync version
@@ -342,23 +346,90 @@ impl Service<ClientQuery> for QueryService {
             let ser_token: Vec<u8> = token.into();
 
             //[/] Return ClientQueryResponse in RpcService before asynchronously calling QueryService
+            //
 
-            let mut futures = JoinSet::<Result<Response, PeerError>>::new(); //[?] Move into Local/Remote Check Logic ??
+            struct TaskResult {
+                files: BTreeSet<OrderedFileSummary>,
+                ret_code: ReturnCode,
+                errors: Vec<String>,
+            }
+
+            let mut futures = JoinSet::<TaskResult>::new();
             let mut node_tasks = HashMap::<tokio::task::Id, NodeId>::new();
-            for node in nodes {
+
+            let peer_query_task = |node_id: NodeId, peer_req: Request| {
+                let mut errors = Vec::<String>::new();
+                let mut files = BTreeSet::<OrderedFileSummary>::new();
                 let mut peer_srv = peer_srv.clone();
+
+                async move {
+                    let ret_code = match peer_srv.call((node_id, peer_req)).await {
+                        Err(err) => {
+                            errors.push(format!("[{:?}] Peer error: {:?}", node_id, err));
+                            ReturnCode::PeerServiceError
+                        }
+                        Ok(Response::PeerQueryResponse(peer_res)) => {
+                            let mut res_metadata = peer_res.metadata.unwrap();
+                            match parse_code(res_metadata.return_code) {
+                                ReturnCode::Success => {
+                                    //[?] Correct way to deserialize res.files into BTreeSet<OrderedFileSummary> ??
+                                    match borrow_decode_from_slice::<BTreeSet<OrderedFileSummary>, _>(
+                                        &peer_res.files,
+                                        config,
+                                    ) {
+                                        Ok((deserialized_files, _)) => {
+                                            files = deserialized_files;
+                                            if let Some(e) = res_metadata.error_data.as_mut() {
+                                                errors.append(&mut e.error_data);
+                                            }
+                                            ReturnCode::Success
+                                        }
+                                        Err(e) => {
+                                            errors.push(format!(
+                                                "[{:?}] Deserialization error: {:?}",
+                                                node_id, e
+                                            ));
+                                            ReturnCode::PeerServiceError
+                                        }
+                                    }
+                                }
+                                return_code => {
+                                    let error_str = match res_metadata.error_data {
+                                        Some(data) => data.error_data.join("\n"),
+                                        None => "Unknown error".to_string(),
+                                    };
+                                    errors.push(format!(
+                                        "[{:?}] Query Error: {:?} Error data: {:?}",
+                                        node_id, return_code, error_str
+                                    ));
+                                    return_code
+                                }
+                            }
+                        }
+                        Ok(res) => {
+                            errors.push(format!(
+                                "[{:?}]: Unexpected response type - {:?}",
+                                node_id, res
+                            ));
+                            ReturnCode::PeerServiceError
+                        }
+                    };
+                    TaskResult {
+                        files,
+                        ret_code,
+                        errors,
+                    }
+                }
+            };
+
+            for node in nodes {
                 let peer_req = peer_query.clone();
-                let id = futures
-                    .spawn(async move { peer_srv.call((node, peer_req)).await })
-                    .id();
+                let id = futures.spawn(peer_query_task(node, peer_req)).id();
                 node_tasks.insert(id, node);
             }
 
-            fn encode_timestamp(opt_dt: Option<DateTime<Utc>>) -> Option<i64> {
-                opt_dt.map_or_else(|| None, |dt| Some(dt.timestamp()))
-            }
-
-            //Local Query
+            // Prepare a thread for retriever for each local shelf
+            // [TODO] thread / retriever heuristics
             let mut local_futures = JoinSet::new();
             for s_id in local_shelves {
                 let workspace = workspace.clone();
@@ -366,118 +437,86 @@ impl Service<ClientQuery> for QueryService {
                 let shelf = workspace_r.shelves.get(&s_id);
                 if let Some(shelf) = shelf {
                     let shelf_r = shelf.read().await;
-                    let shelf_type = shelf_r.shelf_type.clone();
-                    let workspace = workspace.clone();
-                    let cache = cache.clone();
                     let shelf_owner = shelf_r.shelf_owner.clone();
-                    let file_order = file_order.clone();
+                    let shelf_type = shelf_r.shelf_type.clone();
+                    drop(shelf_r);
                     let mut query = query.clone();
                     match shelf_type {
                         ShelfType::Remote => {
                             continue;
                         }
                         ShelfType::Local(data) => {
-                            local_futures.spawn(async move {
-                                let retriever = Retriever::new(
-                                    workspace,
-                                    cache,
-                                    shelf_owner,
-                                    data.clone(),
-                                    file_order,
-                                );
-                                query.evaluate(retriever).await
-                            });
+                            let retriever = Retriever::new(
+                                workspace.clone(),
+                                cache.clone(),
+                                shelf_owner,
+                                data.clone(),
+                                file_order.clone(),
+                            );
+                            local_futures.spawn(async move { query.evaluate(retriever).await });
                         }
                     }
                 }
             }
 
+            let local_query_task = async move {
+                let mut files = Vec::<BTreeSet<OrderedFileSummary>>::new();
+                let mut errors = Vec::<String>::new();
+
+                while let Some(result) = local_futures.join_next().await {
+                    match result {
+                        Err(err) => errors.push(format!("[{:?}] Thread error: {:?}", node_id, err)),
+                        Ok(result) => match result {
+                            Ok(res) => files.push(res),
+                            Err(QueryErr::SyntaxError) => {
+                                errors.push(format!(
+                                    "[{:?}] Query Parse Error ",
+                                    node_id.as_bytes().to_vec()
+                                ));
+                            }
+                            Err(QueryErr::ParseError) => {
+                                errors.push(format!(
+                                    "[{:?}] Tag Parse Error ",
+                                    node_id.as_bytes().to_vec()
+                                ));
+                            }
+                            Err(QueryErr::RuntimeError(ret_err)) => {
+                                errors.push(format!(
+                                    "[{:?}] Runtime Error: {:?}",
+                                    node_id.as_bytes().to_vec(),
+                                    ret_err
+                                ));
+                            }
+                        },
+                    }
+                }
+
+                TaskResult {
+                    files: merge(files),
+                    ret_code: ReturnCode::Success, // [!] How should errors from different shelves handled?
+                    errors,
+                }
+            };
+
+            let id = futures.spawn(local_query_task).id();
+            node_tasks.insert(id, node_id);
+
             if req.atomic {
+                let mut peer_srv = peer_srv.clone();
                 tokio::spawn(async move {
                     let mut files = Vec::<BTreeSet<OrderedFileSummary>>::new();
                     let mut errors = Vec::<String>::new();
 
-                    while let Some(result) = local_futures.join_next().await {
-                        match result {
-                            Err(err) => {
-                                errors.push(format!("[{:?}] Thread error: {:?}", node_id, err))
-                            }
-                            Ok(result) => match result {
-                                Ok(res) => files.push(res),
-                                Err(QueryErr::SyntaxError) => {
-                                    errors.push(format!(
-                                        "[{:?}] Query Parse Error ",
-                                        node_id.as_bytes().to_vec()
-                                    ));
-                                }
-                                Err(QueryErr::ParseError) => {
-                                    errors.push(format!(
-                                        "[{:?}] Tag Parse Error ",
-                                        node_id.as_bytes().to_vec()
-                                    ));
-                                }
-                                Err(QueryErr::RuntimeError(ret_err)) => {
-                                    errors.push(format!(
-                                        "[{:?}] Runtime Error: {:?}",
-                                        node_id.as_bytes().to_vec(),
-                                        ret_err
-                                    ));
-                                }
-                            },
-                        }
-                    }
-
-                    while let Some(result) = futures.join_next_with_id().await {
+                    while let Some(result) = futures.join_next().await {
                         match result {
                             Err(err) => errors.push(format!(
                                 "[{:?}] Thread error: {:?}",
                                 node_tasks.get(&err.id()).unwrap(),
                                 err
                             )),
-                            Ok((task_id, join_res)) => {
-                                let node_id = node_tasks.get(&task_id).unwrap();
-                                match join_res {
-                                    Err(err) => errors
-                                        .push(format!("[{:?}] Peer error: {:?}", node_id, err)),
-                                    Ok(Response::PeerQueryResponse(peer_res)) => {
-                                        let res_metadata = peer_res.metadata.unwrap();
-                                        match parse_code(res_metadata.return_code) {
-                                            ReturnCode::Success => {
-                                                //[?] Correct way to deserialize res.files into BTreeSet<OrderedFileSummary> ??
-                                                match borrow_decode_from_slice::<
-                                                    BTreeSet<OrderedFileSummary>,
-                                                    _,
-                                                >(
-                                                    &peer_res.files, config
-                                                ) {
-                                                    Ok((deserialized_files, _)) => {
-                                                        files.push(deserialized_files);
-                                                    }
-                                                    Err(e) => {
-                                                        errors.push(format!(
-                                                            "[{:?}] Deserialization error: {:?}",
-                                                            node_id, e
-                                                        ));
-                                                    }
-                                                }
-                                            }
-                                            return_code => {
-                                                let error_str = match res_metadata.error_data {
-                                                    Some(data) => data.error_data.join("\n"),
-                                                    None => "Unknown error".to_string(),
-                                                };
-                                                errors.push(format!(
-                                                    "[{:?}] Query Error: {:?} Error data: {:?}",
-                                                    node_id, return_code, error_str
-                                                ));
-                                            }
-                                        }
-                                    }
-                                    Ok(_) => errors.push(format!(
-                                        "[{:?}]: Unexpected response type - {:?}",
-                                        node_id, join_res
-                                    )),
-                                }
+                            Ok(mut t_res) => {
+                                errors.append(&mut t_res.errors);
+                                files.push(t_res.files);
                             }
                         }
                     }
@@ -487,136 +526,34 @@ impl Service<ClientQuery> for QueryService {
                     //[TODO] Time & Space Complexity analysis
                     let files: BTreeSet<OrderedFileSummary> = merge(files);
 
-                    let _ = peer_srv.call((client_node, Data::ClientQueryData( ClientQueryData { //[!] ClientQueryData is the only (used) Data-type RPC 
-                            token: ser_token,
-                            files: files.into_iter().map(|f| File {
-                                path: f.file_summary.path.to_string_lossy().to_string(),
-                                metadata: Some(FileMetadata {
-                                    size: f.file_summary.metadata.size,
-                                    readonly: f.file_summary.metadata.readonly,
-                                    modified: encode_timestamp(f.file_summary.metadata.modified),
-                                    accessed: encode_timestamp(f.file_summary.metadata.accessed),
-                                    created: encode_timestamp(f.file_summary.metadata.created),
-                                    os_metadata: {
-                                        let f_meta = f.file_summary.metadata.clone();
-                                        let os_metadata = match (f_meta.unix, f_meta.windows) {
-                                            (Some(unix), None) => {
-                                                ebi_proto::rpc::file_metadata::OsMetadata::Unix( UnixMetadata {
-                                                    permissions: unix.permissions,
-                                                    uid: unix.uid,
-                                                    gid: unix.gid
-                                                })
-                                            }
-                                            (None, Some(windows)) => {
-                                                ebi_proto::rpc::file_metadata::OsMetadata::Windows( WindowsMetadata {
-                                                    attributes: windows.attributes
-                                                })}
-                                            _ => {
-                                                ebi_proto::rpc::file_metadata::OsMetadata::Error( Empty {} )
-                                            }
-                                        };
-                                        Some(os_metadata)
-                                    }
-                                }
-                            )}).collect(),
-                            metadata: Some(ResponseMetadata {
-                                request_uuid: Uuid::now_v7().into(),
-                                return_code: ReturnCode::Success as u32, // [?] Should this always be success ?? 
-                                error_data: Some(ErrorData {
-                                    error_data: errors
-                                })
-                            })
-                        }))).await;
+                    peer_srv
+                        .call((
+                            client_node,
+                            Data::ClientQueryData(ClientQueryData {
+                                //[!] ClientQueryData is the only (used) Data-type RPC
+                                token: ser_token,
+                                files: files
+                                    .into_iter()
+                                    .map(|f| File {
+                                        path: f.file_summary.path.to_string_lossy().to_string(),
+                                        metadata: Some(f.file_summary.metadata.into()),
+                                    })
+                                    .collect(),
+                                metadata: Some(ResponseMetadata {
+                                    request_uuid: Uuid::now_v7().into(),
+                                    return_code: ReturnCode::Success as u32, // [?] Should this always be success ??
+                                    error_data: Some(ErrorData { error_data: errors }),
+                                }),
+                            }),
+                        ))
+                        .await
                 });
             } else {
+                let mut peer_srv = peer_srv.clone();
                 tokio::spawn(async move {
-                    //Local query
-                    while let Some(result) = local_futures.join_next().await {
+                    while let Some(result) = futures.join_next().await {
                         match result {
-                            Ok(result) => {
-                                match result {
-                                    Ok(res) => {
-                                        let _ = peer_srv.call((client_node, Data::ClientQueryData( ClientQueryData { //[!] ClientQueryData is the only (used) Data-type RPC 
-                                            token: ser_token.clone(),
-                                            files: res.iter().map(|f| File { path: f.file_summary.path.to_string_lossy().to_string(),
-                                                metadata: Some(FileMetadata {
-                                                    size: f.file_summary.metadata.size,
-                                                    readonly: f.file_summary.metadata.readonly,
-                                                    modified: encode_timestamp(f.file_summary.metadata.modified),
-                                                    accessed: encode_timestamp(f.file_summary.metadata.accessed),
-                                                    created: encode_timestamp(f.file_summary.metadata.created),
-                                                    os_metadata: {
-                                                        let f_meta = f.file_summary.metadata.clone();
-                                                        let os_metadata = match (f_meta.unix, f_meta.windows) {
-                                                            (Some(unix), None) => {
-                                                                ebi_proto::rpc::file_metadata::OsMetadata::Unix( UnixMetadata {
-                                                                    permissions: unix.permissions,
-                                                                    uid: unix.uid,
-                                                                    gid: unix.gid
-                                                                })
-                                                            }
-                                                            (None, Some(windows)) => {
-                                                                ebi_proto::rpc::file_metadata::OsMetadata::Windows( WindowsMetadata {
-                                                                    attributes: windows.attributes
-                                                                })}
-                                                            _ => {
-                                                                ebi_proto::rpc::file_metadata::OsMetadata::Error( Empty {} )
-                                                            }
-                                                        };
-                                                        Some(os_metadata)
-                                                    }
-                                                }
-                                            )}).collect(),
-                                            metadata: Some(ResponseMetadata {
-                                                request_uuid: Uuid::now_v7().into(),
-                                                return_code: ReturnCode::Success as u32,
-                                                error_data: None,
-                                            })
-                                        }))).await;
-                                    }
-                                    Err(err) => {
-                                        let err = match err {
-                                            QueryErr::SyntaxError => {
-                                                format!(
-                                                    "[{:?}] Query Parse Error ",
-                                                    node_id.as_bytes().to_vec()
-                                                )
-                                            }
-                                            QueryErr::ParseError => {
-                                                format!(
-                                                    "[{:?}] Tag Parse Error",
-                                                    node_id.as_bytes().to_vec()
-                                                )
-                                            }
-                                            QueryErr::RuntimeError(ret_err) => {
-                                                format!(
-                                                    "[{:?}] Runtime Error: {:?}",
-                                                    node_id.as_bytes().to_vec(),
-                                                    ret_err
-                                                )
-                                            }
-                                        };
-                                        let _ = peer_srv
-                                            .call((
-                                                client_node,
-                                                Data::ClientQueryData(ClientQueryData {
-                                                    //[!] ClientQueryData is the only (used) Data-type RPC
-                                                    token: ser_token.clone(),
-                                                    files: Vec::new(),
-                                                    metadata: Some(ResponseMetadata {
-                                                        request_uuid: Uuid::now_v7().into(),
-                                                        return_code: ReturnCode::Success as u32,
-                                                        error_data: Some(ErrorData {
-                                                            error_data: vec![err],
-                                                        }),
-                                                    }),
-                                                }),
-                                            ))
-                                            .await;
-                                    }
-                                }
-                            }
-                            Err(err) => {
+                            Err(thread_err) => {
                                 let _ = peer_srv
                                     .call((
                                         client_node,
@@ -626,12 +563,12 @@ impl Service<ClientQuery> for QueryService {
                                             files: Vec::new(),
                                             metadata: Some(ResponseMetadata {
                                                 request_uuid: Uuid::now_v7().into(),
-                                                return_code: ReturnCode::Success as u32,
+                                                return_code: ReturnCode::PeerServiceError as u32,
                                                 error_data: Some(ErrorData {
                                                     error_data: vec![format!(
-                                                        "[{:?}] Join Error: {:?}",
-                                                        node_id.as_bytes().to_vec(),
-                                                        err.to_string()
+                                                        "[{:?}] Thread error: {:?}",
+                                                        node_tasks.get(&thread_err.id()).unwrap(),
+                                                        thread_err
                                                     )],
                                                 }),
                                             }),
@@ -639,166 +576,33 @@ impl Service<ClientQuery> for QueryService {
                                     ))
                                     .await;
                             }
-                        }
-                    }
-
-                    while let Some(join_result) = futures.join_next_with_id().await {
-                        let ser_token = ser_token.clone();
-                        match join_result {
-                            Err(join_err) => {
+                            Ok(t_res) => {
                                 let _ = peer_srv
                                     .call((
                                         client_node,
                                         Data::ClientQueryData(ClientQueryData {
                                             //[!] ClientQueryData is the only (used) Data-type RPC
-                                            token: ser_token,
-                                            files: Vec::new(),
+                                            token: ser_token.clone(),
+                                            files: t_res
+                                                .files
+                                                .iter()
+                                                .map(|f| File {
+                                                    path: f
+                                                        .file_summary
+                                                        .path
+                                                        .to_string_lossy()
+                                                        .to_string(),
+                                                    metadata: Some(
+                                                        f.file_summary.metadata.clone().into(),
+                                                    ),
+                                                })
+                                                .collect(),
                                             metadata: Some(ResponseMetadata {
-                                                request_uuid: Uuid::now_v7().into(),
-                                                return_code: ReturnCode::PeerServiceError as u32,
+                                                return_code: t_res.ret_code as u32,
                                                 error_data: Some(ErrorData {
-                                                    error_data: vec![format!(
-                                                        "[{:?}] Join error: {:?}",
-                                                        node_tasks.get(&join_err.id()).unwrap(),
-                                                        join_err
-                                                    )],
+                                                    error_data: t_res.errors,
                                                 }),
-                                            }),
-                                        }),
-                                    ))
-                                    .await;
-                            }
-                            Ok((task_id, Err(peer_err))) => {
-                                let _ = peer_srv
-                                    .call((
-                                        client_node,
-                                        Data::ClientQueryData(ClientQueryData {
-                                            //[!] ClientQueryData is the only (used) Data-type RPC
-                                            token: ser_token,
-                                            files: Vec::new(),
-                                            metadata: Some(ResponseMetadata {
                                                 request_uuid: Uuid::now_v7().into(),
-                                                return_code: ReturnCode::PeerServiceError as u32,
-                                                error_data: Some(ErrorData {
-                                                    error_data: vec![format!(
-                                                        "[{:?}] Peer error: {:?}",
-                                                        node_tasks.get(&task_id).unwrap(),
-                                                        peer_err
-                                                    )],
-                                                }),
-                                            }),
-                                        }),
-                                    ))
-                                    .await;
-                            }
-                            Ok((task_id, Ok(Response::PeerQueryResponse(res)))) => {
-                                let node = node_tasks.get(&task_id).unwrap();
-                                let res_metadata = res.metadata().unwrap();
-                                match parse_code(res_metadata.return_code) {
-                                    ReturnCode::Success => {
-                                        //[?] Correct way to deserialize res.files into BTreeSet<OrderedFileSummary> ??
-                                        match borrow_decode_from_slice::<Vec<OrderedFileSummary>, _>(
-                                            &res.files, config,
-                                        ) {
-                                            Ok((deserialized_files, _)) => {
-                                                let _ = peer_srv.call((client_node, Data::ClientQueryData( ClientQueryData { //[!] ClientQueryData is the only (used) Data-type RPC 
-                                                        token: ser_token,
-                                                        files: deserialized_files.iter().map(|f| File { path: f.file_summary.path.to_string_lossy().to_string(),
-                                                            metadata: Some(FileMetadata {
-                                                                size: f.file_summary.metadata.size,
-                                                                readonly: f.file_summary.metadata.readonly,
-                                                                modified: encode_timestamp(f.file_summary.metadata.modified),
-                                                                accessed: encode_timestamp(f.file_summary.metadata.accessed),
-                                                                created: encode_timestamp(f.file_summary.metadata.created),
-                                                                os_metadata: {
-                                                                    let f_meta = f.file_summary.metadata.clone();
-                                                                    let os_metadata = match (f_meta.unix, f_meta.windows) {
-                                                                        (Some(unix), None) => {
-                                                                            ebi_proto::rpc::file_metadata::OsMetadata::Unix( UnixMetadata {
-                                                                                permissions: unix.permissions,
-                                                                                uid: unix.uid,
-                                                                                gid: unix.gid
-                                                                            })
-                                                                        }
-                                                                        (None, Some(windows)) => {
-                                                                            ebi_proto::rpc::file_metadata::OsMetadata::Windows( WindowsMetadata {
-                                                                                attributes: windows.attributes
-                                                                            })}
-                                                                        _ => {
-                                                                            ebi_proto::rpc::file_metadata::OsMetadata::Error( Empty {} )
-                                                                        }
-                                                                    };
-                                                                    Some(os_metadata)
-                                                                }
-                                                            }
-                                                        )}).collect(),
-                                                        metadata: Some(ResponseMetadata {
-                                                            return_code: ReturnCode::Success as u32,
-                                                            error_data: res_metadata.error_data,
-                                                            request_uuid: Uuid::now_v7().into(),
-                                                        })
-                                                    }))).await;
-                                            }
-                                            Err(e) => {
-                                                let _ = peer_srv.call((client_node, Data::ClientQueryData( ClientQueryData { //[!] ClientQueryData is the only (used) Data-type RPC 
-                                                        token: ser_token,
-                                                        files: Vec::new(),
-                                                        metadata: Some(ResponseMetadata {
-                                                            return_code: ReturnCode::PeerServiceError as u32,
-                                                            error_data: Some(ErrorData { error_data: vec![format!("[{:?}] Deserialization error: {:?}", node, e)] }),
-                                                            request_uuid: Uuid::now_v7().into(),
-                                                        })
-                                                    }))).await;
-                                            }
-                                        }
-                                    }
-                                    _ => {
-                                        let error_str = match res_metadata.error_data {
-                                            Some(data) => data.error_data.join("\n"),
-                                            None => "Unknown error".to_string(),
-                                        };
-                                        let _ = peer_srv
-                                            .call((
-                                                client_node,
-                                                Data::ClientQueryData(ClientQueryData {
-                                                    //[!] ClientQueryData is the only (used) Data-type RPC
-                                                    token: ser_token,
-                                                    files: Vec::new(),
-                                                    metadata: Some(ResponseMetadata {
-                                                        return_code: ReturnCode::PeerServiceError
-                                                            as u32,
-                                                        request_uuid: Uuid::now_v7().into(),
-                                                        error_data: Some(ErrorData {
-                                                            error_data: vec![format!(
-                                                                "[{:?}] Query Error: {:?}",
-                                                                node, error_str
-                                                            )],
-                                                        }),
-                                                    }),
-                                                }),
-                                            ))
-                                            .await;
-                                    }
-                                }
-                            }
-                            Ok((task_id, Ok(res))) => {
-                                let _ = peer_srv
-                                    .call((
-                                        client_node,
-                                        Data::ClientQueryData(ClientQueryData {
-                                            //[!] ClientQueryData is the only (used) Data-type RPC
-                                            token: ser_token,
-                                            files: Vec::new(),
-                                            metadata: Some(ResponseMetadata {
-                                                request_uuid: Uuid::now_v7().into(),
-                                                return_code: ReturnCode::PeerServiceError as u32,
-                                                error_data: Some(ErrorData {
-                                                    error_data: vec![format!(
-                                                        "[{:?}]: Unexpected response type - {:?}",
-                                                        node_tasks.get(&task_id).unwrap(),
-                                                        res
-                                                    )],
-                                                }),
                                             }),
                                         }),
                                     ))
