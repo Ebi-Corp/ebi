@@ -618,8 +618,8 @@ impl Service<AttachTag> for RpcService {
                                 shelf_w.filter_tags.insert(&tag_id);
                                 ReturnCode::Success
                             } // Success
-                            Ok((true, false)) => ReturnCode::Success,
-                            Ok((false, _)) => ReturnCode::TagAlreadyAttached, // File not tagged
+                            Ok((false, true)) => ReturnCode::Success, // File not tagged
+                            Ok((_, false)) => ReturnCode::TagAlreadyAttached,
                             Err(UpdateErr::PathNotFound) => ReturnCode::PathNotFound, // Path not found
                             Err(UpdateErr::FileNotFound) => ReturnCode::FileNotFound, // File not found
                             Err(UpdateErr::PathNotDir) => ReturnCode::PathNotDir, // "Nothing ever happens" -Chudda

@@ -375,6 +375,7 @@ impl_try_from!(
     ClientQuery,
     PeerQuery,
     CreateTag,
+    CreateWorkspace,
     EditWorkspace,
     DeleteWorkspace,
     GetWorkspaces,
