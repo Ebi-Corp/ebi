@@ -58,7 +58,7 @@ async fn wait_call(mut watcher: Receiver<Uuid>, request_uuid: Uuid) {
 }
 
 impl Service<(NodeId, Data)> for PeerService {
-    type Response = ();
+    type Response = Uuid;
     type Error = PeerError;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
@@ -90,7 +90,7 @@ impl Service<(NodeId, Data)> for PeerService {
                 .send((request_uuid, buffer))
                 .await
                 .map_err(|_| PeerError::ConnectionClosed)?;
-            Ok(())
+            Ok(request_uuid)
         })
     }
 }

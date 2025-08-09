@@ -116,6 +116,38 @@ impl FileMetadata {
     }
 }
 
+impl From<FileMetadata> for ebi_proto::rpc::FileMetadata {
+    fn from(f_meta: FileMetadata) -> Self {
+        fn encode_timestamp(opt_dt: Option<DateTime<Utc>>) -> Option<i64> {
+            opt_dt.map_or_else(|| None, |dt| Some(dt.timestamp()))
+        }
+        let os_metadata = match (f_meta.unix, f_meta.windows) {
+            (Some(unix), None) => {
+                ebi_proto::rpc::file_metadata::OsMetadata::Unix(ebi_proto::rpc::UnixMetadata {
+                    permissions: unix.permissions,
+                    uid: unix.uid,
+                    gid: unix.gid,
+                })
+            }
+            (None, Some(windows)) => ebi_proto::rpc::file_metadata::OsMetadata::Windows(
+                ebi_proto::rpc::WindowsMetadata {
+                    attributes: windows.attributes,
+                },
+            ),
+            _ => ebi_proto::rpc::file_metadata::OsMetadata::Error(ebi_proto::rpc::Empty {}),
+        };
+
+        ebi_proto::rpc::FileMetadata {
+            size: f_meta.size,
+            readonly: f_meta.readonly,
+            modified: encode_timestamp(f_meta.modified),
+            accessed: encode_timestamp(f_meta.accessed),
+            created: encode_timestamp(f_meta.created),
+            os_metadata: Some(os_metadata),
+        }
+    }
+}
+
 impl PartialEq for FileRef {
     fn eq(&self, other: &Self) -> bool {
         self.file_ref.read().unwrap().path == other.file_ref.read().unwrap().path
