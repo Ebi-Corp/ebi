@@ -28,19 +28,21 @@ pub enum PeerError {
     Unknown,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct PeerService {
     pub peers: Arc<RwLock<HashMap<NodeId, Peer>>>,
     pub clients: Arc<RwLock<Vec<Client>>>,
     pub responses: Arc<RwLock<HashMap<RequestId, Response>>>,
 }
 
+#[derive(Clone, Debug)]
 pub struct Peer {
     pub id: NodeId,
     pub watcher: Receiver<Uuid>,
     pub sender: Sender<(Uuid, Vec<u8>)>,
 }
 
+#[derive(Clone, Debug)]
 pub struct Client {
     pub id: NodeId,
     pub addr: SocketAddr,
@@ -77,7 +79,11 @@ impl Service<(NodeId, Data)> for PeerService {
                     client.sender.clone()
                 } else {
                     let p_lock = peers.read().await;
-                    p_lock.get(&req.0).ok_or(PeerError::PeerNotFound)?.sender.clone()
+                    p_lock
+                        .get(&req.0)
+                        .ok_or(PeerError::PeerNotFound)?
+                        .sender
+                        .clone()
                 }
             };
 

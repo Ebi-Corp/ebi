@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 const HEADER_SIZE: usize = 10; //[!] Move to Constant file 
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct WorkspaceService {
     pub workspaces: Arc<RwLock<HashMap<WorkspaceId, WorkspaceRef>>>,
     pub shelf_assignment: Arc<RwLock<HashMap<ShelfId, Vec<WorkspaceId>>>>,

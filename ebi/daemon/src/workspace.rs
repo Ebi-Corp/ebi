@@ -13,6 +13,7 @@ pub type WorkspaceRef = Arc<RwLock<Workspace>>;
 
 //[#] Workspace calls Shelf.refresh(), Shelf returns a ChangeSummary, Workspace applies Autotaggers
 
+#[derive(Debug)]
 pub struct Workspace {
     // Workspace Info
     pub id: WorkspaceId,

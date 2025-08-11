@@ -4,21 +4,25 @@ use crate::services::peer::{Client, Peer, PeerService};
 use crate::services::query::QueryService;
 use crate::services::rpc::{DaemonInfo, RequestId, RpcService, TaskID};
 use crate::services::workspace::WorkspaceService;
-use crate::shelf::{ShelfId};
+use crate::shelf::ShelfId;
 use anyhow::Result;
 use ebi_proto::rpc::*;
 use iroh::{Endpoint, NodeId, SecretKey};
 use paste::paste;
 use std::collections::HashMap;
 use std::collections::VecDeque;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
+use tokio::task::JoinSet;
 use tower::{Service, ServiceBuilder};
-use std::path::PathBuf;
+use tracing::{Level, span};
+use tracing_subscriber::prelude::*;
+use tracing_subscriber::{EnvFilter, fmt};
 use uuid::Uuid;
 
 mod query;
@@ -29,6 +33,7 @@ mod workspace;
 
 const HEADER_SIZE: usize = 10; //[!] Move to Constant file 
 const ALPN: &[u8] = b"ebi";
+const CLIENT_ADDR: &str = "127.0.0.1:3000";
 
 macro_rules! generate_request_match {
     ($msg_code:expr, $buffer:expr, $service:expr, $socket:expr, $($req_ty:ty),* $(,)?) => {
@@ -44,7 +49,7 @@ macro_rules! generate_request_match {
                             response_buf[0] = MessageType::Response as u8;
                             response_buf[1] = RequestCode::[<$req_ty>]  as u8;
                             let size = payload.len() as u64;
-                            println!("response size: {}", size);
+                            tracing::trace!("Response with request code: {:?} and payload size: {}", RequestCode::[<$req_ty>], size);
                             response_buf[2..HEADER_SIZE].copy_from_slice(&size.to_le_bytes());
                             response_buf.extend_from_slice(&payload);
                             let _ = $socket.write_all(&response_buf).await;
@@ -54,8 +59,8 @@ macro_rules! generate_request_match {
                 Ok(_) => {
                     todo!();
                 }
-                Err(e) => {
-                    println!("Unknown response code: {}", $msg_code);
+                Err(_) => {
+                    tracing::error!("Unknown response code: {}", $msg_code);
                 }
             }
         }
@@ -76,7 +81,7 @@ macro_rules! generate_response_match {
                     todo!();
                 }
                 Err(_) => {
-                    println!("Unknown response code: {}", $msg_code);
+                    tracing::error!("Unknown response code: {}", $msg_code);
                 }
             }
         }
@@ -84,23 +89,35 @@ macro_rules! generate_response_match {
 }
 
 #[tokio::main]
+
 async fn main() -> Result<()> {
-    let listener = TcpListener::bind("127.0.0.1:3000").await.unwrap();
-    let ep = loop {
-        // Generates a SK/PK pair until an unused one is found
-        let sec_key = get_secret_key();
-        let ep = Endpoint::builder()
-            .discovery_n0()
-            .secret_key(sec_key)
-            .alpns(vec![ALPN.to_vec()])
-            .bind()
-            .await;
-        if let Ok(ep) = ep {
-            break ep;
-        }
+    tracing_subscriber::registry()
+        .with(fmt::layer())
+        .with(EnvFilter::from_default_env())
+        .init();
+
+    let listener = TcpListener::bind(CLIENT_ADDR).await.unwrap();
+
+    tracing::debug!("Listening for client connections on {}", CLIENT_ADDR);
+
+    let sec_key: [u8; 32] = [
+        0, 100, 165, 138, 15, 92, 235, 75, 150, 109, 189, 27, 121, 0, 209, 101, 101, 234, 31, 236,
+        60, 34, 88, 28, 130, 189, 26, 107, 97, 32, 177, 252,
+    ];
+    let ep = Endpoint::builder()
+        .discovery_n0()
+        .secret_key(SecretKey::from_bytes(&sec_key))
+        .alpns(vec![ALPN.to_vec()])
+        .bind()
+        .await;
+
+    let Ok(ep) = ep else {
+        tracing::error!("Could not setup iroh node: {}", ep.unwrap_err());
+        panic!();
     };
-    println!("{:?}", ep.node_addr().await?.node_id.as_bytes());
-    println!("{:?}", ep.node_addr().await?.node_id);
+
+    tracing::info!("Set up iroh endpoint with peer ID {}", ep.node_id());
+
     let peers = Arc::new(RwLock::new(HashMap::<NodeId, Peer>::new()));
     let clients = Arc::new(RwLock::new(Vec::<Client>::new()));
     let tasks = Arc::new(HashMap::<TaskID, JoinHandle<()>>::new());
@@ -108,6 +125,7 @@ async fn main() -> Result<()> {
     let notify_queue = Arc::new(RwLock::new(VecDeque::new()));
     let id: NodeId = ep.node_id();
     let (broadcast, watcher) = watch::channel::<RequestId>(Uuid::now_v7());
+
     //[/] The Peer service subscribes to the ResponseHandler when a request is sent.
     //[/] It is then notified when a response is received so it can acquire the read lock on the Response map.
     let daemon_info = Arc::new(DaemonInfo::new(id, "".to_string()));
@@ -116,7 +134,7 @@ async fn main() -> Result<()> {
     let workspace_srv = WorkspaceService {
         workspaces: Arc::new(RwLock::new(HashMap::new())),
         shelf_assignment: Arc::new(RwLock::new(HashMap::new())),
-        paths: Arc::new(RwLock::new(paths))
+        paths: Arc::new(RwLock::new(paths)),
     };
     let peer_srv = PeerService {
         peers: peers.clone(),
@@ -140,11 +158,15 @@ async fn main() -> Result<()> {
         broadcast: broadcast.clone(),
         watcher: watcher.clone(),
     });
+    let mut client_streams = 0;
+
     loop {
         tokio::select! {
             Ok((stream, addr)) = listener.accept() => {
-                let mut service = service.clone();
-                let (mut read, mut write) = stream.into_split();
+                client_streams += 1;
+                tracing::info!("Accepted client connection at {}", addr);
+                let service = service.clone();
+                let (read, write) = stream.into_split();
                 let (tx, mut rx) = mpsc::channel::<(Uuid, Vec<u8>)>(64);
                 let client = Client {
                     id,
@@ -157,11 +179,21 @@ async fn main() -> Result<()> {
 
                 // Client handling thread
                 tokio::spawn(async move {
+                    let c_span = span!(Level::INFO, "client", stream_n = client_streams);
+
+                    let mut s_handle = StreamHandler { r_socket: read, w_socket: write, service: service.clone() };
                     loop {
+                        let _enter = c_span.enter();
                         tokio::select! {
-                            _ = handle_client(&mut read, &mut write, &mut service) => {}
+                            alive = s_handle.listen_ref() => {
+                                if !alive {
+                                    tracing::info!("client connection closed");
+                                    break;
+                                }
+                            }
+
                             Some((uuid, bytes)) = rx.recv() => {
-                                if write.write_all(&bytes).await.is_err() {
+                                if s_handle.w_socket.write_all(&bytes).await.is_err() {
                                     let _ = tx.send((uuid, Vec::new())).await; // Empty vec = error
                                                                                // on write ?
 
@@ -175,7 +207,7 @@ async fn main() -> Result<()> {
             conn = ep.accept() => {
                 let conn = conn.unwrap().await?;
                 //[!] Check if Peer has authorisation to connect (and if permissions match)
-                let mut service = service.clone();
+                let service = service.clone();
                 let (tx, mut rx) = mpsc::channel::<(Uuid, Vec<u8>)>(64);
                 // [!] Handle multiple incoming connections per Peer
                 let peer = Peer {
@@ -183,26 +215,40 @@ async fn main() -> Result<()> {
                     watcher: watcher.clone(),
                     sender: tx.clone()
                 };
+
+                let peer_id = peer.id.to_string();
                 peers.write().await.insert(conn.remote_node_id().unwrap(), peer);
                 let broadcast = broadcast.clone();
 
                 // Peer handling thread
                 tokio::spawn(async move {
+                    let mut stream_set = JoinSet::new();
+
+                    let p_span = span!(Level::INFO, "peer handler", id = peer_id.clone());
+
                     loop {
+                        let _enter = p_span.enter();
                         tokio::select! {
-                            Ok((mut write, mut read)) = conn.accept_bi() => {
-                                handle_client(&mut read, &mut write, &mut service).await;
+                            Ok((write, read)) = conn.accept_bi() => {
+                                let s_handle = StreamHandler { r_socket: read, w_socket: write, service: service.clone() };
+                                stream_set.spawn(async move { s_handle.listen_owned().await });
+                            }
+                            Some(res) = stream_set.join_next() => {
+                                if let Ok(Some(s_handle)) = res {
+                                    stream_set.spawn(async move { s_handle.listen_owned().await });
+                                } else {
+                                    tracing::info!("Peer {} stream closed", peer_id.clone());
+                                }
                             }
                             Some((uuid, bytes)) = rx.recv() => {
-                                if let Ok((mut write, mut read)) = conn.open_bi().await {
+                                if let Ok((mut write, read)) = conn.open_bi().await {
                                     if write.write_all(&bytes).await.is_err() {
                                         let _ = tx.send((uuid, Vec::new())).await; // Empty vec = error
-                                                                               // on write ?
 
                                         let _ = broadcast.send(uuid); // broadcast update
-                                    } else {
-                                        handle_client(&mut read, &mut write, &mut service).await;
                                     }
+                                    let s_handle = StreamHandler { r_socket: read, w_socket: write, service: service.clone() };
+                                    stream_set.spawn(async move { s_handle.listen_owned().await });
                                 }
                             }
                         }
@@ -213,50 +259,77 @@ async fn main() -> Result<()> {
     }
 }
 
-async fn handle_client<U: AsyncReadExt + Unpin, B: AsyncWriteExt + Unpin>(
-    r_socket: &mut U,
-    w_socket: &mut B,
-    service: &mut RpcService,
-) {
-    let mut header = vec![0; HEADER_SIZE];
+struct StreamHandler<U, B>
+where
+    U: AsyncReadExt + Unpin + std::fmt::Debug,
+    B: AsyncWriteExt + Unpin + std::fmt::Debug,
+{
+    r_socket: U,
+    w_socket: B,
+    service: RpcService,
+}
 
-    loop {
-        let _bytes_read = match r_socket.read_exact(&mut header).await {
+impl<U, B> StreamHandler<U, B>
+where
+    U: AsyncReadExt + Unpin + std::fmt::Debug,
+    B: AsyncWriteExt + Unpin + std::fmt::Debug,
+{
+    async fn listen_owned(mut self) -> Option<Self> {
+        if self.listen_ref().await {
+            Some(self) 
+        } else {
+            None
+        }
+    }
+
+    async fn listen_ref(&mut self) -> bool {
+        let mut header = vec![0; HEADER_SIZE];
+        let mut service = self.service.clone();
+
+        let _bytes_read = match self.r_socket.read_exact(&mut header).await {
             Ok(n) if n == 0 => {
-                println!("{}", n);
-                break;
+                return false;
             }
-            Ok(n) => n,
+            Ok(n) => {
+                tracing::trace!("Read {} bytes from header", n);
+            }
             Err(e) => {
-                println!("{:?}", e);
-                9
+                tracing::error!("Could not read header: {}", e);
+                return false;
             }
         };
+
         let msg_type: u8 = u8::from_le_bytes([header[0]]);
         let msg_code: u8 = u8::from_le_bytes([header[1]]);
-        println!("Message Type: {}", msg_type);
-        println!("Message Code: {}", msg_code);
         let size: u64 = u64::from_le_bytes(header[2..HEADER_SIZE].try_into().unwrap());
-        println!("size: {}", size);
+
+        tracing::trace!(
+            "Received message type: {} code: {} size: {}",
+            msg_type,
+            msg_code,
+            size
+        );
         let mut buffer = vec![0u8; size as usize];
-        let _bytes_read = match r_socket.read_exact(&mut buffer).await {
-            Ok(0) => 0,
-            Ok(n) => n,
+
+        let _bytes_read = match self.r_socket.read_exact(&mut buffer).await {
+            Ok(n) if n == 0 => {
+                return false;
+            }
+            Ok(n) => {
+                tracing::trace!("Read {} bytes from payload", n);
+            }
             Err(e) => {
-                println!("{:?}", e);
-                0
+                tracing::error!("Could not read payload of size {}: {}", size, e);
+                return false;
             }
         };
-        println!("read all");
-
         match msg_type.try_into() {
             Ok(MessageType::Request) => {
-                println!("Request message type received");
                 generate_request_match!(
                     msg_code,
                     buffer,
                     service,
-                    w_socket,
+                    self.w_socket,
                     CreateTag,
                     ClientQuery,
                     PeerQuery,
@@ -274,12 +347,11 @@ async fn handle_client<U: AsyncReadExt + Unpin, B: AsyncWriteExt + Unpin>(
                 );
             }
             Ok(MessageType::Response) => {
-                println!("Response message type received");
                 generate_response_match!(
                     msg_code,
                     buffer,
                     service,
-                    w_socket,
+                    self.w_socket,
                     CreateTag,
                     CreateWorkspace,
                     EditWorkspace,
@@ -295,24 +367,20 @@ async fn handle_client<U: AsyncReadExt + Unpin, B: AsyncWriteExt + Unpin>(
                 );
             }
             Ok(MessageType::Data) => {
-                println!("Data message type received");
                 // Handle data messages here
             }
             Ok(MessageType::Notification) => {
-                println!("Notification message type received");
                 // Handle notification messages here
             }
             Ok(MessageType::Sync) => {
-                println!("Sync message type received");
                 // Handle sync messages here
             }
             Err(_) => {
-                println!("Unknown message type: {}", msg_type);
-                break;
+                tracing::error!("unknown message type: {}", msg_type);
             }
         }
+        true
     }
-    //println!("Client disconnected: {}", addr);
 }
 
 fn get_secret_key() -> SecretKey {
