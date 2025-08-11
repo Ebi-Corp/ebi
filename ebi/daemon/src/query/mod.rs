@@ -103,7 +103,7 @@ impl fmt::Debug for Formula {
     }
 }
 //[/] Own implementation of decode can enforce that BTreeSet contains files of the specified FileOrder
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Query {
     formula: Formula,
     pub order: FileOrder,

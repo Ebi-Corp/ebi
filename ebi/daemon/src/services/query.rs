@@ -30,7 +30,7 @@ use uuid::Uuid;
 type TaskID = u64;
 pub type TokenId = Uuid;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct QueryService {
     pub peer_srv: PeerService,
     pub cache: CacheService,

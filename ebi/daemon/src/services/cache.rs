@@ -4,7 +4,7 @@ use crate::tag::{TagId, TagRef};
 use crate::workspace::WorkspaceId;
 use std::collections::BTreeSet;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct CacheService {
     //[TODO] Design Cache Structure
 }

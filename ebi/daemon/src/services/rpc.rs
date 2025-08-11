@@ -19,6 +19,7 @@ use tokio::sync::watch::{Receiver, Sender};
 use tokio::sync::{RwLock, RwLockReadGuard};
 use tokio::task::JoinHandle;
 use tower::Service;
+use tracing::{Level, span};
 
 use uuid::Uuid;
 
@@ -88,7 +89,7 @@ fn val_tag_id(workspace: &RwLockReadGuard<Workspace>, bytes: &[u8]) -> Option<Ta
 
 //[!] Handle poisoned locks
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct RpcService {
     pub daemon_info: Arc<DaemonInfo>,
     pub peer_srv: PeerService,
@@ -104,12 +105,14 @@ pub struct RpcService {
 }
 pub type TaskID = u64;
 
+#[derive(Debug)]
 pub enum Notification {
     Heartbeat(Heartbeat),
     Operation(Operation),
     PeerConnected(NodeId),
 }
 
+#[derive(Debug)]
 pub struct DaemonInfo {
     pub id: NodeId,
     pub name: RwLock<String>,
