@@ -71,7 +71,7 @@ impl Retriever {
             } else {
                 let shelf_r = self.shelf_data.read().await;
                 let shelf_owner = self.shelf_owner.clone();
-                let tags = shelf_r.root.tags.get(tag_ref).cloned(); // [\] we are cloning a set of pointers, which is reasonabily cheap, but this section might be analyzed with the respective non-clone version
+                let tags = shelf_r.root.tags.get(tag_ref).cloned(); // [/] we are cloning a set of pointers, which is reasonabily cheap, but this section might be analyzed with the respective non-clone version
                 let dtags = shelf_r.root.dtag_files.get(tag_ref).cloned();
                 drop(shelf_r);
 
@@ -114,7 +114,7 @@ impl Retriever {
         //[!] Check cache
         let shelf_r = self.shelf_data.read().await;
         let shelf_owner = self.shelf_owner.clone();
-        let tags = shelf_r.root.tags.clone(); // [\] we are cloning a set of pointers, which is reasonabily cheap, but this section might be analyzed with the respective non-clone version
+        let tags = shelf_r.root.tags.clone(); // [/] we are cloning a set of pointers, which is reasonabily cheap, but this section might be analyzed with the respective non-clone version
         let dtags = shelf_r.root.dtag_files.clone();
         drop(shelf_r);
 
