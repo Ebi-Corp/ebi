@@ -429,15 +429,9 @@ impl Formula {
                 // At least one tag must be present
                 x.may_hold(tags) || y.may_hold(tags)
             }
-            Formula::UnaryExpression(UnaryOp::NOT, _) => {
-                // The tag may be present
-                /*
-                This should actually return false if the expression under the NOT is a tautology
-                Tautology detection can be reduced to the SAT problem (φ is a tautology iff ¬φ is NOT satisfiable)
-                SAT has been proven to be NP-Complete
-                Not really worth the effort for a network optimisation heuristic
-                */
-                true
+            Formula::UnaryExpression(UnaryOp::NOT, x) => {
+                // We can guarantee there are no files for which the expression holds if and only if x is a Tautology 
+                !matches!(**x, Formula::Constant(true))
             }
             Formula::Constant(c) => *c, // Tautologies will always hold, Contradictions never will
             Formula::Proposition(p) => tags.contains(&p.tag_id), // The tag must be present
