@@ -5,7 +5,7 @@ use crate::tag::TagId;
 use rand_chacha::ChaCha12Rng;
 use scalable_cuckoo_filter::{DefaultHasher, ScalableCuckooFilter};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashSet};
+use std::collections::HashSet;
 use std::fmt;
 use std::sync::Arc;
 
@@ -139,14 +139,14 @@ impl Query {
         //[/] Only local shelves
         &mut self,
         retriever: Retriever,
-    ) -> Result<BTreeSet<OrderedFileSummary>, QueryErr> {
+    ) -> Result<HashSet<OrderedFileSummary>, QueryErr> {
         Query::recursive_evaluate(self.formula.clone(), Arc::new(retriever)).await
     }
 
     async fn recursive_evaluate(
         formula: Formula,
         ret_srv: Arc<Retriever>,
-    ) -> Result<BTreeSet<OrderedFileSummary>, QueryErr> {
+    ) -> Result<HashSet<OrderedFileSummary>, QueryErr> {
         //[!] Execute concurrently where possible
         match formula {
             Formula::BinaryExpression(BinaryOp::AND, x, y) => match (x.as_ref(), y.as_ref()) {
@@ -169,9 +169,10 @@ impl Query {
                 }
             },
             Formula::BinaryExpression(BinaryOp::OR, x, y) => {
-                let a = Box::pin(Query::recursive_evaluate(*x, ret_srv.clone())).await?;
+                let mut a = Box::pin(Query::recursive_evaluate(*x, ret_srv.clone())).await?;
                 let b = Box::pin(Query::recursive_evaluate(*y, ret_srv.clone())).await?;
-                Ok(a.union(&b).cloned().collect())
+                a.extend(b); // equivalent to union, slightly more efficient
+                Ok(a)
             }
             Formula::BinaryExpression(BinaryOp::XOR, x, y) => {
                 let a = Box::pin(Query::recursive_evaluate(*x, ret_srv.clone())).await?;
@@ -183,7 +184,7 @@ impl Query {
                 let subset = Box::pin(Query::recursive_evaluate(*x, ret_srv.clone())).await?;
                 Ok(all.difference(&subset).cloned().collect())
             }
-            Formula::Constant(false) => Ok(BTreeSet::new()),
+            Formula::Constant(false) => Ok(HashSet::new()),
             Formula::Constant(true) => ret_srv.get_all().await.map_err(QueryErr::RuntimeError),
             Formula::Proposition(p) => ret_srv.get(p.tag_id).await.map_err(QueryErr::RuntimeError),
         }

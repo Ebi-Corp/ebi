@@ -1,6 +1,7 @@
 use crate::shelf::file::FileSummary;
 use ebi_proto::rpc::{OrderBy, ReturnCode};
 use serde::{Deserialize, Serialize};
+use std::hash::{Hash, Hasher};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrderedFileSummary {
@@ -16,6 +17,13 @@ pub enum FileOrder {
     Modified,
     Accessed,
     Unordered,
+}
+
+impl Hash for OrderedFileSummary {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.file_summary.path.hash(state);
+        self.file_summary.owner.hash(state);
+    }
 }
 
 impl PartialEq for OrderedFileSummary {

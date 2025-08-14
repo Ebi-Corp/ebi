@@ -2,7 +2,7 @@ use crate::query::file_order::{FileOrder, OrderedFileSummary};
 use crate::shelf::ShelfId;
 use crate::tag::{TagId, TagRef};
 use crate::workspace::WorkspaceId;
-use std::collections::BTreeSet;
+use std::collections::HashSet;
 
 #[derive(Clone, Debug)]
 pub struct CacheService {
@@ -10,7 +10,7 @@ pub struct CacheService {
 }
 
 impl CacheService {
-    pub fn retrieve(&self, _tag_ref: &TagRef) -> Option<BTreeSet<OrderedFileSummary>> {
+    pub fn retrieve(&self, _tag_ref: &TagRef) -> Option<HashSet<OrderedFileSummary>> {
         None //[TODO] Implement cache retrieval 
     }
 

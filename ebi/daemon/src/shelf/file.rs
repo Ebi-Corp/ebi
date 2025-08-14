@@ -2,8 +2,8 @@ use crate::shelf::ShelfOwner;
 use crate::tag::TagRef;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::cmp::Ordering;
-use std::collections::BTreeSet;
+use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 #[cfg(windows)]
@@ -40,14 +40,19 @@ impl FileSummary {
 pub struct FileRef {
     pub file_ref: Arc<RwLock<File>>,
 }
+impl Hash for FileRef {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.file_ref.read().unwrap().path.hash(state);
+    }
+}
 
 #[derive(Debug)]
 pub struct File {
     path: PathBuf,
     hash: u64,
     metadata: FileMetadata,
-    tags: BTreeSet<TagRef>,
-    dtags: BTreeSet<TagRef>,
+    tags: HashSet<TagRef>,
+    dtags: HashSet<TagRef>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -156,35 +161,11 @@ impl PartialEq for FileRef {
 
 impl Eq for FileRef {}
 
-impl PartialOrd for FileRef {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(
-            self.file_ref
-                .read()
-                .unwrap()
-                .metadata
-                .modified
-                .cmp(&other.file_ref.read().unwrap().metadata.modified),
-        )
-    }
-}
-
-impl Ord for FileRef {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.file_ref
-            .read()
-            .unwrap()
-            .metadata
-            .modified
-            .cmp(&other.file_ref.read().unwrap().metadata.modified)
-    }
-}
-
 impl File {
     pub fn new(
         path: PathBuf,
-        tags: BTreeSet<TagRef>,
-        dtags: BTreeSet<TagRef>,
+        tags: HashSet<TagRef>,
+        dtags: HashSet<TagRef>,
         metadata: FileMetadata,
     ) -> Self {
         File {
