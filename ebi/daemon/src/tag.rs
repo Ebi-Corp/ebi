@@ -12,7 +12,7 @@ pub struct TagData {
     pub parent: Option<Box<TagData>>,
 }
 
-#[derive(Debug, Eq, PartialOrd, PartialEq, Ord, Hash, Default)]
+#[derive(Debug, Eq, PartialEq, Hash, Default)]
 pub struct Tag {
     pub id: TagId,
     pub priority: u64,
@@ -26,6 +26,12 @@ pub struct TagRef {
     pub tag_ref: Arc<RwLock<Tag>>,
 }
 
+impl Hash for TagRef {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.tag_ref.read().unwrap().id.hash(state);
+    }
+}
+
 impl Clone for TagRef {
     fn clone(&self) -> Self {
         TagRef {
@@ -37,34 +43,6 @@ impl Clone for TagRef {
 impl PartialEq for TagRef {
     fn eq(&self, other: &Self) -> bool {
         self.tag_ref.read().unwrap().id == other.tag_ref.read().unwrap().id
-    }
-}
-
-impl PartialOrd for TagRef {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(
-            self.tag_ref
-                .read()
-                .unwrap()
-                .priority
-                .cmp(&other.tag_ref.read().unwrap().priority),
-        )
-    }
-}
-
-impl Hash for TagRef {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.tag_ref.read().unwrap().id.hash(state);
-    }
-}
-
-impl Ord for TagRef {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.tag_ref
-            .read()
-            .unwrap()
-            .priority
-            .cmp(&other.tag_ref.read().unwrap().priority)
     }
 }
 

@@ -6,9 +6,10 @@ use crate::workspace::ChangeSummary;
 use chrono::Duration;
 use iroh::NodeId;
 use rand_chacha::{ChaCha12Rng, rand_core::SeedableRng};
+use rayon::prelude::*;
 use scalable_cuckoo_filter::{ScalableCuckooFilter, ScalableCuckooFilterBuilder};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::ffi::OsStr;
 use std::io;
 use std::path::PathBuf;
@@ -34,7 +35,7 @@ pub enum ShelfType {
     Remote,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Ord, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Ord, PartialOrd, Serialize, Deserialize, Hash)]
 pub enum ShelfOwner {
     Node(NodeId),
     Sync(SyncId),
@@ -170,31 +171,24 @@ impl ShelfData {
         })
     }
 
-    pub async fn files(&self) -> BTreeSet<FileRef> {
-        let tag_trees: Vec<BTreeSet<FileRef>> = self
-            .root
-            .tags
-            .values()
-            .cloned()
-            .chain(self.root.dtag_files.values().cloned())
-            .collect();
-        merge(tag_trees)
+    pub async fn files(&self) -> Vec<FileRef> {
+        self.root.files.values().cloned().collect()
     }
 
-    pub async fn retrieve(&self, tag: TagRef) -> BTreeSet<FileRef> {
+    pub async fn retrieve(&self, tag: TagRef) -> HashSet<FileRef> {
         let mut res = self
             .root
             .tags
             .get(&tag)
             .cloned()
-            .unwrap_or(BTreeSet::<FileRef>::new());
-        let mut dres = self
+            .unwrap_or(HashSet::<FileRef>::new());
+        let dres = self
             .root
             .dtag_files
             .get(&tag)
             .cloned()
-            .unwrap_or(BTreeSet::<FileRef>::new());
-        res.append(&mut dres);
+            .unwrap_or(HashSet::<FileRef>::new());
+        res.extend(dres);
         res
     }
 
@@ -217,8 +211,6 @@ impl ShelfData {
         let mut node_v: Vec<(PathBuf, Node)> = Vec::new();
         // Take ownership
         let mut curr_node = std::mem::take(&mut self.root);
-        let shelf_attached = !self.root.tags.contains_key(&tag);
-
         // if stripped_path is none, file must be self.root
         if let Some(path) = stripped_path {
             for dir in path.components() {
@@ -248,6 +240,11 @@ impl ShelfData {
             let child = std::mem::replace(&mut curr_node, node);
             curr_node.directories.insert(pbuf, child);
         }
+        let shelf_attached = if file_attached {
+            curr_node.attach(tag.clone(), file.clone())
+        } else {
+            false
+        };
 
         self.root = curr_node;
         Ok((shelf_attached, file_attached))
@@ -340,20 +337,19 @@ impl ShelfData {
 
         let dir_attached = curr_node.attach_dtag(dtag.clone());
 
-        fn recursive_attach(node: &mut Node, dtag: TagRef) -> BTreeSet<FileRef> {
-            let mut files = node.files.values().cloned().collect::<BTreeSet<FileRef>>();
-            let mut subdir_files = BTreeSet::new();
+        fn recursive_attach(node: &mut Node, dtag: TagRef) -> HashSet<FileRef> {
+            let mut files = node.files.values().cloned().collect::<HashSet<FileRef>>();
+            let mut subdir_files = HashSet::new();
             for (_, subnode) in node.directories.iter_mut() {
-                let mut sub_files = recursive_attach(subnode, dtag.clone());
-                subdir_files.append(&mut sub_files);
+                let sub_files = recursive_attach(subnode, dtag.clone());
+                subdir_files.extend(sub_files);
             }
-            files.append(&mut subdir_files);
+            files.extend(subdir_files);
 
-            fn add_dtag_files(node: &mut Node, dtag: TagRef, files: BTreeSet<FileRef>) {
+            fn add_dtag_files(node: &mut Node, dtag: TagRef, files: HashSet<FileRef>) {
                 let set = node.dtag_files.entry(dtag).or_default();
-                files.iter().for_each(|f| {
-                    set.insert(f.clone());
-                });
+                let new: HashSet<FileRef> = files.par_iter().map(|f| f.clone()).collect();
+                set.extend(new);
             }
 
             add_dtag_files(node, dtag, files.clone());
@@ -366,13 +362,13 @@ impl ShelfData {
             let set = node
                 .dtag_files
                 .entry(dtag.clone())
-                .or_insert_with(BTreeSet::new);
-            set.append(&mut files.clone());
+                .or_insert_with(HashSet::new);
+            set.extend(files.clone());
             let child = std::mem::replace(&mut curr_node, node);
             curr_node.directories.insert(pbuf, child);
         }
 
-        files.iter().for_each(|f| {
+        files.par_iter().for_each(|f| {
             f.file_ref.write().unwrap().attach_dtag(dtag.clone());
         });
 
@@ -421,21 +417,21 @@ impl ShelfData {
 
         let dir_detached = curr_node.detach_dtag(dtag.clone());
 
-        fn recursive_detach(node: &mut Node, dtag: TagRef) -> BTreeSet<FileRef> {
+        fn recursive_detach(node: &mut Node, dtag: TagRef) -> HashSet<FileRef> {
             // Stop detaching the dtag when encountering a child node already dtagged with it
             if node.dtags.contains(&dtag) {
-                return BTreeSet::new();
+                return HashSet::new();
             }
 
-            let mut files = node.files.values().cloned().collect::<BTreeSet<FileRef>>();
-            let mut subdir_files = BTreeSet::new();
+            let mut files = node.files.values().cloned().collect::<HashSet<FileRef>>();
+            let mut subdir_files = HashSet::new();
             for (_, subnode) in node.directories.iter_mut() {
-                let mut sub_files = recursive_detach(subnode, dtag.clone());
-                subdir_files.append(&mut sub_files);
+                let sub_files = recursive_detach(subnode, dtag.clone());
+                subdir_files.extend(sub_files);
             }
-            files.append(&mut subdir_files);
+            files.extend(subdir_files);
 
-            fn remove_dtag_files(node: &mut Node, dtag: TagRef, files: BTreeSet<FileRef>) {
+            fn remove_dtag_files(node: &mut Node, dtag: TagRef, files: HashSet<FileRef>) {
                 let set = node.dtag_files.get_mut(&dtag);
                 if let Some(set) = set {
                     files.iter().for_each(|f| {
@@ -513,39 +509,131 @@ pub enum UpdateErr {
     PathNotDir,
 }
 
-pub fn merge<T: Clone + Ord>(mut files: Vec<BTreeSet<T>>) -> BTreeSet<T> {
+pub fn merge<T: Clone + std::cmp::Eq + std::hash::Hash>(mut files: Vec<HashSet<T>>) -> Vec<T> {
     //[?] Is the tournament-style Merge-Sort approach the most efficient method ??
     //[/] BTreeSets are not guaranteed to be the same size
     //[TODO] Time & Space Complexity analysis
 
-    if files.is_empty() {
-        return BTreeSet::<T>::new();
-    }
+    let mut final_res = Vec::<T>::new();
+    let mut chunks = files.into_iter();
 
-    while files.len() > 1 {
-        let mut next_round = Vec::with_capacity(files.len().div_ceil(2));
-        let mut chunks = files.chunks_exact(2);
-
-        if let Some(remainder) = chunks.remainder().first() {
-            next_round.push(remainder.clone());
-        }
-
-        for chunk in chunks.by_ref() {
-            //[TODO] Parallelise merge
-            let a = &chunk[0];
-            let b = &chunk[1];
-
-            // Merging the smaller set into the larger one is more efficient
-            let merged_tree = if a.len() <= b.len() {
-                b.union(a).cloned().collect()
+    // processing into two chunks
+    while let Some(a) = chunks.next() {
+        let mut to_append: Vec<T> = {
+            if let Some(b) = chunks.next() {
+                // Merging the smaller set into the larger one is more efficient
+                let (mut larger, smaller) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+                larger.extend(smaller);
+                larger.into_iter().collect()
             } else {
-                a.union(b).cloned().collect()
-            };
-            next_round.push(merged_tree);
-        }
+                a.into_iter().collect()
+            }
+        };
+        final_res.append(&mut to_append); // remainder chunk
+    }
+    final_res
+}
 
-        files = next_round;
+#[cfg(test)]
+mod tests {
+    use crate::{
+        shelf::file::{File, FileMetadata, FileRef},
+        tag::Tag,
+    };
+    use std::fs::{self, File as FileIO};
+    use std::sync::{Arc, RwLock};
+    use uuid::Uuid;
+    //use std::io::Write;
+    use jwalk::WalkDir;
+    use rayon::prelude::*;
+    use std::collections::HashSet;
+    use std::path::PathBuf;
+
+    use super::*;
+    fn list_files(root: PathBuf) -> Vec<FileRef> {
+        WalkDir::new(root)
+            .into_iter()
+            .filter_map(|entry_res| {
+                let entry = entry_res.unwrap();
+                if entry.file_type().is_file() {
+                    Some(FileRef {
+                        file_ref: Arc::new(RwLock::new(File::new(
+                            entry.path().clone(),
+                            HashSet::new(),
+                            HashSet::new(),
+                            FileMetadata::new(&entry.path()),
+                        ))),
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
-    files[0].clone()
+    #[test]
+    fn attach() {
+        let dir_path = PathBuf::from("target/test");
+        fs::create_dir_all(&dir_path).unwrap();
+        let file_path0 = dir_path.join("file.jpg");
+        let file_path1 = dir_path.join("file.txt");
+        let _ = FileIO::create(&file_path0).unwrap();
+        let _ = FileIO::create(&file_path1).unwrap();
+
+        let mut shelf = ShelfData::new(dir_path.clone()).unwrap();
+
+        let id = Uuid::now_v7();
+        let tag = Tag {
+            id,
+            priority: 0,
+            name: "tag0".to_string(),
+            parent: None,
+        };
+        let tag_ref = TagRef {
+            tag_ref: Arc::new(RwLock::new(tag)),
+        };
+        let (shelf_attached, file_attached) =
+            shelf.attach(file_path0.clone(), tag_ref.clone()).unwrap();
+
+        // newly attached to (shelf, file)
+        assert_eq!((shelf_attached, file_attached), (true, true));
+        assert!(shelf.root.tags.contains_key(&tag_ref));
+
+        let tag = Tag {
+            id,
+            priority: 0,
+            name: "tag0".to_string(),
+            parent: None,
+        };
+        let tag_ref = TagRef {
+            tag_ref: Arc::new(RwLock::new(tag)),
+        };
+        let (shelf_attached, file_attached) =
+            shelf.attach(file_path0.clone(), tag_ref.clone()).unwrap();
+
+        assert_eq!((shelf_attached, file_attached), (false, false));
+
+        let (shelf_attached, file_attached) =
+            shelf.attach(file_path1.clone(), tag_ref.clone()).unwrap();
+        assert_eq!((shelf_attached, file_attached), (false, true));
+
+        let id = Uuid::now_v7();
+        let tag = Tag {
+            id,
+            priority: 0,
+            name: "tag1".to_string(),
+            parent: None,
+        };
+        let tag_ref = TagRef {
+            tag_ref: Arc::new(RwLock::new(tag)),
+        };
+        let res = shelf.attach(file_path0.clone(), tag_ref.clone()).unwrap();
+
+        assert_eq!(res, (true, true));
+        assert!(shelf.root.tags.contains_key(&tag_ref));
+
+        fs::remove_file(&file_path0).unwrap();
+        fs::remove_file(&file_path1).unwrap();
+        fs::remove_dir(&dir_path).unwrap();
+    }
 }

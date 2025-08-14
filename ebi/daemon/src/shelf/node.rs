@@ -1,7 +1,9 @@
 use crate::shelf::file::{File, FileMetadata, FileRef};
 use crate::tag::TagRef;
+use core::hash;
+use jwalk::WalkDir;
 use std::collections::hash_map::Entry;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
@@ -9,36 +11,17 @@ use std::sync::{Arc, RwLock};
 #[derive(Debug, Default)]
 pub struct Node {
     pub files: HashMap<PathBuf, FileRef>,
-    pub tags: HashMap<TagRef, BTreeSet<FileRef>>,
+    pub tags: HashMap<TagRef, HashSet<FileRef>>,
     pub dtags: HashSet<TagRef>, // directory level tags, to be applied down
-    pub dtag_files: HashMap<TagRef, BTreeSet<FileRef>>, // files tagged with directory level tags
+    pub dtag_files: HashMap<TagRef, HashSet<FileRef>>, // files tagged with directory level tags
     pub directories: HashMap<PathBuf, Node>, // untagged: set of untagged files, support structure
 }
 
 impl Node {
     pub fn new(path: PathBuf) -> Result<Self, io::Error> {
-        let entries = std::fs::read_dir(&path)?
-            .map(|res| res.map(|e| e.path()))
-            .collect::<Result<Vec<_>, io::Error>>()?;
-        let (dir_paths, file_paths): (Vec<_>, Vec<_>) =
-            entries.into_iter().partition(|path| path.is_dir());
-        let files = file_paths
-            .into_iter()
-            .map(|file_path| {
-                (
-                    file_path.clone(),
-                    FileRef {
-                        file_ref: Arc::new(RwLock::new(File::new(
-                            file_path.clone(),
-                            BTreeSet::new(),
-                            BTreeSet::new(),
-                            FileMetadata::new(&file_path),
-                        ))),
-                    },
-                )
-            })
-            .collect::<HashMap<PathBuf, FileRef>>();
-        let directories = dir_paths
+        let mut dirs = Vec::<PathBuf>::new();
+        let files = walk_dir_init(&path, &mut dirs);
+        let directories = dirs
             .into_iter()
             .map(|dir| {
                 (
@@ -87,4 +70,40 @@ impl Node {
             None => self.tags.remove(&tag).is_some(),
         }
     }
+}
+
+fn walk_dir_init(root: &PathBuf, dirs: &mut Vec<PathBuf>) -> HashMap<PathBuf, FileRef> {
+    let mut visited_root = false;
+    // initialize unsorted walkdir that doesn't follow symlinks and includes hidden files
+    WalkDir::new(root)
+        .follow_links(false)
+        .skip_hidden(false)
+        .sort(false)
+        .into_iter()
+        .flat_map(|entry_res| {
+            let entry = entry_res.unwrap();
+            if entry.file_type().is_file() {
+                Some((
+                    entry.path(),
+                    FileRef {
+                        file_ref: Arc::new(RwLock::new(File::new(
+                            entry.path().clone(),
+                            HashSet::new(),
+                            HashSet::new(),
+                            FileMetadata::new(&entry.path()),
+                        ))),
+                    },
+                ))
+            } else if entry.file_type().is_dir() {
+                if !visited_root {
+                    visited_root = true
+                } else {
+                    dirs.push(entry.path());
+                }
+                None
+            } else {
+                None
+            }
+        })
+        .collect()
 }

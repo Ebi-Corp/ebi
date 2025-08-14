@@ -14,6 +14,7 @@ use ebi_proto::rpc::{
     Response, ResponseMetadata, ReturnCode, parse_code,
 };
 use iroh::NodeId;
+use rayon::prelude::*;
 use std::collections::HashMap;
 use std::collections::{BTreeSet, HashSet};
 use std::vec;
@@ -64,7 +65,7 @@ impl Retriever {
         }
     }
 
-    pub async fn get(&self, tag_id: TagId) -> Result<BTreeSet<OrderedFileSummary>, RetrieveErr> {
+    pub async fn get(&self, tag_id: TagId) -> Result<HashSet<OrderedFileSummary>, RetrieveErr> {
         if let Some(tag_ref) = self.workspace.read().await.tags.get(&tag_id) {
             if let Some(set) = self.cache.retrieve(tag_ref) {
                 Ok(set) //[?] What is CacheError supposed to mean ?? 
@@ -82,8 +83,8 @@ impl Retriever {
                             file_summary: FileSummary::from(f.clone(), shelf_owner.clone()),
                             order: self.order.clone(),
                         })
-                        .collect::<BTreeSet<OrderedFileSummary>>(),
-                    None => BTreeSet::new(),
+                        .collect::<HashSet<OrderedFileSummary>>(),
+                    None => HashSet::new(),
                 };
 
                 let mut dtags = match dtags {
@@ -93,8 +94,8 @@ impl Retriever {
                             file_summary: FileSummary::from(f.clone(), shelf_owner.clone()),
                             order: self.order.clone(),
                         })
-                        .collect::<BTreeSet<OrderedFileSummary>>(),
-                    None => BTreeSet::new(),
+                        .collect::<HashSet<OrderedFileSummary>>(),
+                    None => HashSet::new(),
                 };
 
                 if tags.len() >= dtags.len() {
@@ -110,7 +111,7 @@ impl Retriever {
         }
     }
 
-    pub async fn get_all(&self) -> Result<BTreeSet<OrderedFileSummary>, RetrieveErr> {
+    pub async fn get_all(&self) -> Result<HashSet<OrderedFileSummary>, RetrieveErr> {
         //[!] Check cache
         let shelf_r = self.shelf_data.read().await;
         let shelf_owner = self.shelf_owner.clone();
@@ -128,7 +129,7 @@ impl Retriever {
                         file_summary: FileSummary::from(f.clone(), shelf_owner.clone()),
                         order: self.order.clone(),
                     })
-                    .collect::<BTreeSet<OrderedFileSummary>>()
+                    .collect::<HashSet<OrderedFileSummary>>()
             }
         });
         let dtags = dtags.iter().flat_map(|(tag_ref, set)| {
@@ -141,7 +142,7 @@ impl Retriever {
                         file_summary: FileSummary::from(f.clone(), shelf_owner.clone()),
                         order: self.order.clone(),
                     })
-                    .collect::<BTreeSet<OrderedFileSummary>>()
+                    .collect::<HashSet<OrderedFileSummary>>()
             }
         });
         Ok(tags.chain(dtags).collect())
@@ -149,7 +150,7 @@ impl Retriever {
 }
 
 impl Service<PeerQuery> for QueryService {
-    type Response = (BTreeSet<OrderedFileSummary>, Vec<String>);
+    type Response = (Vec<OrderedFileSummary>, Vec<String>);
     type Error = ReturnCode;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
@@ -255,7 +256,8 @@ impl Service<PeerQuery> for QueryService {
                 }
             }
 
-            let files: BTreeSet<OrderedFileSummary> = merge(files);
+            let mut files: Vec<OrderedFileSummary> = merge(files);
+            files.par_sort(); // [TODO] make this sort optional based on req flag / configuration
             Ok((files, errors))
         })
     }
@@ -349,7 +351,7 @@ impl Service<ClientQuery> for QueryService {
             //
 
             struct TaskResult {
-                files: BTreeSet<OrderedFileSummary>,
+                files: Vec<OrderedFileSummary>,
                 ret_code: ReturnCode,
                 errors: Vec<String>,
             }
@@ -359,7 +361,7 @@ impl Service<ClientQuery> for QueryService {
 
             let peer_query_task = |node_id: NodeId, peer_req: Request| {
                 let mut errors = Vec::<String>::new();
-                let mut files = BTreeSet::<OrderedFileSummary>::new();
+                let mut files = Vec::<OrderedFileSummary>::new();
                 let mut peer_srv = peer_srv.clone();
 
                 async move {
@@ -372,8 +374,8 @@ impl Service<ClientQuery> for QueryService {
                             let mut res_metadata = peer_res.metadata.unwrap();
                             match parse_code(res_metadata.return_code) {
                                 ReturnCode::Success => {
-                                    //[?] Correct way to deserialize res.files into BTreeSet<OrderedFileSummary> ??
-                                    match borrow_decode_from_slice::<BTreeSet<OrderedFileSummary>, _>(
+                                    //[?] result might be rerordered by the requesting daemon based on flag or configuration
+                                    match borrow_decode_from_slice::<Vec<OrderedFileSummary>, _>(
                                         &peer_res.files,
                                         config,
                                     ) {
@@ -460,7 +462,7 @@ impl Service<ClientQuery> for QueryService {
             }
 
             let local_query_task = async move {
-                let mut files = Vec::<BTreeSet<OrderedFileSummary>>::new();
+                let mut files = Vec::<HashSet<OrderedFileSummary>>::new();
                 let mut errors = Vec::<String>::new();
 
                 while let Some(result) = local_futures.join_next().await {
@@ -491,8 +493,11 @@ impl Service<ClientQuery> for QueryService {
                     }
                 }
 
+                let mut files = merge(files);
+                files.par_sort();
+
                 TaskResult {
-                    files: merge(files),
+                    files,
                     ret_code: ReturnCode::Success, // [!] How should errors from different shelves handled?
                     errors,
                 }
@@ -504,7 +509,7 @@ impl Service<ClientQuery> for QueryService {
             if req.atomic {
                 let mut peer_srv = peer_srv.clone();
                 tokio::spawn(async move {
-                    let mut files = Vec::<BTreeSet<OrderedFileSummary>>::new();
+                    let mut files = Vec::<Vec<OrderedFileSummary>>::new();
                     let mut errors = Vec::<String>::new();
 
                     while let Some(result) = futures.join_next().await {
@@ -521,10 +526,10 @@ impl Service<ClientQuery> for QueryService {
                         }
                     }
 
-                    //[?] Is the tournament-style Merge-Sort approach the most efficient method ??
-                    //[/] BTreeSets are not guaranteed to be the same size
-                    //[TODO] Time & Space Complexity analysis
-                    let files: BTreeSet<OrderedFileSummary> = merge(files);
+                    let mut files: Vec<OrderedFileSummary> =
+                        files.into_par_iter().flat_map(|v| v).collect();
+
+                    files.par_sort(); // if files are already sorted, very cheap to resort
 
                     peer_srv
                         .call((

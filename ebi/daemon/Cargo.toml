@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+rayon = "1.10.0" # 1 disabled feature flag
+jwalk = "0.8.1" # no features flags
 fxhash = "0.2.1"
 chrono = { version = "0.4.40", default-features = false, features = ["clock", "std", "serde"] }
 tokio = "1.44.1"

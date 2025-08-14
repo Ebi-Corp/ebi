@@ -276,7 +276,7 @@ where
 {
     async fn listen_owned(mut self) -> Option<Self> {
         if self.listen_ref().await {
-            Some(self) 
+            Some(self)
         } else {
             None
         }
