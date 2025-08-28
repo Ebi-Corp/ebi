@@ -1,12 +1,15 @@
-use crate::shelf::file::{File, FileMetadata, FileRef};
-use crate::tag::TagRef;
-use core::hash;
+use crate::sharedref::{Ref, SharedRef, ImmutRef};
+use crate::shelf::file::{File, FileMetadata};
+use crate::tag::Tag;
 use jwalk::WalkDir;
-use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet};
+use papaya::{HashMap, HashSet};
 use std::io;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use uuid::Uuid;
+
+type FileRef = SharedRef<File>;
+type TagRef = ImmutRef<Tag>;
 
 #[derive(Debug, Default)]
 pub struct Node {
@@ -14,7 +17,7 @@ pub struct Node {
     pub tags: HashMap<TagRef, HashSet<FileRef>>,
     pub dtags: HashSet<TagRef>, // directory level tags, to be applied down
     pub dtag_files: HashMap<TagRef, HashSet<FileRef>>, // files tagged with directory level tags
-    pub directories: HashMap<PathBuf, Node>, // untagged: set of untagged files, support structure
+    pub directories: HashMap<PathBuf, Arc<Node>>,
 }
 
 impl Node {
@@ -26,10 +29,10 @@ impl Node {
             .map(|dir| {
                 (
                     dir.strip_prefix(&path).unwrap().to_path_buf(),
-                    Node::new(dir).unwrap(),
+                    Arc::new(Node::new(dir).unwrap()),
                 )
             })
-            .collect::<HashMap<PathBuf, Node>>();
+            .collect::<HashMap<PathBuf, Arc<Node>>>();
         Ok(Node {
             files,
             tags: HashMap::new(),
@@ -39,42 +42,49 @@ impl Node {
         })
     }
 
-    pub fn attach_dtag(&mut self, dtag: TagRef) -> bool {
-        self.dtags.insert(dtag)
+    pub fn attach_dtag(&self, dtag: &TagRef) -> bool {
+        self.dtags.pin().insert(dtag.clone())
     }
 
-    pub fn detach_dtag(&mut self, dtag: TagRef) -> bool {
-        self.dtags.remove(&dtag)
+    pub fn detach_dtag(&self, dtag: &TagRef) -> bool {
+        self.dtags.pin().remove(dtag)
     }
 
-    pub fn attach(&mut self, tag: TagRef, file: FileRef) -> bool {
-        let existed = matches!(self.tags.entry(tag.clone()), Entry::Occupied(_));
-        let set = self.tags.entry(tag).or_default();
-        set.insert(file.clone());
+    pub fn attach(&self, tag: &TagRef, file: &FileRef) -> bool {
+        let tags = self.tags.pin();
+        let existed = tags.get(tag).is_some();
+
+        if let Some(set) = tags.get(tag) {
+            set.pin().insert(file.clone());
+        } else {
+            let new_set = HashSet::new();
+            new_set.pin().insert(file.clone());
+            tags.insert(tag.clone(), new_set);
+        }
+
         !existed
     }
 
-    pub fn detach(&mut self, tag: TagRef, file: Option<FileRef>) -> bool {
+    pub fn detach(&self, tag: &TagRef, file: Option<&FileRef>) -> bool {
         match file {
             Some(file) => {
-                if let Some(set) = self.tags.get_mut(&tag) {
-                    let res = set.remove(&file);
+                if let Some(set) = self.tags.pin().get(tag) {
+                    let res = set.pin().remove(file);
                     if set.is_empty() {
-                        self.tags.remove(&tag);
+                        self.tags.pin().remove(tag);
                     }
                     res
                 } else {
                     false
                 }
             }
-            None => self.tags.remove(&tag).is_some(),
+            None => self.tags.pin().remove(tag).is_some(),
         }
     }
 }
 
 fn walk_dir_init(root: &PathBuf, dirs: &mut Vec<PathBuf>) -> HashMap<PathBuf, FileRef> {
     let mut visited_root = false;
-    // initialize unsorted walkdir that doesn't follow symlinks and includes hidden files
     WalkDir::new(root)
         .follow_links(false)
         .skip_hidden(false)
@@ -85,14 +95,18 @@ fn walk_dir_init(root: &PathBuf, dirs: &mut Vec<PathBuf>) -> HashMap<PathBuf, Fi
             if entry.file_type().is_file() {
                 Some((
                     entry.path(),
-                    FileRef {
-                        file_ref: Arc::new(RwLock::new(File::new(
+                    SharedRef::new_ref_id(
+                        Uuid::new_v5(
+                            &Uuid::NAMESPACE_URL,
+                            entry.path().as_os_str().as_encoded_bytes(),
+                        ),
+                        File::new(
                             entry.path().clone(),
                             HashSet::new(),
                             HashSet::new(),
                             FileMetadata::new(&entry.path()),
-                        ))),
-                    },
+                        )
+                    ),
                 ))
             } else if entry.file_type().is_dir() {
                 if !visited_root {

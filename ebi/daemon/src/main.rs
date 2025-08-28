@@ -3,22 +3,16 @@ use crate::services::cache::CacheService;
 use crate::services::peer::{Client, Peer, PeerService};
 use crate::services::query::QueryService;
 use crate::services::rpc::{DaemonInfo, RequestId, RpcService, TaskID};
-use crate::services::workspace::WorkspaceService;
-use crate::shelf::ShelfId;
-use anyhow::Result;
+use crate::services::state::StateService;
 use ebi_proto::rpc::*;
+use anyhow::Result;
 use iroh::{Endpoint, NodeId, SecretKey};
 use paste::paste;
-use std::collections::HashMap;
-use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
-use tokio::sync::RwLock;
-use tokio::sync::{mpsc, watch};
-use tokio::task::JoinHandle;
-use tokio::task::JoinSet;
+use tokio::{net::TcpListener, io::{AsyncReadExt, AsyncWriteExt}};
+use tokio::sync::{mpsc, watch, RwLock};
+use tokio::task::{JoinSet, JoinHandle};
 use tower::{Service, ServiceBuilder};
 use tracing::{Level, span};
 use tracing_subscriber::prelude::*;
@@ -27,6 +21,8 @@ use uuid::Uuid;
 
 mod query;
 mod services;
+mod sharedref;
+mod stateful;
 mod shelf;
 mod tag;
 mod workspace;
@@ -89,7 +85,6 @@ macro_rules! generate_response_match {
 }
 
 #[tokio::main]
-
 async fn main() -> Result<()> {
     tracing_subscriber::registry()
         .with(fmt::layer())
@@ -129,13 +124,9 @@ async fn main() -> Result<()> {
     //[/] The Peer service subscribes to the ResponseHandler when a request is sent.
     //[/] It is then notified when a response is received so it can acquire the read lock on the Response map.
     let daemon_info = Arc::new(DaemonInfo::new(id, "".to_string()));
-    let mut paths = HashMap::<NodeId, HashMap<PathBuf, ShelfId>>::new();
-    paths.insert(id, HashMap::new());
-    let workspace_srv = WorkspaceService {
-        workspaces: Arc::new(RwLock::new(HashMap::new())),
-        shelf_assignment: Arc::new(RwLock::new(HashMap::new())),
-        paths: Arc::new(RwLock::new(paths)),
-    };
+
+    let state_srv = StateService::new();
+
     let peer_srv = PeerService {
         peers: peers.clone(),
         clients: clients.clone(),
@@ -144,13 +135,13 @@ async fn main() -> Result<()> {
     let query_srv = QueryService {
         peer_srv: peer_srv.clone(),
         cache: CacheService {},
-        workspace_srv: workspace_srv.clone(),
+        state_srv: state_srv.clone(),
         daemon_info: daemon_info.clone(),
     };
     let service = ServiceBuilder::new().service(RpcService {
         daemon_info: daemon_info.clone(),
         peer_srv: peer_srv.clone(),
-        workspace_srv: workspace_srv.clone(),
+        state_srv: state_srv.clone(),
         query_srv,
         responses: responses.clone(),
         notify_queue: notify_queue.clone(),
@@ -159,6 +150,7 @@ async fn main() -> Result<()> {
         watcher: watcher.clone(),
     });
     let mut client_streams = 0;
+    //let state = state_srv.state.clone();
 
     loop {
         tokio::select! {
@@ -166,6 +158,7 @@ async fn main() -> Result<()> {
                 client_streams += 1;
                 tracing::info!("Accepted client connection at {}", addr);
                 let service = service.clone();
+                stream.set_nodelay(true)?;
                 let (read, write) = stream.into_split();
                 let (tx, mut rx) = mpsc::channel::<(Uuid, Vec<u8>)>(64);
                 let client = Client {

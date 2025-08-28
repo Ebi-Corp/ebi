@@ -3,11 +3,13 @@ use crate::query::{Query, QueryErr, RetrieveErr};
 use crate::services::cache::CacheService;
 use crate::services::peer::PeerService;
 use crate::services::rpc::{DaemonInfo, parse_peer_id, try_get_workspace};
-use crate::services::workspace::WorkspaceService;
+use crate::services::state::StateService;
+use crate::sharedref::ImmutRef;
 use crate::shelf::file::FileSummary;
-use crate::shelf::{ShelfDataRef, ShelfId, ShelfOwner, ShelfType, merge};
+use crate::shelf::{ShelfData, ShelfId, ShelfOwner, ShelfType, merge};
 use crate::tag::TagId;
-use crate::workspace::WorkspaceRef;
+use crate::workspace::Workspace;
+use arc_swap::Guard;
 use bincode::{serde::borrow_decode_from_slice, serde::encode_to_vec};
 use ebi_proto::rpc::{
     ClientQuery, ClientQueryData, Data, ErrorData, File, PeerQuery, Request, RequestMetadata,
@@ -15,10 +17,9 @@ use ebi_proto::rpc::{
 };
 use iroh::NodeId;
 use rayon::prelude::*;
-use std::collections::HashMap;
-use std::collections::{BTreeSet, HashSet};
-use std::vec;
+use im::{HashMap, HashSet};
 use std::{
+    vec,
     future::Future,
     pin::Pin,
     sync::Arc,
@@ -35,25 +36,24 @@ pub type TokenId = Uuid;
 pub struct QueryService {
     pub peer_srv: PeerService,
     pub cache: CacheService,
-    pub workspace_srv: WorkspaceService,
+    pub state_srv: StateService,
     pub daemon_info: Arc<DaemonInfo>,
 }
 
-#[derive(Clone)]
 pub struct Retriever {
-    workspace: WorkspaceRef,
+    workspace: Guard<Arc<Workspace>>,
     cache: CacheService,
     shelf_owner: ShelfOwner,
-    shelf_data: ShelfDataRef,
+    shelf_data: ImmutRef<ShelfData>,
     order: FileOrder,
 }
 
 impl Retriever {
     pub fn new(
-        workspace: WorkspaceRef,
+        workspace: Guard<Arc<Workspace>>,
         cache: CacheService, //[?] Requires lock ??
         shelf_owner: ShelfOwner,
-        shelf_data: ShelfDataRef,
+        shelf_data: ImmutRef<ShelfData>,
         order: FileOrder,
     ) -> Retriever {
         Retriever {
@@ -65,33 +65,31 @@ impl Retriever {
         }
     }
 
-    pub async fn get(&self, tag_id: TagId) -> Result<HashSet<OrderedFileSummary>, RetrieveErr> {
-        if let Some(tag_ref) = self.workspace.read().await.tags.get(&tag_id) {
+    pub fn get(&self, tag_id: TagId) -> Result<HashSet<OrderedFileSummary>, RetrieveErr> {
+        if let Some(tag_ref) = self.workspace.tags.get(&tag_id) {
             if let Some(set) = self.cache.retrieve(tag_ref) {
-                Ok(set) //[?] What is CacheError supposed to mean ?? 
+                Ok(set)
             } else {
-                let shelf_r = self.shelf_data.read().await;
-                let shelf_owner = self.shelf_owner.clone();
-                let tags = shelf_r.root.tags.get(tag_ref).cloned(); // [/] we are cloning a set of pointers, which is reasonabily cheap, but this section might be analyzed with the respective non-clone version
-                let dtags = shelf_r.root.dtag_files.get(tag_ref).cloned();
-                drop(shelf_r);
+                let root_ref = &*self.shelf_data.root;
 
-                let mut tags = match tags {
+                let mut tags = match root_ref.tags.pin().get(tag_ref) {
                     Some(tag_set) => tag_set
+                        .pin()
                         .iter()
                         .map(|f| OrderedFileSummary {
-                            file_summary: FileSummary::from(f.clone(), shelf_owner.clone()),
+                            file_summary: FileSummary::from(&*f.load(), self.shelf_owner.clone()),
                             order: self.order.clone(),
                         })
-                        .collect::<HashSet<OrderedFileSummary>>(),
-                    None => HashSet::new(),
+                        .collect::<im::HashSet<OrderedFileSummary>>(),
+                    None => im::HashSet::new(),
                 };
 
-                let mut dtags = match dtags {
+                let mut dtags = match root_ref.tags.pin().get(tag_ref) {
                     Some(dtag_set) => dtag_set
+                        .pin()
                         .iter()
                         .map(|f| OrderedFileSummary {
-                            file_summary: FileSummary::from(f.clone(), shelf_owner.clone()),
+                            file_summary: FileSummary::from(&*f.load(), self.shelf_owner.clone()),
                             order: self.order.clone(),
                         })
                         .collect::<HashSet<OrderedFileSummary>>(),
@@ -111,22 +109,21 @@ impl Retriever {
         }
     }
 
-    pub async fn get_all(&self) -> Result<HashSet<OrderedFileSummary>, RetrieveErr> {
+    pub fn get_all(&self) -> Result<HashSet<OrderedFileSummary>, RetrieveErr> {
         //[!] Check cache
-        let shelf_r = self.shelf_data.read().await;
-        let shelf_owner = self.shelf_owner.clone();
-        let tags = shelf_r.root.tags.clone(); // [/] we are cloning a set of pointers, which is reasonabily cheap, but this section might be analyzed with the respective non-clone version
-        let dtags = shelf_r.root.dtag_files.clone();
-        drop(shelf_r);
+        let root_ref = &*self.shelf_data.root;
+        let tags = root_ref.tags.pin();
+        let dtags = root_ref.dtag_files.pin();
 
         let tags = tags.iter().flat_map(|(tag_ref, set)| {
             let cached = self.cache.retrieve(tag_ref);
             if let Some(cached) = cached {
                 cached
             } else {
-                set.iter()
+                set.pin()
+                    .iter()
                     .map(|f| OrderedFileSummary {
-                        file_summary: FileSummary::from(f.clone(), shelf_owner.clone()),
+                        file_summary: FileSummary::from(&*f.load(), self.shelf_owner.clone()),
                         order: self.order.clone(),
                     })
                     .collect::<HashSet<OrderedFileSummary>>()
@@ -137,9 +134,11 @@ impl Retriever {
             if let Some(cached) = cached {
                 cached
             } else {
-                set.iter()
+                set.pin()
+                    .iter()
+                    //.par_bridge()
                     .map(|f| OrderedFileSummary {
-                        file_summary: FileSummary::from(f.clone(), shelf_owner.clone()),
+                        file_summary: FileSummary::from(&*f.load(), self.shelf_owner.clone()),
                         order: self.order.clone(),
                     })
                     .collect::<HashSet<OrderedFileSummary>>()
@@ -159,11 +158,11 @@ impl Service<PeerQuery> for QueryService {
     }
 
     fn call(&mut self, req: PeerQuery) -> Self::Future {
-        let mut workspace_srv = self.workspace_srv.clone();
+        let mut state_srv = self.state_srv.clone();
         let node_id = self.daemon_info.id;
         let cache = self.cache.clone();
         Box::pin(async move {
-            let Ok(workspace) = try_get_workspace(&req.workspace_id, &mut workspace_srv).await
+            let Ok(workspace_ref) = try_get_workspace(&req.workspace_id, &mut state_srv).await
             else {
                 return Err(ReturnCode::WorkspaceNotFound);
             };
@@ -175,50 +174,44 @@ impl Service<PeerQuery> for QueryService {
 
             let file_order = query.order.clone();
 
-            let shelves = &workspace.read().await.shelves;
-            let mut local_shelves = HashSet::<ShelfId>::new();
-            for (shelf_id, shelf) in shelves {
-                let shelf_r = shelf.read().await;
-                let shelf_owner = shelf_r.shelf_owner.clone();
-                drop(shelf_r);
-                match shelf_owner {
-                    ShelfOwner::Node(node_owner) => {
-                        if node_owner == node_id {
-                            local_shelves.insert(*shelf_id);
+            let workspace = workspace_ref.load();
+            let local_shelves: HashSet<ShelfId> = workspace
+                .shelves
+                .iter()
+                .filter_map(|(_, s)| {
+                    match s.shelf_owner {
+                        ShelfOwner::Node(node_owner) => {
+                            if node_owner == node_id {
+                                Some(s.id.clone())
+                            } else {
+                                None
+                            }
                         }
+                        ShelfOwner::Sync(_) => {
+                            todo!()
+                        } // [?] Should PeerQuery deal with Sync shelves ??
                     }
-                    ShelfOwner::Sync(_) => {} // [?] Should PeerQuery deal with Sync shelves ??
-                }
-            }
+                })
+                .collect();
 
             let mut local_futures = JoinSet::new();
             for s_id in local_shelves {
-                let workspace = workspace.clone();
-                let workspace_r = workspace.read().await;
-                let shelf = workspace_r.shelves.get(&s_id);
-                if let Some(shelf) = shelf {
-                    let shelf_r = shelf.read().await;
-                    let shelf_type = shelf_r.shelf_type.clone();
-                    let shelf_owner = shelf_r.shelf_owner.clone();
-                    drop(shelf_r);
-                    let workspace = workspace.clone();
+                if let Some(shelf) = workspace.shelves.get(&s_id) {
+                    let shelf_owner = shelf.shelf_owner.clone();
                     let cache = cache.clone();
                     let file_order = file_order.clone();
                     let mut query = query.clone();
-                    match shelf_type {
+                    match &shelf.shelf_type {
                         ShelfType::Remote => {
                             continue;
                         }
                         ShelfType::Local(data) => {
+                            let workspace = workspace_ref.load();
+                            let data = data.clone();
                             local_futures.spawn(async move {
-                                let retriever = Retriever::new(
-                                    workspace,
-                                    cache,
-                                    shelf_owner,
-                                    data.clone(),
-                                    file_order,
-                                );
-                                query.evaluate(retriever).await
+                                let retriever =
+                                    Retriever::new(workspace, cache, shelf_owner, data, file_order);
+                                query.evaluate(retriever)
                             });
                         }
                     }
@@ -273,14 +266,14 @@ impl Service<ClientQuery> for QueryService {
     }
 
     fn call(&mut self, req: ClientQuery) -> Self::Future {
-        let mut workspace_srv = self.workspace_srv.clone();
+        let mut state_srv = self.state_srv.clone();
         let peer_srv = self.peer_srv.clone();
         let node_id = self.daemon_info.id;
         let cache = self.cache.clone();
         Box::pin(async move {
             let query_str = req.query;
 
-            let Ok(workspace) = try_get_workspace(&req.workspace_id, &mut workspace_srv).await
+            let Ok(workspace_ref) = try_get_workspace(&req.workspace_id, &mut state_srv).await
             else {
                 return Err(ReturnCode::WorkspaceNotFound);
             };
@@ -299,15 +292,12 @@ impl Service<ClientQuery> for QueryService {
             )
             .map_err(|_| ReturnCode::InternalStateError)?;
 
-            let shelves = &workspace.read().await.shelves;
+            let workspace = workspace_ref.load();
             let mut nodes = HashSet::<NodeId>::new();
             let mut local_shelves = HashSet::<ShelfId>::new();
-            for (shelf_id, shelf) in shelves {
-                let shelf_r = shelf.read().await;
-                let filter = shelf_r.filter_tags.clone();
-                let shelf_owner = shelf_r.shelf_owner.clone();
-                drop(shelf_r);
-                match shelf_owner {
+            for (shelf_id, shelf) in workspace.shelves.iter() {
+                let filter = shelf.filter_tags.load();
+                match shelf.shelf_owner {
                     ShelfOwner::Node(node_owner) => {
                         if query.may_hold(&filter) {
                             if node_owner != node_id {
@@ -434,28 +424,25 @@ impl Service<ClientQuery> for QueryService {
             // [TODO] thread / retriever heuristics
             let mut local_futures = JoinSet::new();
             for s_id in local_shelves {
-                let workspace = workspace.clone();
-                let workspace_r = workspace.read().await;
-                let shelf = workspace_r.shelves.get(&s_id);
-                if let Some(shelf) = shelf {
-                    let shelf_r = shelf.read().await;
-                    let shelf_owner = shelf_r.shelf_owner.clone();
-                    let shelf_type = shelf_r.shelf_type.clone();
-                    drop(shelf_r);
+                if let Some(shelf) = workspace.shelves.get(&s_id) {
+                    let shelf_owner = shelf.shelf_owner.clone();
                     let mut query = query.clone();
-                    match shelf_type {
+                    let workspace_ref = workspace_ref.clone();
+                    match &shelf.shelf_type {
                         ShelfType::Remote => {
                             continue;
                         }
                         ShelfType::Local(data) => {
+                            let workspace = workspace_ref.load();
+                            let data = data.clone();
                             let retriever = Retriever::new(
-                                workspace.clone(),
+                                workspace,
                                 cache.clone(),
                                 shelf_owner,
-                                data.clone(),
+                                data,
                                 file_order.clone(),
                             );
-                            local_futures.spawn(async move { query.evaluate(retriever).await });
+                            local_futures.spawn(async move { query.evaluate(retriever) });
                         }
                     }
                 }
