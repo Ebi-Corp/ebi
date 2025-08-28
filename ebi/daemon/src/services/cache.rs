@@ -2,7 +2,7 @@ use crate::query::file_order::{FileOrder, OrderedFileSummary};
 use crate::shelf::ShelfId;
 use crate::tag::{TagId, TagRef};
 use crate::workspace::WorkspaceId;
-use std::collections::HashSet;
+use im::HashSet;
 
 #[derive(Clone, Debug)]
 pub struct CacheService {

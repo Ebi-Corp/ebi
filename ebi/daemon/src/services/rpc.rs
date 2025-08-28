@@ -1,11 +1,14 @@
 use crate::services::peer::PeerService;
 use crate::services::query::QueryService;
-use crate::services::workspace::{
-    AssignShelf, GetShelf, GetTag, GetWorkspace, RemoveWorkspace, UnassignShelf, WorkspaceService,
+use crate::services::state::{
+    AssignShelf, GetWorkspace, RemoveWorkspace, UnassignShelf,
+    StateService,
 };
-use crate::shelf::{ShelfId, ShelfOwner, ShelfRef, ShelfType, UpdateErr};
-use crate::tag::{TagId, TagRef};
-use crate::workspace::{Workspace, WorkspaceRef};
+use crate::sharedref::{ImmutRef, Ref, StatefulRef};
+use crate::shelf::{ShelfId, ShelfOwner, ShelfType, UpdateErr};
+use crate::stateful::StatefulUpdate;
+use crate::workspace::Workspace;
+use arc_swap::ArcSwap;
 use bincode::serde::encode_to_vec;
 use ebi_proto::rpc::*;
 use iroh::NodeId;
@@ -15,8 +18,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use tokio::sync::watch::{Receiver, Sender};
-use tokio::sync::{RwLock, RwLockReadGuard};
+use tokio::sync::{watch::{Receiver, Sender}, RwLock};
 use tokio::task::JoinHandle;
 use tower::Service;
 use tracing::{Level, span};
@@ -42,38 +44,10 @@ macro_rules! return_error {
 
 pub async fn try_get_workspace(
     rawid: &[u8],
-    srv: &mut WorkspaceService,
-) -> Result<WorkspaceRef, ReturnCode> {
-    let id = uuid(rawid.to_owned()).map_err(|_| ReturnCode::WorkspaceNotFound)?; //[!] Change to UuidParseErr //[?] Why ??
+    srv: &mut StateService,
+) -> Result<Arc<StatefulRef<Workspace>>, ReturnCode> {
+    let id = uuid(&rawid.to_owned()).map_err(|_| ReturnCode::ParseError)?;
     srv.call(GetWorkspace { id }).await
-}
-
-async fn try_get_shelf(
-    w_rawid: &[u8],
-    s_rawid: &[u8],
-    srv: &mut WorkspaceService,
-) -> Result<ShelfRef, ReturnCode> {
-    let shelf_id = uuid(s_rawid.to_owned()).map_err(|_| ReturnCode::ShelfNotFound)?;
-    let workspace_id = uuid(w_rawid.to_owned()).map_err(|_| ReturnCode::WorkspaceNotFound)?;
-    srv.call(GetShelf {
-        shelf_id,
-        workspace_id,
-    })
-    .await
-}
-
-async fn try_get_tag(
-    w_rawid: &[u8],
-    t_rawid: &[u8],
-    srv: &mut WorkspaceService,
-) -> Result<TagRef, ReturnCode> {
-    let tag_id = uuid(t_rawid.to_owned()).map_err(|_| ReturnCode::ShelfNotFound)?;
-    let workspace_id = uuid(w_rawid.to_owned()).map_err(|_| ReturnCode::WorkspaceNotFound)?;
-    srv.call(GetTag {
-        tag_id,
-        workspace_id,
-    })
-    .await
 }
 
 pub fn parse_peer_id(bytes: &[u8]) -> Result<NodeId, ()> {
@@ -81,19 +55,11 @@ pub fn parse_peer_id(bytes: &[u8]) -> Result<NodeId, ()> {
     NodeId::from_bytes(bytes).map_err(|_| ())
 }
 
-fn val_tag_id(workspace: &RwLockReadGuard<Workspace>, bytes: &[u8]) -> Option<TagId> {
-    uuid(bytes.to_owned())
-        .ok()
-        .filter(|id| workspace.tags.contains_key(id))
-}
-
-//[!] Handle poisoned locks
-
 #[derive(Clone, Debug)]
 pub struct RpcService {
     pub daemon_info: Arc<DaemonInfo>,
     pub peer_srv: PeerService,
-    pub workspace_srv: WorkspaceService,
+    pub state_srv: StateService,
     pub query_srv: QueryService,
     pub tasks: Arc<HashMap<TaskID, JoinHandle<()>>>,
 
@@ -132,8 +98,8 @@ pub enum UuidErr {
     SizeMismatch,
 }
 
-pub fn uuid(bytes: Vec<u8>) -> Result<Uuid, UuidErr> {
-    let bytes: Result<[u8; 16], _> = bytes.try_into();
+pub fn uuid(bytes: &Vec<u8>) -> Result<Uuid, UuidErr> {
+    let bytes: Result<[u8; 16], _> = bytes.clone().try_into();
     if let Ok(bytes) = bytes {
         Ok(Uuid::from_bytes(bytes))
     } else {
@@ -266,23 +232,32 @@ impl Service<DeleteTag> for RpcService {
     fn call(&mut self, req: DeleteTag) -> Self::Future {
         let metadata = req.metadata.clone().unwrap();
         let notify_queue = self.notify_queue.clone();
-        let mut workspace_srv = self.workspace_srv.clone();
+        let mut state_srv = self.state_srv.clone();
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
-            let Ok(workspace) = try_get_workspace(&req.workspace_id, &mut workspace_srv).await
+            let Ok(workspace_ref) = try_get_workspace(&req.workspace_id, &mut state_srv).await
             else {
                 return_error!(
-                    ReturnCode::WorkspaceNotFound, //[!] Change to UuidParseErr //[?] Why ??
+                    ReturnCode::WorkspaceNotFound,
                     DeleteTagResponse,
                     metadata.request_uuid,
                     error_data
                 );
             };
 
-            let workspace_r = workspace.read().await;
+            let workspace = workspace_ref.load();
 
-            let Some(tag_id) = val_tag_id(&workspace_r, &req.tag_id) else {
+            let Ok(tag_id) = uuid(&req.tag_id) else {
+                return_error!(
+                    ReturnCode::ParseError,
+                    DeleteTagResponse,
+                    metadata.request_uuid,
+                    error_data
+                );
+            };
+
+            let Some(tag_ref) = workspace.tags.get(&tag_id) else {
                 return_error!(
                     ReturnCode::TagNotFound,
                     DeleteTagResponse,
@@ -291,27 +266,13 @@ impl Service<DeleteTag> for RpcService {
                 );
             };
 
-            let tag = workspace_r.tags.get(&tag_id).unwrap().clone();
-            let shelves = workspace_r.shelves.clone();
-
-            drop(workspace_r);
-
-            for (_id, shelf) in shelves {
-                let shelf_r = shelf.read().await;
-                let shelf_type = shelf_r.shelf_type.clone();
-                let _shelf_config = shelf_r.config.clone();
-                let shelf_owner = shelf_r.shelf_owner.clone();
-                drop(shelf_r);
-
-                match shelf_type {
+            for (_id, shelf) in workspace.shelves.iter() {
+                match &shelf.shelf_type {
                     ShelfType::Local(shelf_data) => {
-                        let _ = shelf_data
-                            .write()
-                            .await
-                            .strip(PathBuf::from(""), tag.clone()); //[/] Operation can't fail 
+                        let _ = shelf_data.strip(PathBuf::from(""), tag_ref);
 
                         //[?] Are (remote) Sync'd shelves also in shelves ??
-                        if let ShelfOwner::Sync(_sync_id) = shelf_owner {
+                        if let ShelfOwner::Sync(_sync_id) = shelf.shelf_owner {
                             //[TODO] Sync Notification
                         }
                     }
@@ -327,12 +288,21 @@ impl Service<DeleteTag> for RpcService {
                 }
             }
 
-            workspace.write().await.tags.remove(&tag_id);
+            workspace_ref.stateful_rcu(|w| {
+                let (u_m, u_s) = w.tags.s_remove(&tag_id);
+                let u_w = Workspace {
+                    tags: u_m,
+                    info: ArcSwap::new(w.info.load_full()),
+                    shelves: w.shelves.clone(),
+                    lookup: w.lookup.clone()
+                };
+                (u_w, u_s)
+            }).await;
 
             notify_queue.write().await.push_back({
                 Notification::Operation(Operation {
                     target: ActionTarget::Tag.into(),
-                    id: req.tag_id,
+                    id: tag_id.into_bytes().to_vec(),
                     action: ActionType::Delete.into(),
                 })
             });
@@ -362,22 +332,41 @@ impl Service<StripTag> for RpcService {
         let metadata = req.metadata.clone().unwrap();
         let notify_queue = self.notify_queue.clone();
         let mut peer_srv = self.peer_srv.clone();
-        let mut workspace_srv = self.workspace_srv.clone();
+        let mut state_srv = self.state_srv.clone();
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
-            let shelf_res =
-                try_get_shelf(&req.workspace_id, &req.shelf_id, &mut workspace_srv).await;
-
-            let shelf = match shelf_res {
-                Ok(shelf) => shelf,
-                Err(err) => {
-                    return_error!(err, StripTagResponse, metadata.request_uuid, error_data);
-                }
+            let Ok(workspace_ref) = try_get_workspace(&req.workspace_id, &mut state_srv).await
+            else {
+                return_error!(
+                    ReturnCode::WorkspaceNotFound,
+                    StripTagResponse,
+                    metadata.request_uuid,
+                    error_data
+                );
             };
 
-            let Ok(tag_ref) = try_get_tag(&req.workspace_id, &req.tag_id, &mut workspace_srv).await
-            else {
+            let (Ok(shelf_id), Ok(tag_id)) = (uuid(&req.shelf_id), uuid(&req.tag_id)) else {
+                return_error!(
+                    ReturnCode::ParseError,
+                    StripTagResponse,
+                    metadata.request_uuid,
+                    error_data
+                );
+            };
+
+            let workspace = workspace_ref.load();
+
+            let Some(shelf) = workspace.shelves.get(&shelf_id) else {
+                return_error!(
+                    ReturnCode::ShelfNotFound,
+                    StripTagResponse,
+                    metadata.request_uuid,
+                    error_data
+                );
+            };
+
+            let Some(tag) = workspace.tags.get(&tag_id) else {
                 return_error!(
                     ReturnCode::TagNotFound,
                     StripTagResponse,
@@ -385,42 +374,33 @@ impl Service<StripTag> for RpcService {
                     error_data
                 );
             };
-            let shelf_r = shelf.read().await;
-            let shelf_id = req.shelf_id.clone();
-            let shelf_type = shelf_r.shelf_type.clone();
-            let _shelf_config = shelf_r.config.clone();
-            let shelf_owner = shelf_r.shelf_owner.clone();
-            drop(shelf_r);
 
-            let return_code = {
-                match shelf_type {
-                    ShelfType::Local(shelf_data) => {
-                        let path = PathBuf::from(req.path);
-                        let mut shelf_w = shelf_data.write().await;
-                        let result = match shelf_w.strip(path, tag_ref) {
-                            Ok(_) => ReturnCode::Success,
-                            Err(UpdateErr::PathNotDir) => ReturnCode::PathNotDir, // Path not a Directory
-                            Err(UpdateErr::PathNotFound) => ReturnCode::PathNotFound, // Path not Found
-                            Err(UpdateErr::FileNotFound) => ReturnCode::FileNotFound, // "Nothing ever happens" -Chudda
-                        };
-                        drop(shelf_w);
-                        if let ShelfOwner::Sync(_sync_id) = shelf_owner {
-                            //[TODO] Sync Notification
-                        }
-                        result
+
+            let return_code = match &shelf.shelf_type {
+                ShelfType::Local(shelf_data) => {
+                    let result = shelf_data.strip(PathBuf::from(&req.path), tag);
+
+                    if let ShelfOwner::Sync(_sync_id) = shelf.shelf_owner {
+                        //[TODO] Sync Notification
                     }
-                    ShelfType::Remote => {
-                        //[/] Request can be relayed, it is already atomic
-                        match shelf_owner {
-                            ShelfOwner::Node(peer_id) => {
-                                match peer_srv.call((peer_id, Request::from(req))).await {
-                                    Ok(res) => parse_code(res.metadata().unwrap().return_code),
-                                    Err(_) => ReturnCode::PeerServiceError, //[!] Generic error, expand with PeerService errors
-                                }
+                    match result {
+                        Ok(_) => ReturnCode::Success,
+                        Err(UpdateErr::PathNotDir) => ReturnCode::PathNotDir, // Path not a Directory
+                        Err(UpdateErr::PathNotFound) => ReturnCode::PathNotFound, // Path not Found
+                        Err(UpdateErr::FileNotFound) => ReturnCode::FileNotFound, // "Nothing ever happens" -Chudda
+                    }
+                }
+                ShelfType::Remote => {
+                    //[/] Request can be relayed, it is already atomic
+                    match shelf.shelf_owner {
+                        ShelfOwner::Node(peer_id) => {
+                            match peer_srv.call((peer_id, Request::from(req))).await {
+                                Ok(res) => parse_code(res.metadata().unwrap().return_code),
+                                Err(_) => ReturnCode::PeerServiceError, //[!] Generic error, expand with PeerService errors
                             }
-                            ShelfOwner::Sync(_sync_id) => {
-                                todo!();
-                            }
+                        }
+                        ShelfOwner::Sync(_sync_id) => {
+                            todo!();
                         }
                     }
                 }
@@ -430,7 +410,7 @@ impl Service<StripTag> for RpcService {
                 notify_queue.write().await.push_back({
                     Notification::Operation(Operation {
                         target: ActionTarget::Shelf.into(),
-                        id: shelf_id,
+                        id: shelf_id.into_bytes().to_vec(),
                         action: ActionType::Edit.into(),
                     })
                 });
@@ -460,22 +440,42 @@ impl Service<DetachTag> for RpcService {
     fn call(&mut self, req: DetachTag) -> Self::Future {
         let metadata = req.metadata.clone().unwrap();
         let notify_queue = self.notify_queue.clone();
-        let mut workspace_srv = self.workspace_srv.clone();
+        let mut state_srv = self.state_srv.clone();
         let mut peer_srv = self.peer_srv.clone();
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
-            let shelf_res =
-                try_get_shelf(&req.workspace_id, &req.shelf_id, &mut workspace_srv).await;
 
-            let shelf = match shelf_res {
-                Ok(shelf) => shelf,
-                Err(err) => {
-                    return_error!(err, DetachTagResponse, metadata.request_uuid, error_data);
-                }
+            let Ok(workspace_ref) = try_get_workspace(&req.workspace_id, &mut state_srv).await
+            else {
+                return_error!(
+                    ReturnCode::WorkspaceNotFound,
+                    DetachTagResponse,
+                    metadata.request_uuid,
+                    error_data
+                );
             };
 
-            let Ok(tag_ref) = try_get_tag(&req.workspace_id, &req.tag_id, &mut workspace_srv).await
-            else {
+            let (Ok(shelf_id), Ok(tag_id)) = (uuid(&req.shelf_id), uuid(&req.tag_id)) else {
+                return_error!(
+                    ReturnCode::ParseError,
+                    DetachTagResponse,
+                    metadata.request_uuid,
+                    error_data
+                );
+            };
+
+            let workspace = workspace_ref.load();
+
+            let Some(shelf) = workspace.shelves.get(&shelf_id) else {
+                return_error!(
+                    ReturnCode::ShelfNotFound,
+                    DetachTagResponse,
+                    metadata.request_uuid,
+                    error_data
+                );
+            };
+
+            let Some(tag) = workspace.tags.get(&tag_id) else {
                 return_error!(
                     ReturnCode::TagNotFound,
                     DetachTagResponse,
@@ -483,33 +483,27 @@ impl Service<DetachTag> for RpcService {
                     error_data
                 );
             };
-            let shelf_r = shelf.read().await;
-            let shelf_id = req.shelf_id.clone();
-            let shelf_type = shelf_r.shelf_type.clone();
-            let _shelf_config = shelf_r.config.clone();
-            let shelf_owner = shelf_r.shelf_owner.clone();
-            drop(shelf_r);
-            let tag_id = tag_ref.tag_ref.read().unwrap().id;
+
 
             //[/] Business Logic
             let return_code = {
-                match shelf_type {
+                match &shelf.shelf_type {
                     ShelfType::Local(shelf_data) => {
                         let path = PathBuf::from(&req.path);
-                        let mut shelf_w = shelf_data.write().await;
                         let result = if path.is_file() {
-                            shelf_w.detach(path, tag_ref)
+                            shelf_data.detach(path, tag)
                         } else {
-                            shelf_w.detach_dtag(path, tag_ref)
+                            shelf_data.detach_dtag(path, tag)
                         };
-                        drop(shelf_w);
-                        if let ShelfOwner::Sync(_sync_id) = shelf_owner {
+
+                        if let ShelfOwner::Sync(_sync_id) = shelf.shelf_owner {
                             //[TODO] Sync Notification
                         }
                         match result {
                             Ok((true, true)) => {
-                                let mut shelf_w = shelf.write().await;
-                                shelf_w.filter_tags.remove(&tag_id); // [!] Might change based on cuckoo filter sync logic
+                                let mut up_filter = (**shelf.filter_tags.load()).clone();
+                                up_filter.remove(&tag_id);
+                                shelf.filter_tags.store(Arc::new(up_filter));
                                 ReturnCode::Success
                             }
                             Ok((false, true)) => ReturnCode::Success,
@@ -520,7 +514,7 @@ impl Service<DetachTag> for RpcService {
                         }
                     }
                     ShelfType::Remote => {
-                        match shelf_owner {
+                        match shelf.shelf_owner {
                             ShelfOwner::Node(peer_id) => {
                                 match peer_srv.call((peer_id, Request::from(req))).await {
                                     Ok(res) => parse_code(res.metadata().unwrap().return_code), // [!] Cuckoo filter should be updated with a sync mechanism
@@ -539,7 +533,7 @@ impl Service<DetachTag> for RpcService {
                 notify_queue.write().await.push_back({
                     Notification::Operation(Operation {
                         target: ActionTarget::Shelf.into(),
-                        id: shelf_id,
+                        id: shelf_id.into_bytes().to_vec(),
                         action: ActionType::Edit.into(),
                     })
                 });
@@ -569,22 +563,43 @@ impl Service<AttachTag> for RpcService {
     fn call(&mut self, req: AttachTag) -> Self::Future {
         let metadata = req.metadata.clone().unwrap();
         let notify_queue = self.notify_queue.clone();
-        let mut workspace_srv = self.workspace_srv.clone();
+        let mut state_srv = self.state_srv.clone();
         let mut peer_srv = self.peer_srv.clone();
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
-            let shelf_res =
-                try_get_shelf(&req.workspace_id, &req.shelf_id, &mut workspace_srv).await;
 
-            let shelf = match shelf_res {
-                Ok(shelf) => shelf,
-                Err(err) => {
-                    return_error!(err, AttachTagResponse, metadata.request_uuid, error_data);
-                }
+            let Ok(workspace_ref) = try_get_workspace(&req.workspace_id, &mut state_srv).await
+            else {
+                return_error!(
+                    ReturnCode::WorkspaceNotFound,
+                    AttachTagResponse,
+                    metadata.request_uuid,
+                    error_data
+                );
             };
 
-            let Ok(tag_ref) = try_get_tag(&req.workspace_id, &req.tag_id, &mut workspace_srv).await
-            else {
+            let (Ok(shelf_id), Ok(tag_id)) = (uuid(&req.shelf_id), uuid(&req.tag_id)) else {
+                return_error!(
+                    ReturnCode::ParseError,
+                    AttachTagResponse,
+                    metadata.request_uuid,
+                    error_data
+                );
+            };
+
+            let workspace = workspace_ref.load();
+
+            let Some(shelf) = workspace.shelves.get(&shelf_id) else {
+
+                return_error!(
+                    ReturnCode::ShelfNotFound,
+                    AttachTagResponse,
+                    metadata.request_uuid,
+                    error_data
+                );
+            };
+
+            let Some(tag) = workspace.tags.get(&tag_id) else {
                 return_error!(
                     ReturnCode::TagNotFound,
                     AttachTagResponse,
@@ -592,33 +607,24 @@ impl Service<AttachTag> for RpcService {
                     error_data
                 );
             };
-            let shelf_r = shelf.read().await;
-            let shelf_id = req.shelf_id.clone();
-            let shelf_type = shelf_r.shelf_type.clone();
-            let shelf_owner = shelf_r.shelf_owner.clone();
-            let _shelf_config = shelf_r.config.clone();
-            drop(shelf_r);
-            let tag_id = tag_ref.tag_ref.read().unwrap().id;
-
             //[/] Business Logic
             let return_code = {
-                match shelf_type {
+                match &shelf.shelf_type {
                     ShelfType::Local(shelf_data) => {
                         let path = PathBuf::from(&req.path);
-                        let mut shelf_w = shelf_data.write().await;
                         let result = if path.is_file() {
-                            shelf_w.attach(path, tag_ref)
+                            shelf_data.attach(path, tag)
                         } else {
-                            shelf_w.attach_dtag(path, tag_ref)
+                            shelf_data.attach_dtag(path, tag)
                         };
-                        drop(shelf_w);
-                        if let ShelfOwner::Sync(_sync_id) = shelf_owner {
+                        if let ShelfOwner::Sync(_sync_id) = shelf.shelf_owner {
                             //[TODO] Sync Notification
                         }
                         match result {
                             Ok((true, true)) => {
-                                let mut shelf_w = shelf.write().await;
-                                shelf_w.filter_tags.insert(&tag_id);
+                                let mut up_filter = (**shelf.filter_tags.load()).clone();
+                                up_filter.insert(&tag_id);
+                                shelf.filter_tags.store(Arc::new(up_filter));
                                 ReturnCode::Success
                             } // Success
                             Ok((false, true)) => ReturnCode::Success, // File not tagged
@@ -629,7 +635,7 @@ impl Service<AttachTag> for RpcService {
                         }
                     }
                     ShelfType::Remote => {
-                        match shelf_owner {
+                        match shelf.shelf_owner {
                             ShelfOwner::Node(peer_id) => {
                                 match peer_srv.call((peer_id, Request::from(req))).await {
                                     Ok(res) => parse_code(res.metadata().unwrap().return_code), // [!] Cuckoo filter should be updated with a sync mechanism
@@ -648,7 +654,7 @@ impl Service<AttachTag> for RpcService {
                 notify_queue.write().await.push_back({
                     Notification::Operation(Operation {
                         target: ActionTarget::Shelf.into(),
-                        id: shelf_id,
+                        id: shelf_id.into_bytes().to_vec(),
                         action: ActionType::Edit.into(),
                     })
                 });
@@ -679,11 +685,11 @@ impl Service<RemoveShelf> for RpcService {
         let metadata = req.metadata.clone().unwrap();
         let notify_queue = self.notify_queue.clone();
         let mut peer_srv = self.peer_srv.clone();
-        let mut workspace_srv = self.workspace_srv.clone();
+        let mut state_srv = self.state_srv.clone();
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
-            let Ok(workspace) = try_get_workspace(&req.workspace_id, &mut workspace_srv).await
+            let Ok(workspace_ref) = try_get_workspace(&req.workspace_id, &mut state_srv).await
             else {
                 return_error!(
                     ReturnCode::WorkspaceNotFound,
@@ -693,9 +699,17 @@ impl Service<RemoveShelf> for RpcService {
                 );
             };
 
-            let Ok(shelf) =
-                try_get_shelf(&req.workspace_id, &req.shelf_id, &mut workspace_srv).await
-            else {
+            let Ok(shelf_id) = uuid(&req.shelf_id) else {
+                return_error!(
+                    ReturnCode::ParseError,
+                    RemoveShelfResponse,
+                    metadata.request_uuid,
+                    error_data
+                );
+            };
+            let workspace = workspace_ref.load();
+
+            let Some(shelf) = workspace.shelves.get(&shelf_id) else {
                 return_error!(
                     ReturnCode::ShelfNotFound,
                     RemoveShelfResponse,
@@ -703,23 +717,16 @@ impl Service<RemoveShelf> for RpcService {
                     error_data
                 );
             };
-            let shelf_r = shelf.read().await;
-            let shelf_id = shelf_r.info.id;
-            let shelf_type = shelf_r.shelf_type.clone();
-            let _shelf_config = shelf_r.config.clone();
-            let shelf_owner = shelf_r.shelf_owner.clone();
-            drop(shelf_r);
-            let workspace_id = workspace.read().await.id;
+
 
             //[/] Business Logic
             let return_code = {
-                match shelf_type {
+                match &shelf.shelf_type {
                     ShelfType::Local(_) => {
-                        workspace.write().await.shelves.remove(&shelf_id);
-                        let _ = workspace_srv
+                        let _result = state_srv
                             .call(UnassignShelf {
                                 shelf_id,
-                                workspace_id,
+                                workspace_id: workspace_ref.id,
                             })
                             .await;
                         notify_queue.write().await.push_back({
@@ -729,13 +736,13 @@ impl Service<RemoveShelf> for RpcService {
                                 action: ActionType::Delete.into(),
                             })
                         });
-                        if let ShelfOwner::Sync(_sync_id) = shelf_owner {
+                        if let ShelfOwner::Sync(_sync_id) = shelf.shelf_owner {
                             //[TODO] Sync Notification
                         }
-                        ReturnCode::Success //[/] Operation can't fail 
+                        ReturnCode::Success
                     }
                     ShelfType::Remote => {
-                        match shelf_owner {
+                        match shelf.shelf_owner {
                             ShelfOwner::Node(peer_id) => {
                                 match peer_srv.call((peer_id, Request::from(req))).await {
                                     Ok(res) => parse_code(res.metadata().unwrap().return_code),
@@ -754,7 +761,7 @@ impl Service<RemoveShelf> for RpcService {
                 notify_queue.write().await.push_back({
                     Notification::Operation(Operation {
                         target: ActionTarget::Workspace.into(),
-                        id: workspace_id.as_bytes().to_vec(),
+                        id: workspace_ref.id.as_bytes().to_vec(),
                         action: ActionType::Edit.into(),
                     })
                 });
@@ -786,43 +793,64 @@ impl Service<EditShelf> for RpcService {
         let metadata = metadata.unwrap();
         let notify_queue = self.notify_queue.clone();
         let mut peer_srv = self.peer_srv.clone();
-        let mut workspace_srv = self.workspace_srv.clone();
+        let mut state_srv = self.state_srv.clone();
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
-            let shelf_res =
-                try_get_shelf(&req.shelf_id, &req.workspace_id, &mut workspace_srv).await;
-            let shelf = match shelf_res {
-                Ok(shelf) => shelf,
-                Err(err) => {
-                    return_error!(err, EditShelfResponse, metadata.request_uuid, error_data);
-                }
+            let Ok(workspace_ref) = try_get_workspace(&req.workspace_id, &mut state_srv).await
+            else {
+                return_error!(
+                    ReturnCode::WorkspaceNotFound,
+                    EditShelfResponse,
+                    metadata.request_uuid,
+                    error_data
+                );
             };
 
-            let shelf_r = shelf.read().await;
-            let shelf_type = shelf_r.shelf_type.clone();
-            let _shelf_config = shelf_r.config.clone();
-            let shelf_owner = shelf_r.shelf_owner.clone();
-            drop(shelf_r);
+            let Ok(shelf_id) = uuid(&req.shelf_id) else {
+                return_error!(
+                    ReturnCode::ParseError,
+                    EditShelfResponse,
+                    metadata.request_uuid,
+                    error_data
+                );
+            };
+            let workspace = workspace_ref.load();
+
+            let Some(shelf) = workspace.shelves.get(&shelf_id) else {
+                return_error!(
+                    ReturnCode::ShelfNotFound,
+                    EditShelfResponse,
+                    metadata.request_uuid,
+                    error_data
+                );
+            };
 
             //[/] Business Logic
             let return_code = {
-                match shelf_type {
+                match shelf.shelf_type {
                     ShelfType::Local(_) => {
-                        shelf
-                            .write()
-                            .await
-                            .edit_info(Some(req.name.clone()), Some(req.description.clone()))
-                            .await;
-                        if let ShelfOwner::Sync(_sync_id) = shelf_owner {
+                        workspace_ref.stateful_rcu(|w| {
+                            let mut s = (***shelf).clone();
+                            s.edit_info(Some(req.name.clone()), Some(req.description.clone()).clone());
+                            let (u_m, u_s) = w.shelves.s_insert((shelf.id, ImmutRef::new_ref(s)));
+                            let u_w = Workspace {
+                                shelves: u_m,
+                                tags: w.tags.clone(),
+                                lookup: w.lookup.clone(),
+                                info: ArcSwap::new(w.info.load_full())
+                            };
+                            (u_w, u_s)
+                        }).await;
+                        if let ShelfOwner::Sync(_sync_id) = shelf.shelf_owner {
                             //[TODO] Sync Notification
                         }
                         ReturnCode::Success
                     }
                     ShelfType::Remote => {
-                        match shelf_owner {
+                        match shelf.shelf_owner {
                             ShelfOwner::Node(peer_id) => {
-                                match peer_srv.call((peer_id, Request::from(req.clone()))).await {
+                                match peer_srv.call((peer_id, Request::from(req))).await {
                                     Ok(res) => parse_code(res.metadata().unwrap().return_code),
                                     Err(_) => ReturnCode::PeerServiceError, //[!] Generic error, expand with PeerService errors
                                 }
@@ -839,7 +867,7 @@ impl Service<EditShelf> for RpcService {
                 notify_queue.write().await.push_back({
                     Notification::Operation(Operation {
                         target: ActionTarget::Workspace.into(),
-                        id: req.shelf_id,
+                        id: shelf_id.into_bytes().to_vec(),
                         action: ActionType::Edit.into(),
                     })
                 });
@@ -867,7 +895,7 @@ impl Service<AddShelf> for RpcService {
     }
 
     fn call(&mut self, req: AddShelf) -> Self::Future {
-        let mut workspace_srv = self.workspace_srv.clone();
+        let mut state_srv = self.state_srv.clone();
         let metadata = req.metadata.clone();
         let metadata = metadata.unwrap();
         let notify_queue = self.notify_queue.clone();
@@ -878,19 +906,19 @@ impl Service<AddShelf> for RpcService {
             let error_data: Option<ErrorData> = None;
             let mut shelf_id: Option<ShelfId> = None;
 
-            let Ok(workspace_id) = uuid(req.workspace_id.clone()) else {
+            let Ok(workspace_id) = uuid(&req.workspace_id) else {
                 return_error!(
-                    ReturnCode::WorkspaceNotFound,
+                    ReturnCode::ParseError,
                     AddShelfResponse,
                     metadata.request_uuid,
                     error_data
                 );
             };
 
-            let Ok(peer_id) = parse_peer_id(&req.peer_id.clone()) else {
+            let Ok(peer_id) = parse_peer_id(&req.peer_id) else {
                 return_error!(
                     ReturnCode::PeerNotFound, //[!] Change to UuidParseErr, peer validation is done
-                    //in WorkspaceService
+                    //in StateService
                     AddShelfResponse,
                     metadata.request_uuid,
                     error_data
@@ -900,12 +928,12 @@ impl Service<AddShelf> for RpcService {
             //[/] Business Logic
             let return_code = {
                 if peer_id != daemon_info.id {
-                    match peer_srv.call((peer_id, Request::from(req.clone()))).await {
+                    match peer_srv.call((peer_id, Request::from(req))).await {
                         Ok(res) => parse_code(res.metadata().unwrap().return_code),
                         Err(_) => ReturnCode::PeerServiceError, //[!] Generic error, expand with PeerService errors
                     }
                 } else {
-                    match workspace_srv
+                    match state_srv
                         .call(AssignShelf {
                             path: req.path.into(),
                             node_id: peer_id,
@@ -931,7 +959,7 @@ impl Service<AddShelf> for RpcService {
                 notify_queue.write().await.push_back({
                     Notification::Operation(Operation {
                         target: ActionTarget::Workspace.into(),
-                        id: req.workspace_id,
+                        id: workspace_id.into_bytes().to_vec(),
                         action: ActionType::Edit.into(),
                     })
                 });
@@ -959,13 +987,13 @@ impl Service<DeleteWorkspace> for RpcService {
     }
 
     fn call(&mut self, req: DeleteWorkspace) -> Self::Future {
-        let mut workspace_srv = self.workspace_srv.clone();
+        let mut state_srv = self.state_srv.clone();
         let metadata = req.metadata.unwrap();
         let notify_queue = self.notify_queue.clone();
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
-            let Ok(workspace_id) = uuid(req.workspace_id.clone()) else {
+            let Ok(workspace_id) = uuid(&req.workspace_id) else {
                 return_error!(
                     ReturnCode::WorkspaceNotFound,
                     DeleteWorkspaceResponse,
@@ -974,7 +1002,7 @@ impl Service<DeleteWorkspace> for RpcService {
                 );
             };
 
-            let Ok(()) = workspace_srv.call(RemoveWorkspace { workspace_id }).await else {
+            let Ok(()) = state_srv.call(RemoveWorkspace { workspace_id }).await else {
                 return_error!(
                     ReturnCode::WorkspaceNotFound,
                     DeleteWorkspaceResponse,
@@ -986,7 +1014,7 @@ impl Service<DeleteWorkspace> for RpcService {
             notify_queue.write().await.push_back({
                 Notification::Operation(Operation {
                     target: ActionTarget::Workspace.into(),
-                    id: workspace_id.as_bytes().to_vec(),
+                    id: workspace_id.into_bytes().to_vec(),
                     action: ActionType::Delete.into(),
                 })
             });
@@ -1013,33 +1041,62 @@ impl Service<EditTag> for RpcService {
     }
 
     fn call(&mut self, req: EditTag) -> Self::Future {
-        let mut workspace_srv = self.workspace_srv.clone();
+        let mut state_srv = self.state_srv.clone();
         let metadata = req.metadata.unwrap();
         let notify_queue = self.notify_queue.clone();
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
-            let tag_res = try_get_tag(&req.tag_id, &req.workspace_id, &mut workspace_srv).await;
-            let tag = match tag_res {
-                Ok(tag) => tag,
-                Err(err) => {
-                    return_error!(err, EditTagResponse, metadata.request_uuid, error_data);
-                }
+            let Ok(workspace_ref) = try_get_workspace(&req.workspace_id, &mut state_srv).await
+            else {
+                return_error!(
+                    ReturnCode::WorkspaceNotFound,
+                    EditTagResponse,
+                    metadata.request_uuid,
+                    error_data
+                );
+            };
+            let workspace = workspace_ref.load();
+
+            let Ok(tag_id) = uuid(&req.tag_id) else {
+                return_error!(
+                    ReturnCode::ParseError,
+                    EditTagResponse,
+                    metadata.request_uuid,
+                    error_data
+                );
+            };
+
+            let Some(tag) = workspace.tags.get(&tag_id) else {
+                return_error!(
+                    ReturnCode::TagNotFound,
+                    EditTagResponse,
+                    metadata.request_uuid,
+                    error_data
+                );
             };
 
             let parent = {
                 if let Some(id) = req.parent_id.clone() {
-                    let Ok(parent_tag) =
-                        try_get_tag(&id, &req.workspace_id, &mut workspace_srv).await
-                    else {
+                    let Ok(parent_id) = uuid(&id) else {
+                        return_error!(
+                            ReturnCode::ParseError,
+                            EditTagResponse,
+                            metadata.request_uuid,
+                            error_data
+                        );
+                    };
+
+                    let Some(parent_tag) = workspace.tags.get(&parent_id) else {
                         return_error!(
                             ReturnCode::ParentNotFound,
                             EditTagResponse,
                             metadata.request_uuid,
                             error_data
                         );
-                    };
+                    }; 
                     Some(parent_tag)
+
                 } else {
                     None
                 }
@@ -1057,10 +1114,16 @@ impl Service<EditTag> for RpcService {
 
             //[/] Business Logic
             let return_code = {
-                let mut tag_w = tag.tag_ref.write().unwrap();
-                tag_w.name = req.name.clone();
-                tag_w.priority = req.priority;
-                tag_w.parent = parent;
+                todo!();
+                /*
+                tag.rcu(|t| {
+                    let mut u_t = (**t).clone();
+                    u_t.name = req.name.clone();
+                    u_t.priority = req.priority;
+                    u_t.parent = parent.clone();
+                    u_t
+                });
+                */
                 ReturnCode::Success
             };
 
@@ -1096,13 +1159,13 @@ impl Service<EditWorkspace> for RpcService {
     }
 
     fn call(&mut self, req: EditWorkspace) -> Self::Future {
-        let mut workspace_srv = self.workspace_srv.clone();
+        let mut state_srv = self.state_srv.clone();
         let metadata = req.metadata.unwrap();
         let notify_queue = self.notify_queue.clone();
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
-            let Ok(workspace) = try_get_workspace(&req.workspace_id, &mut workspace_srv).await
+            let Ok(workspace) = try_get_workspace(&req.workspace_id, &mut state_srv).await
             else {
                 return_error!(
                     ReturnCode::WorkspaceNotFound,
@@ -1112,9 +1175,8 @@ impl Service<EditWorkspace> for RpcService {
                 );
             };
 
-            //[/] Workspace Name Validation
             if req.name.clone().is_empty() {
-                let return_code = ReturnCode::WorkspaceNameEmpty; // Name is Empty 
+                let return_code = ReturnCode::WorkspaceNameEmpty;
                 let metadata = ResponseMetadata {
                     request_uuid: metadata.request_uuid,
                     return_code: return_code as u32,
@@ -1127,9 +1189,10 @@ impl Service<EditWorkspace> for RpcService {
 
             //[/] Business Logic
             let return_code = {
-                let mut to_edit = workspace.write().await;
-                to_edit.name = req.name;
-                to_edit.description = req.description;
+                let mut ws_info = (**workspace.load().info.load()).clone();
+                ws_info.name = req.name;
+                ws_info.description = req.description;
+                workspace.load().info.store(Arc::new(ws_info));
                 ReturnCode::Success
             };
 
@@ -1165,12 +1228,12 @@ impl Service<GetShelves> for RpcService {
     }
 
     fn call(&mut self, req: GetShelves) -> Self::Future {
-        let mut workspace_srv = self.workspace_srv.clone();
+        let mut state_srv = self.state_srv.clone();
         let metadata = req.metadata.unwrap();
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
-            let Ok(workspace) = try_get_workspace(&req.workspace_id, &mut workspace_srv).await
+            let Ok(workspace) = try_get_workspace(&req.workspace_id, &mut state_srv).await
             else {
                 return_error!(
                     ReturnCode::WorkspaceNotFound,
@@ -1181,15 +1244,10 @@ impl Service<GetShelves> for RpcService {
             };
 
             let mut shelves = Vec::new();
-            let workspace_r = workspace.read().await;
+            let workspace = workspace.load();
             // [!] Can be changed with iter mut + impl Into<rpc::Shelf> for shelf
-            for (id, shelf) in &workspace_r.shelves {
-                let shelf_r = shelf.read().await;
-                let shelf_owner = shelf_r.shelf_owner.clone();
-                let shelf_info = shelf_r.info.clone();
-                drop(shelf_r);
-
-                let owner_data = match &shelf_owner {
+            for (id, shelf) in workspace.shelves.iter() {
+                let owner_data = match &shelf.shelf_owner {
                     ShelfOwner::Node(node_id) => {
                         ebi_proto::rpc::shelf::Owner::NodeId(node_id.as_bytes().to_vec())
                     }
@@ -1201,13 +1259,11 @@ impl Service<GetShelves> for RpcService {
                 shelves.push(Shelf {
                     shelf_id: id.as_bytes().to_vec(),
                     owner: Some(owner_data),
-                    name: shelf_info.name.clone(),
-                    description: shelf_info.description.clone(),
-                    path: shelf_info.root_path.to_string_lossy().into_owned(),
+                    name: shelf.info.name.clone(),
+                    description: shelf.info.description.clone(),
+                    path: shelf.info.root_path.to_string_lossy().into_owned(),
                 });
             }
-            drop(workspace_r);
-
             let metadata = ResponseMetadata {
                 request_uuid: metadata.request_uuid,
                 return_code: ReturnCode::Success as u32,
@@ -1231,11 +1287,11 @@ impl Service<GetWorkspaces> for RpcService {
     }
 
     fn call(&mut self, req: GetWorkspaces) -> Self::Future {
-        let mut workspace_srv = self.workspace_srv.clone();
+        let mut state_srv = self.state_srv.clone();
         let metadata = req.metadata.unwrap();
         Box::pin(async move {
-            let workspace_ls = workspace_srv
-                .call(crate::services::workspace::GetWorkspaces {})
+            let workspace_ls = state_srv
+                .call(crate::services::state::GetWorkspaces {})
                 .await
                 .unwrap();
 
@@ -1262,12 +1318,12 @@ impl Service<CreateWorkspace> for RpcService {
     }
 
     fn call(&mut self, req: CreateWorkspace) -> Self::Future {
-        let mut workspace_srv = self.workspace_srv.clone();
+        let mut state_srv = self.state_srv.clone();
         let notify_queue = self.notify_queue.clone();
         let metadata = req.metadata.clone().unwrap();
         Box::pin(async move {
-            let id = workspace_srv
-                .call(crate::services::workspace::CreateWorkspace {
+            let id = state_srv
+                .call(crate::services::state::CreateWorkspace {
                     name: req.name,
                     description: req.description,
                 })
@@ -1305,13 +1361,13 @@ impl Service<CreateTag> for RpcService {
     }
 
     fn call(&mut self, req: CreateTag) -> Self::Future {
-        let mut workspace_srv = self.workspace_srv.clone();
+        let mut state_srv = self.state_srv.clone();
         let notify_queue = self.notify_queue.clone();
         let metadata = req.metadata.clone().unwrap();
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
-            let Ok(workspace) = try_get_workspace(&req.workspace_id, &mut workspace_srv).await
+            let Ok(workspace_ref) = try_get_workspace(&req.workspace_id, &mut state_srv).await
             else {
                 return_error!(
                     ReturnCode::WorkspaceNotFound,
@@ -1321,42 +1377,9 @@ impl Service<CreateTag> for RpcService {
                 );
             };
 
-            let parent = {
-                if let Some(id) = req.parent_id.clone() {
-                    let Ok(parent) = try_get_tag(&id, &req.workspace_id, &mut workspace_srv).await
-                    else {
-                        return_error!(
-                            ReturnCode::ParentNotFound,
-                            CreateTagResponse,
-                            metadata.request_uuid,
-                            error_data
-                        );
-                    };
-                    Some(parent)
-                } else {
-                    None
-                }
-            };
+            let workspace = workspace_ref.load();
 
-            if workspace
-                .read()
-                .await
-                .lookup
-                .contains_key(&req.name.to_string())
-            {
-                return_error!(
-                    ReturnCode::ParentNotFound,
-                    CreateTagResponse,
-                    metadata.request_uuid,
-                    error_data
-                );
-            };
-
-            let Ok(id) = workspace
-                .write()
-                .await
-                .create_tag(req.priority, req.name, parent)
-            else {
+            if workspace.lookup.contains_key(&req.name) {
                 return_error!(
                     ReturnCode::TagNameDuplicate,
                     CreateTagResponse,
@@ -1365,10 +1388,66 @@ impl Service<CreateTag> for RpcService {
                 );
             };
 
+           let parent = {
+               if let Some(parent_id) = req.parent_id {
+
+                   let Ok(parent_id) = uuid(&parent_id) else {
+                        return_error!(
+                            ReturnCode::ParseError,
+                            CreateTagResponse,
+                            metadata.request_uuid,
+                            error_data
+                        );
+                    };
+
+                    let Some(parent_tag) = workspace.tags.get(&parent_id) else {
+                        return_error!(
+                            ReturnCode::TagNotFound,
+                            CreateTagResponse,
+                            metadata.request_uuid,
+                            error_data
+                        );
+                    };
+
+                    Some(parent_tag.clone())
+               } else {
+                   None
+               }
+           };
+
+            let c_tag = state_srv
+                .call(crate::services::state::CreateTag {
+                    priority: req.priority,
+                    parent,
+                    name: req.name.clone(),
+                }).await;
+
+            let Ok(tag) = c_tag else {
+                let ret_code = c_tag.unwrap_err();
+                return_error!(
+                    ret_code,
+                    CreateTagResponse,
+                    metadata.request_uuid,
+                    error_data
+                );
+            };
+
+            workspace_ref.stateful_rcu(|w| {
+                let (u_l, _) = w.lookup.s_insert((req.name.clone(), tag.id.clone()));
+                let (u_t, u_s) = w.tags.s_insert((tag.id.clone(), tag.clone()));
+                let u_w = Workspace {
+                    tags: u_t,
+                    info: ArcSwap::new(w.info.load_full()),
+                    shelves: w.shelves.clone(),
+                    lookup: u_l,
+                };
+                (u_w, u_s)
+            }).await;
+
             notify_queue.write().await.push_back({
                 Notification::Operation(Operation {
                     target: ActionTarget::Tag.into(),
-                    id: id.as_bytes().to_vec(),
+                    id: tag.id.into_bytes().to_vec(),
                     action: ActionType::Delete.into(),
                 })
             });
@@ -1379,7 +1458,7 @@ impl Service<CreateTag> for RpcService {
                 error_data: None,
             };
             Ok(CreateTagResponse {
-                tag_id: Some(id.as_bytes().to_vec()),
+                tag_id: Some(tag.id.into_bytes().to_vec()),
                 metadata: Some(metadata),
             })
         })

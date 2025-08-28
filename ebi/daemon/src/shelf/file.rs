@@ -1,15 +1,26 @@
+use crate::sharedref::{SharedRef, ImmutRef};
 use crate::shelf::ShelfOwner;
-use crate::tag::TagRef;
+use crate::tag::Tag;
 use chrono::{DateTime, Utc};
+use papaya::HashSet;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
-use std::hash::{Hash, Hasher};
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 #[cfg(windows)]
 use std::os::windows::fs::MetadataExt;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+pub type FileRef = SharedRef<File>;
+pub type TagRef = ImmutRef<Tag>;
+
+#[derive(Debug, Clone)]
+pub struct File {
+    pub path: PathBuf,
+    pub hash: u64,
+    pub metadata: FileMetadata,
+    pub tags: HashSet<TagRef>,
+    pub dtags: HashSet<TagRef>,
+}
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileSummary {
@@ -27,32 +38,9 @@ impl FileSummary {
             metadata,
         }
     }
-}
-
-impl FileSummary {
-    pub fn from(value: FileRef, shelf: ShelfOwner) -> Self {
-        let file = value.file_ref.read().unwrap();
+    pub fn from(file: &File, shelf: ShelfOwner) -> Self {
         FileSummary::new(shelf, file.path.clone(), file.metadata.clone())
     }
-}
-
-#[derive(Debug, Clone)]
-pub struct FileRef {
-    pub file_ref: Arc<RwLock<File>>,
-}
-impl Hash for FileRef {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.file_ref.read().unwrap().path.hash(state);
-    }
-}
-
-#[derive(Debug)]
-pub struct File {
-    path: PathBuf,
-    hash: u64,
-    metadata: FileMetadata,
-    tags: HashSet<TagRef>,
-    dtags: HashSet<TagRef>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -153,14 +141,6 @@ impl From<FileMetadata> for ebi_proto::rpc::FileMetadata {
     }
 }
 
-impl PartialEq for FileRef {
-    fn eq(&self, other: &Self) -> bool {
-        self.file_ref.read().unwrap().path == other.file_ref.read().unwrap().path
-    }
-}
-
-impl Eq for FileRef {}
-
 impl File {
     pub fn new(
         path: PathBuf,
@@ -177,19 +157,19 @@ impl File {
         }
     }
 
-    pub fn attach(&mut self, tag: TagRef) -> bool {
-        self.tags.insert(tag)
+    pub fn attach(&self, tag: &TagRef) -> bool {
+        self.tags.pin().insert(tag.clone())
     }
 
-    pub fn detach(&mut self, tag: TagRef) -> bool {
-        self.tags.remove(&tag)
+    pub fn detach(&self, tag: &TagRef) -> bool {
+        self.tags.pin().remove(tag)
     }
 
-    pub fn attach_dtag(&mut self, tag: TagRef) -> bool {
-        self.dtags.insert(tag)
+    pub fn attach_dtag(&self, tag: &TagRef) -> bool {
+        self.dtags.pin().insert(tag.clone())
     }
 
-    pub fn detach_dtag(&mut self, tag: TagRef) -> bool {
-        self.dtags.remove(&tag)
+    pub fn detach_dtag(&self, tag: &TagRef) -> bool {
+        self.dtags.pin().remove(tag)
     }
 }

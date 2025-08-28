@@ -8,9 +8,7 @@ use std::{
     sync::Arc,
     task::{Context, Poll},
 };
-use tokio::sync::RwLock;
-use tokio::sync::mpsc::Sender;
-use tokio::sync::watch::Receiver;
+use tokio::sync::{RwLock, mpsc::Sender, watch::Receiver};
 use tokio::time::{Duration, sleep};
 use tower::Service;
 use uuid::Uuid;

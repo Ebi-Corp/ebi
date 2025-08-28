@@ -5,9 +5,8 @@ use crate::tag::TagId;
 use rand_chacha::ChaCha12Rng;
 use scalable_cuckoo_filter::{DefaultHasher, ScalableCuckooFilter};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use im::HashSet;
 use std::fmt;
-use std::sync::Arc;
 
 peg::parser! {
     grammar tag_query() for str {
@@ -48,11 +47,11 @@ impl Formula {
         match self {
             Formula::BinaryExpression(_, x, y) => x
                 .get_tags()
-                .union(&y.get_tags())
-                .cloned()
+                .union(y.get_tags())
+                .into_iter()
                 .collect::<HashSet<TagId>>(),
             Formula::UnaryExpression(_, x) => x.get_tags(),
-            Formula::Proposition(p) => HashSet::from([p.tag_id]),
+            Formula::Proposition(p) => HashSet::from(Vec::from(&[p.tag_id])),
             Formula::Constant(_) => HashSet::new(), //[!] All tags if True
         }
     }
@@ -135,58 +134,57 @@ impl Query {
 
     //[!] Tags should be Validated inside the QueryService
 
-    pub async fn evaluate(
+    pub fn evaluate(
         //[/] Only local shelves
         &mut self,
         retriever: Retriever,
     ) -> Result<HashSet<OrderedFileSummary>, QueryErr> {
-        Query::recursive_evaluate(self.formula.clone(), Arc::new(retriever)).await
+        let res = Query::recursive_evaluate(&self.formula, &retriever);
+        res
     }
 
-    async fn recursive_evaluate(
-        formula: Formula,
-        ret_srv: Arc<Retriever>,
+    fn recursive_evaluate(
+        formula: &Formula,
+        ret_srv: &Retriever,
     ) -> Result<HashSet<OrderedFileSummary>, QueryErr> {
         //[!] Execute concurrently where possible
         match formula {
             Formula::BinaryExpression(BinaryOp::AND, x, y) => match (x.as_ref(), y.as_ref()) {
                 (_, Formula::UnaryExpression(UnaryOp::NOT, b)) => {
-                    let a = Box::pin(Query::recursive_evaluate(*x, ret_srv.clone())).await?;
-                    let b =
-                        Box::pin(Query::recursive_evaluate(*b.clone(), ret_srv.clone())).await?;
-                    Ok(a.difference(&b).cloned().collect())
+                    let a = Query::recursive_evaluate(&*x, ret_srv)?;
+                    let b = Query::recursive_evaluate(&*b, ret_srv)?;
+                    Ok(a.difference(b))
                 }
                 (Formula::UnaryExpression(UnaryOp::NOT, a), _) => {
-                    let a =
-                        Box::pin(Query::recursive_evaluate(*a.clone(), ret_srv.clone())).await?;
-                    let b = Box::pin(Query::recursive_evaluate(*y, ret_srv.clone())).await?;
-                    Ok(b.difference(&a).cloned().collect())
+                    let a = Query::recursive_evaluate(&*a, ret_srv)?;
+                    let b = Query::recursive_evaluate(&*y, ret_srv)?;
+                    Ok(b.difference(a))
                 }
                 _ => {
-                    let a = Box::pin(Query::recursive_evaluate(*x, ret_srv.clone())).await?;
-                    let b = Box::pin(Query::recursive_evaluate(*y, ret_srv.clone())).await?;
-                    Ok(a.intersection(&b).cloned().collect())
+                    let a = Query::recursive_evaluate(&*x, ret_srv)?;
+                    let b = Query::recursive_evaluate(&*y, ret_srv)?;
+                    Ok(a.intersection(b))
                 }
             },
             Formula::BinaryExpression(BinaryOp::OR, x, y) => {
-                let mut a = Box::pin(Query::recursive_evaluate(*x, ret_srv.clone())).await?;
-                let b = Box::pin(Query::recursive_evaluate(*y, ret_srv.clone())).await?;
+                let mut a = Query::recursive_evaluate(&*x, ret_srv)?;
+                let b = Query::recursive_evaluate(&*y, ret_srv)?;
                 a.extend(b); // equivalent to union, slightly more efficient
                 Ok(a)
             }
             Formula::BinaryExpression(BinaryOp::XOR, x, y) => {
-                let a = Box::pin(Query::recursive_evaluate(*x, ret_srv.clone())).await?;
-                let b = Box::pin(Query::recursive_evaluate(*y, ret_srv.clone())).await?;
-                Ok(a.symmetric_difference(&b).cloned().collect())
+                let a = Query::recursive_evaluate(&*x, ret_srv)?;
+                let b = Query::recursive_evaluate(&*y, ret_srv)?;
+                Ok(a.symmetric_difference(b))
             }
             Formula::UnaryExpression(UnaryOp::NOT, x) => {
-                let all = ret_srv.get_all().await.map_err(QueryErr::RuntimeError)?;
-                let subset = Box::pin(Query::recursive_evaluate(*x, ret_srv.clone())).await?;
-                Ok(all.difference(&subset).cloned().collect())
+                let all = ret_srv.get_all().map_err(QueryErr::RuntimeError)?;
+                let subset = Query::recursive_evaluate(&*x, ret_srv)?;
+                Ok(all.difference(subset))
             }
             Formula::Constant(false) => Ok(HashSet::new()),
-            Formula::Constant(true) => ret_srv.get_all().await.map_err(QueryErr::RuntimeError),
-            Formula::Proposition(p) => ret_srv.get(p.tag_id).await.map_err(QueryErr::RuntimeError),
+            Formula::Constant(true) => ret_srv.get_all().map_err(QueryErr::RuntimeError),
+            Formula::Proposition(p) => ret_srv.get(p.tag_id).map_err(QueryErr::RuntimeError),
         }
     }
 
@@ -431,7 +429,7 @@ impl Formula {
                 x.may_hold(tags) || y.may_hold(tags)
             }
             Formula::UnaryExpression(UnaryOp::NOT, x) => {
-                // We can guarantee there are no files for which the expression holds if and only if x is a Tautology 
+                // We can guarantee there are no files for which the expression holds if and only if x is a Tautology
                 !matches!(**x, Formula::Constant(true))
             }
             Formula::Constant(c) => *c, // Tautologies will always hold, Contradictions never will
@@ -441,6 +439,7 @@ impl Formula {
 }
 
 // TODO: define appropriate errors, include I/O, etc.
+#[derive(Debug)]
 pub enum QueryErr {
     SyntaxError,               // The Query is incorrectly formatted
     ParseError,                // A Tag_ID is not a valid UUID

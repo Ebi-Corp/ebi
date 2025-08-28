@@ -1,9 +1,10 @@
-use std::cmp::Ordering;
-use std::hash::{Hash, Hasher};
-use std::sync::{Arc, RwLock};
+use crate::sharedref::ImmutRef;
+use std::hash::Hash;
+use serde::{ser::SerializeStruct, Serialize, Serializer};
 use uuid::Uuid;
 
 pub type TagId = Uuid;
+pub type TagRef = ImmutRef<Tag>;
 
 #[derive(Clone)]
 pub struct TagData {
@@ -12,38 +13,27 @@ pub struct TagData {
     pub parent: Option<Box<TagData>>,
 }
 
-#[derive(Debug, Eq, PartialEq, Hash, Default)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Default)]
 pub struct Tag {
-    pub id: TagId,
     pub priority: u64,
     pub name: String,
     pub parent: Option<TagRef>,
     //[+] pub visible: bool, // Whether the tag is visible in the UI
 }
+impl Serialize for Tag {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("Tag", 3)?;
 
-#[derive(Debug)]
-pub struct TagRef {
-    pub tag_ref: Arc<RwLock<Tag>>,
-}
+        state.serialize_field("priority", &self.priority)?;
+        state.serialize_field("name", &self.name)?;
 
-impl Hash for TagRef {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.tag_ref.read().unwrap().id.hash(state);
+        // Serialize parent ID instead of the full reference
+        let parent_id = self.parent.as_ref().map(|p| p.id.clone());  // Assuming SharedRef has an id field
+        state.serialize_field("parent_id", &parent_id)?;
+        
+        state.end()
     }
 }
-
-impl Clone for TagRef {
-    fn clone(&self) -> Self {
-        TagRef {
-            tag_ref: Arc::clone(&self.tag_ref),
-        }
-    }
-}
-
-impl PartialEq for TagRef {
-    fn eq(&self, other: &Self) -> bool {
-        self.tag_ref.read().unwrap().id == other.tag_ref.read().unwrap().id
-    }
-}
-
-impl Eq for TagRef {}
