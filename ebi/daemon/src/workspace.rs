@@ -1,10 +1,8 @@
 use crate::shelf::file::FileRef;
 use crate::shelf::{Shelf, ShelfId};
-use crate::stateful::StatefulMap;
-use crate::sharedref::ImmutRef;
+use crate::stateful::{InfoState, StatefulField, StatefulMap};
+use crate::sharedref::{ImmutRef, StatefulRef};
 use crate::tag::{Tag, TagId};
-use arc_swap::ArcSwap;
-use serde::Serialize;
 use uuid::Uuid;
 
 pub type WorkspaceId = Uuid;
@@ -12,7 +10,7 @@ pub type WorkspaceId = Uuid;
 #[derive(Debug)]
 pub struct Workspace {
     // Workspace Info
-    pub info: ArcSwap<WorkspaceInfo>,
+    pub info: StatefulRef<WorkspaceInfo>,
     // Shelf Management
     pub shelves: StatefulMap<ShelfId, ImmutRef<Shelf>>,
     // Tag Management
@@ -21,16 +19,46 @@ pub struct Workspace {
 }
 
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug)]
 pub struct WorkspaceInfo {
-    pub name: String,
-    pub description: String,
+    pub name: StatefulField<WorkspaceInfoField, String>,
+    pub description: StatefulField<WorkspaceInfoField, String>
+}
+
+impl WorkspaceInfo {
+    pub fn new(name: Option<String>, description: Option<String>) -> Self {
+        let default_name = "Workspace".to_string();
+        let default_description = "".to_string();
+        let name = name.unwrap_or(default_name);
+        let description = description.unwrap_or(default_description);
+        let info_state: InfoState<WorkspaceInfoField> = InfoState::new();
+        WorkspaceInfo {
+            name: {
+                let field = StatefulField::<WorkspaceInfoField, String>::new(WorkspaceInfoField::Name, info_state.clone());
+                let (field, updater) = field.set(&name);
+                drop(updater); // No State Update required for Info Creation
+                field
+            }, 
+            description: {
+                let field = StatefulField::<WorkspaceInfoField, String>::new(WorkspaceInfoField::Description, info_state.clone());
+                let (field, updater) = field.set(&description);
+                drop(updater); // No State Update required for Info Creation
+                field
+            }
+        }
+    }
+}
+
+#[derive(Clone, Hash, Eq, PartialEq, Debug)]
+pub enum WorkspaceInfoField {
+    Name,
+    Description
 }
 
 impl Clone for Workspace {
     fn clone(&self) -> Self {
         Workspace {
-            info: ArcSwap::new(self.info.load_full()),
+            info: self.info.clone(),
             shelves: self.shelves.clone(),
             tags: self.tags.clone(),
             lookup: self.lookup.clone()

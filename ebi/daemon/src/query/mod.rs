@@ -139,8 +139,7 @@ impl Query {
         &mut self,
         retriever: Retriever,
     ) -> Result<HashSet<OrderedFileSummary>, QueryErr> {
-        let res = Query::recursive_evaluate(&self.formula, &retriever);
-        res
+        Query::recursive_evaluate(&self.formula, &retriever)
     }
 
     fn recursive_evaluate(
@@ -151,35 +150,35 @@ impl Query {
         match formula {
             Formula::BinaryExpression(BinaryOp::AND, x, y) => match (x.as_ref(), y.as_ref()) {
                 (_, Formula::UnaryExpression(UnaryOp::NOT, b)) => {
-                    let a = Query::recursive_evaluate(&*x, ret_srv)?;
-                    let b = Query::recursive_evaluate(&*b, ret_srv)?;
+                    let a = Query::recursive_evaluate(x, ret_srv)?;
+                    let b = Query::recursive_evaluate(b, ret_srv)?;
                     Ok(a.difference(b))
                 }
                 (Formula::UnaryExpression(UnaryOp::NOT, a), _) => {
-                    let a = Query::recursive_evaluate(&*a, ret_srv)?;
-                    let b = Query::recursive_evaluate(&*y, ret_srv)?;
+                    let a = Query::recursive_evaluate(a, ret_srv)?;
+                    let b = Query::recursive_evaluate(y, ret_srv)?;
                     Ok(b.difference(a))
                 }
                 _ => {
-                    let a = Query::recursive_evaluate(&*x, ret_srv)?;
-                    let b = Query::recursive_evaluate(&*y, ret_srv)?;
+                    let a = Query::recursive_evaluate(x, ret_srv)?;
+                    let b = Query::recursive_evaluate(y, ret_srv)?;
                     Ok(a.intersection(b))
                 }
             },
             Formula::BinaryExpression(BinaryOp::OR, x, y) => {
-                let mut a = Query::recursive_evaluate(&*x, ret_srv)?;
-                let b = Query::recursive_evaluate(&*y, ret_srv)?;
+                let mut a = Query::recursive_evaluate(x, ret_srv)?;
+                let b = Query::recursive_evaluate(y, ret_srv)?;
                 a.extend(b); // equivalent to union, slightly more efficient
                 Ok(a)
             }
             Formula::BinaryExpression(BinaryOp::XOR, x, y) => {
-                let a = Query::recursive_evaluate(&*x, ret_srv)?;
-                let b = Query::recursive_evaluate(&*y, ret_srv)?;
+                let a = Query::recursive_evaluate(x, ret_srv)?;
+                let b = Query::recursive_evaluate(y, ret_srv)?;
                 Ok(a.symmetric_difference(b))
             }
             Formula::UnaryExpression(UnaryOp::NOT, x) => {
                 let all = ret_srv.get_all().map_err(QueryErr::RuntimeError)?;
-                let subset = Query::recursive_evaluate(&*x, ret_srv)?;
+                let subset = Query::recursive_evaluate(x, ret_srv)?;
                 Ok(all.difference(subset))
             }
             Formula::Constant(false) => Ok(HashSet::new()),
