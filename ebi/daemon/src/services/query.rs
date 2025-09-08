@@ -77,7 +77,7 @@ impl Retriever {
                         .pin()
                         .iter()
                         .map(|f| OrderedFileSummary {
-                            file_summary: FileSummary::from(&*f.load(), self.shelf_owner.clone()),
+                            file_summary: FileSummary::from(&f.load(), self.shelf_owner.clone()),
                             order: self.order.clone(),
                         })
                         .collect::<im::HashSet<OrderedFileSummary>>(),
@@ -89,7 +89,7 @@ impl Retriever {
                         .pin()
                         .iter()
                         .map(|f| OrderedFileSummary {
-                            file_summary: FileSummary::from(&*f.load(), self.shelf_owner.clone()),
+                            file_summary: FileSummary::from(&f.load(), self.shelf_owner.clone()),
                             order: self.order.clone(),
                         })
                         .collect::<HashSet<OrderedFileSummary>>(),
@@ -123,7 +123,7 @@ impl Retriever {
                 set.pin()
                     .iter()
                     .map(|f| OrderedFileSummary {
-                        file_summary: FileSummary::from(&*f.load(), self.shelf_owner.clone()),
+                        file_summary: FileSummary::from(&f.load(), self.shelf_owner.clone()),
                         order: self.order.clone(),
                     })
                     .collect::<HashSet<OrderedFileSummary>>()
@@ -138,7 +138,7 @@ impl Retriever {
                     .iter()
                     //.par_bridge()
                     .map(|f| OrderedFileSummary {
-                        file_summary: FileSummary::from(&*f.load(), self.shelf_owner.clone()),
+                        file_summary: FileSummary::from(&f.load(), self.shelf_owner.clone()),
                         order: self.order.clone(),
                     })
                     .collect::<HashSet<OrderedFileSummary>>()
@@ -159,7 +159,7 @@ impl Service<PeerQuery> for QueryService {
 
     fn call(&mut self, req: PeerQuery) -> Self::Future {
         let mut state_srv = self.state_srv.clone();
-        let node_id = self.daemon_info.id;
+        let node_id = self.daemon_info.id.clone();
         let cache = self.cache.clone();
         Box::pin(async move {
             let Ok(workspace_ref) = try_get_workspace(&req.workspace_id, &mut state_srv).await
@@ -181,8 +181,8 @@ impl Service<PeerQuery> for QueryService {
                 .filter_map(|(_, s)| {
                     match s.shelf_owner {
                         ShelfOwner::Node(node_owner) => {
-                            if node_owner == node_id {
-                                Some(s.id.clone())
+                            if node_owner == *node_id {
+                                Some(s.id)
                             } else {
                                 None
                             }
@@ -268,7 +268,7 @@ impl Service<ClientQuery> for QueryService {
     fn call(&mut self, req: ClientQuery) -> Self::Future {
         let mut state_srv = self.state_srv.clone();
         let peer_srv = self.peer_srv.clone();
-        let node_id = self.daemon_info.id;
+        let node_id = self.daemon_info.id.clone();
         let cache = self.cache.clone();
         Box::pin(async move {
             let query_str = req.query;
@@ -300,7 +300,7 @@ impl Service<ClientQuery> for QueryService {
                 match shelf.shelf_owner {
                     ShelfOwner::Node(node_owner) => {
                         if query.may_hold(&filter) {
-                            if node_owner != node_id {
+                            if node_owner != *node_id {
                                 nodes.insert(node_owner);
                             } else {
                                 local_shelves.insert(*shelf_id);
@@ -448,31 +448,32 @@ impl Service<ClientQuery> for QueryService {
                 }
             }
 
+            let node = node_id.clone();
             let local_query_task = async move {
                 let mut files = Vec::<HashSet<OrderedFileSummary>>::new();
                 let mut errors = Vec::<String>::new();
 
                 while let Some(result) = local_futures.join_next().await {
                     match result {
-                        Err(err) => errors.push(format!("[{:?}] Thread error: {:?}", node_id, err)),
+                        Err(err) => errors.push(format!("[{:?}] Thread error: {:?}", node, err)),
                         Ok(result) => match result {
                             Ok(res) => files.push(res),
                             Err(QueryErr::SyntaxError) => {
                                 errors.push(format!(
                                     "[{:?}] Query Parse Error ",
-                                    node_id.as_bytes().to_vec()
+                                    node.as_bytes().to_vec()
                                 ));
                             }
                             Err(QueryErr::ParseError) => {
                                 errors.push(format!(
                                     "[{:?}] Tag Parse Error ",
-                                    node_id.as_bytes().to_vec()
+                                    node.as_bytes().to_vec()
                                 ));
                             }
                             Err(QueryErr::RuntimeError(ret_err)) => {
                                 errors.push(format!(
                                     "[{:?}] Runtime Error: {:?}",
-                                    node_id.as_bytes().to_vec(),
+                                    node.as_bytes().to_vec(),
                                     ret_err
                                 ));
                             }
@@ -491,7 +492,7 @@ impl Service<ClientQuery> for QueryService {
             };
 
             let id = futures.spawn(local_query_task).id();
-            node_tasks.insert(id, node_id);
+            node_tasks.insert(id, *node_id.clone());
 
             if req.atomic {
                 let mut peer_srv = peer_srv.clone();

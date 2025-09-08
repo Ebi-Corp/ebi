@@ -106,7 +106,7 @@ impl<T> History<T> {
                 s_lock: self.staged.s_lock.clone()
             },
             synced: Some(self.staged.clone()),
-            hist: hist
+            hist
         }
     }
 }
@@ -121,7 +121,7 @@ pub struct StatefulRef<T> where
 impl<T> Clone for StatefulRef<T> {
     fn clone(&self) -> Self {
         Self {
-            id: self.id.clone(),
+            id: self.id,
             data: ArcSwap::new(self.data.load_full()),
             s_lock: self.s_lock.clone()
         }
@@ -147,7 +147,7 @@ impl<T> StatefulRef<T> {
     }
 
     pub fn id(&self) -> Uuid {
-        self.id.clone()
+        self.id
     }
     pub fn id_ref(&self) -> &Uuid {
         &self.id
@@ -166,12 +166,12 @@ impl<T> StatefulRef<T> {
     {
         let mut cur = self.data.load();
         loop {
-            let (new, up_state) = f(&cur).into();
+            let (new, update_state) = f(&cur);
             let new = new.into();
             let prev = self.data.compare_and_swap(&*cur, new);
             let swapped = ptr_eq(&*cur, &*prev);
             if swapped {
-                up_state.await;
+                update_state.await;
                 return Guard::into_inner(prev);
             } else {
                 cur = prev;

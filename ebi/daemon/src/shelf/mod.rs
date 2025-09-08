@@ -1,7 +1,8 @@
 pub mod file;
 pub mod node;
-use crate::sharedref::{Ref, ImmutRef};
+use crate::sharedref::{ImmutRef, Ref, StatefulRef};
 use crate::shelf::node::Node;
+use crate::stateful::{InfoState, StatefulField};
 use crate::tag::{TagId, Tag};
 use crate::workspace::ChangeSummary;
 use arc_swap::ArcSwap;
@@ -14,10 +15,11 @@ use scalable_cuckoo_filter::{ScalableCuckooFilter, ScalableCuckooFilterBuilder};
 use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
 use std::io;
-use std::path::PathBuf;
+use std::path::{PathBuf};
 use std::result::Result;
-use std::sync::Arc;
+use std::sync::{Arc};
 use uuid::Uuid;
+use tokio::sync::RwLock;
 
 use file::FileRef;
 
@@ -67,7 +69,7 @@ pub struct Shelf {
     pub shelf_owner: ShelfOwner,
     pub config: ShelfConfig,
     pub filter_tags: ArcSwap<TagFilter>,
-    pub info: ShelfInfo,
+    pub info: StatefulRef<ShelfInfo>,
 }
 
 impl Clone for Shelf {
@@ -83,16 +85,9 @@ impl Clone for Shelf {
 }
 
 impl Shelf {
-    pub fn edit_info(&mut self, new_name: Option<String>, new_description: Option<String>) {
-        if let Some(name) = new_name {
-            self.info.name = name;
-        }
-        if let Some(description) = new_description {
-            self.info.description = description;
-        }
-    }
 
     pub fn new(
+        lock: Arc<RwLock<()>>,
         remote: bool,
         path: PathBuf,
         name: String,
@@ -111,11 +106,7 @@ impl Shelf {
             shelf_owner,
             config: config.unwrap_or_default(),
             filter_tags: generate_tag_filter(), // [TODO] Filter parameters (size, ...) should be configurable
-            info: ShelfInfo {
-                name,
-                description,
-                root_path: path,
-            },
+            info: StatefulRef::new(ShelfInfo::new(Some(name), Some(description), path), lock),
         };
         Ok(shelf)
     }
@@ -148,16 +139,22 @@ impl PartialEq for ShelfData {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Hash, Eq, PartialEq, Debug)]
+pub enum ShelfInfoField {
+    Name,
+    Description,
+    Root
+}
+
+#[derive(Debug)]
 pub struct ShelfInfo {
-    pub name: String,
-    pub description: String,
-    pub root_path: PathBuf, //[/] This is to minimise lock acquisition for ShelfData
+    pub name: StatefulField<ShelfInfoField, String>,
+    pub description: StatefulField<ShelfInfoField, String>,
+    pub root: StatefulField<ShelfInfoField, PathBuf>
 }
 
 impl ShelfInfo {
-    pub fn new(name: Option<String>, description: Option<String>, root_path: String) -> Self {
-        let root_path = PathBuf::from(root_path);
+    pub fn new(name: Option<String>, description: Option<String>, root_path: PathBuf) -> Self {
         let default_name = root_path
             .file_name()
             .unwrap_or_else(|| OsStr::new("Unnamed"))
@@ -166,10 +163,26 @@ impl ShelfInfo {
         let default_description = "".to_string();
         let name = name.unwrap_or(default_name);
         let description = description.unwrap_or(default_description);
+        let info_state: InfoState<ShelfInfoField> = InfoState::new();
         ShelfInfo {
-            name,
-            description,
-            root_path,
+            name: {
+                let field = StatefulField::<ShelfInfoField, String>::new(ShelfInfoField::Name, info_state.clone());
+                let (field, updater) = field.set(&name);
+                drop(updater); // No State Update required for Info Creation
+                field
+            }, 
+            description: {
+                let field = StatefulField::<ShelfInfoField, String>::new(ShelfInfoField::Description, info_state.clone());
+                let (field, updater) = field.set(&description);
+                drop(updater); // No State Update required for Info Creation
+                field
+            },
+            root: {
+                let field = StatefulField::<ShelfInfoField, PathBuf>::new(ShelfInfoField::Root, info_state.clone());
+                let (field, updater) = field.set(&root_path);
+                drop(updater); // No State Update required for Info Creation
+                field
+            }
         }
     }
 }
@@ -361,7 +374,7 @@ impl ShelfData {
 
             node.dtag_files
                 .pin()
-                .get_or_insert_with(dtag.clone(), || HashSet::new())
+                .get_or_insert_with(dtag.clone(),HashSet::new)
                 .extend(files.clone());
             files
         }

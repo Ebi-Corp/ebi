@@ -279,8 +279,8 @@ where
         let mut header = vec![0; HEADER_SIZE];
         let mut service = self.service.clone();
 
-        let _bytes_read = match self.r_socket.read_exact(&mut header).await {
-            Ok(n) if n == 0 => {
+        match self.r_socket.read_exact(&mut header).await {
+            Ok(0) => {
                 return false;
             }
             Ok(n) => {
@@ -304,8 +304,8 @@ where
         );
         let mut buffer = vec![0u8; size as usize];
 
-        let _bytes_read = match self.r_socket.read_exact(&mut buffer).await {
-            Ok(n) if n == 0 => {
+        match self.r_socket.read_exact(&mut buffer).await {
+            Ok(0) => {
                 return false;
             }
             Ok(n) => {

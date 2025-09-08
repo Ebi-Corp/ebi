@@ -31,7 +31,7 @@ impl Serialize for Tag {
         state.serialize_field("name", &self.name)?;
 
         // Serialize parent ID instead of the full reference
-        let parent_id = self.parent.as_ref().map(|p| p.id.clone());  // Assuming SharedRef has an id field
+        let parent_id = self.parent.as_ref().map(|p| p.id);  // Assuming SharedRef has an id field
         state.serialize_field("parent_id", &parent_id)?;
         
         state.end()

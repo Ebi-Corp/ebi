@@ -5,10 +5,9 @@ use crate::services::state::{
     StateService,
 };
 use crate::sharedref::{ImmutRef, Ref, StatefulRef};
-use crate::shelf::{ShelfId, ShelfOwner, ShelfType, UpdateErr};
-use crate::stateful::StatefulUpdate;
-use crate::workspace::Workspace;
-use arc_swap::ArcSwap;
+use crate::shelf::{ShelfId, ShelfInfo, ShelfOwner, ShelfType, UpdateErr};
+use crate::stateful::{InfoState, StatefulField};
+use crate::workspace::{Workspace, WorkspaceInfo};
 use bincode::serde::encode_to_vec;
 use ebi_proto::rpc::*;
 use iroh::NodeId;
@@ -21,7 +20,6 @@ use std::task::{Context, Poll};
 use tokio::sync::{watch::{Receiver, Sender}, RwLock};
 use tokio::task::JoinHandle;
 use tower::Service;
-use tracing::{Level, span};
 
 use uuid::Uuid;
 
@@ -46,7 +44,7 @@ pub async fn try_get_workspace(
     rawid: &[u8],
     srv: &mut StateService,
 ) -> Result<Arc<StatefulRef<Workspace>>, ReturnCode> {
-    let id = uuid(&rawid.to_owned()).map_err(|_| ReturnCode::ParseError)?;
+    let id = uuid(rawid).map_err(|_| ReturnCode::ParseError)?;
     srv.call(GetWorkspace { id }).await
 }
 
@@ -78,17 +76,27 @@ pub enum Notification {
     PeerConnected(NodeId),
 }
 
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+pub enum DaemonInfoField {
+    Name
+}
+
 #[derive(Debug)]
 pub struct DaemonInfo {
-    pub id: NodeId,
-    pub name: RwLock<String>,
+    pub id: Arc<NodeId>,
+    pub name: StatefulField<DaemonInfoField, String>,
 }
 
 impl DaemonInfo {
     pub fn new(id: NodeId, name: String) -> Self {
         DaemonInfo {
-            id,
-            name: RwLock::new(name),
+            id: Arc::new(id),
+            name: {
+                let field = StatefulField::<DaemonInfoField, String>::new(DaemonInfoField::Name, InfoState::new());
+                let (field, updater) = field.set(&name);
+                drop(updater); // No State Update required for Info Creation
+                field
+            },
         }
     }
 }
@@ -98,8 +106,8 @@ pub enum UuidErr {
     SizeMismatch,
 }
 
-pub fn uuid(bytes: &Vec<u8>) -> Result<Uuid, UuidErr> {
-    let bytes: Result<[u8; 16], _> = bytes.clone().try_into();
+pub fn uuid(bytes: &[u8]) -> Result<Uuid, UuidErr> {
+    let bytes: Result<[u8; 16], _> = bytes.to_owned().try_into();
     if let Ok(bytes) = bytes {
         Ok(Uuid::from_bytes(bytes))
     } else {
@@ -289,10 +297,10 @@ impl Service<DeleteTag> for RpcService {
             }
 
             workspace_ref.stateful_rcu(|w| {
-                let (u_m, u_s) = w.tags.s_remove(&tag_id);
+                let (u_m, u_s) = w.tags.remove(&tag_id);
                 let u_w = Workspace {
                     tags: u_m,
-                    info: ArcSwap::new(w.info.load_full()),
+                    info: w.info.clone(),
                     shelves: w.shelves.clone(),
                     lookup: w.lookup.clone()
                 };
@@ -830,15 +838,32 @@ impl Service<EditShelf> for RpcService {
             let return_code = {
                 match shelf.shelf_type {
                     ShelfType::Local(_) => {
-                        workspace_ref.stateful_rcu(|w| {
-                            let mut s = (***shelf).clone();
-                            s.edit_info(Some(req.name.clone()), Some(req.description.clone()).clone());
-                            let (u_m, u_s) = w.shelves.s_insert((shelf.id, ImmutRef::new_ref(s)));
+                        let s = (***shelf).clone();
+                        s.info.stateful_rcu(|info| {
+                            let (u_f, u_s) = info.name.set(&req.name);  
+                            let u_i = ShelfInfo {
+                                name: u_f,
+                                description: info.description.clone(),
+                                root: info.root.clone()
+                            };
+                            (u_i, u_s)
+                        }).await;
+                        s.info.stateful_rcu(|info| {
+                            let (u_f, u_s) = info.description.set(&req.description);
+                            let u_i = ShelfInfo {
+                                name: info.name.clone(),
+                                description: u_f,
+                                root: info.root.clone()
+                            };
+                            (u_i, u_s)
+                        }).await;
+                        workspace_ref.stateful_rcu(|w| {                            
+                            let (u_m, u_s) = w.shelves.insert(shelf.id, ImmutRef::new_ref(s.clone()));
                             let u_w = Workspace {
                                 shelves: u_m,
                                 tags: w.tags.clone(),
                                 lookup: w.lookup.clone(),
-                                info: ArcSwap::new(w.info.load_full())
+                                info: w.info.clone()
                             };
                             (u_w, u_s)
                         }).await;
@@ -927,7 +952,7 @@ impl Service<AddShelf> for RpcService {
 
             //[/] Business Logic
             let return_code = {
-                if peer_id != daemon_info.id {
+                if peer_id != *daemon_info.id {
                     match peer_srv.call((peer_id, Request::from(req))).await {
                         Ok(res) => parse_code(res.metadata().unwrap().return_code),
                         Err(_) => ReturnCode::PeerServiceError, //[!] Generic error, expand with PeerService errors
@@ -1189,10 +1214,23 @@ impl Service<EditWorkspace> for RpcService {
 
             //[/] Business Logic
             let return_code = {
-                let mut ws_info = (**workspace.load().info.load()).clone();
-                ws_info.name = req.name;
-                ws_info.description = req.description;
-                workspace.load().info.store(Arc::new(ws_info));
+                let w = (*workspace.load_full()).clone();
+                w.info.stateful_rcu(|info| {
+                    let (u_f, u_s) = info.name.set(&req.name);  
+                    let u_i = WorkspaceInfo {
+                        name: u_f,
+                        description: info.description.clone()
+                    };
+                    (u_i, u_s)
+                }).await;
+                w.info.stateful_rcu(|info| {
+                    let (u_f, u_s) = info.description.set(&req.description);
+                    let u_i = WorkspaceInfo {
+                        name: info.name.clone(),
+                        description: u_f
+                    };
+                    (u_i, u_s)
+                }).await;
                 ReturnCode::Success
             };
 
@@ -1259,9 +1297,9 @@ impl Service<GetShelves> for RpcService {
                 shelves.push(Shelf {
                     shelf_id: id.as_bytes().to_vec(),
                     owner: Some(owner_data),
-                    name: shelf.info.name.clone(),
-                    description: shelf.info.description.clone(),
-                    path: shelf.info.root_path.to_string_lossy().into_owned(),
+                    name: shelf.info.load().name.get(),
+                    description: shelf.info.load().description.get(),
+                    path: shelf.info.load().root.get().to_string_lossy().into_owned(),
                 });
             }
             let metadata = ResponseMetadata {
@@ -1433,11 +1471,11 @@ impl Service<CreateTag> for RpcService {
             };
 
             workspace_ref.stateful_rcu(|w| {
-                let (u_l, _) = w.lookup.s_insert((req.name.clone(), tag.id.clone()));
-                let (u_t, u_s) = w.tags.s_insert((tag.id.clone(), tag.clone()));
+                let (u_l, _) = w.lookup.insert(req.name.clone(), tag.id);
+                let (u_t, u_s) = w.tags.insert(tag.id, tag.clone());
                 let u_w = Workspace {
                     tags: u_t,
-                    info: ArcSwap::new(w.info.load_full()),
+                    info: w.info.clone(),
                     shelves: w.shelves.clone(),
                     lookup: u_l,
                 };

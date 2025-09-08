@@ -60,7 +60,7 @@ message CreateWorkspace { //[x]
   RequestMetadata metadata = 3;
 } //[x] Notify 
 
-message EditWorkspace { //[x] 
+message EditWorkspace { //[x] //[?] Fields are Option<String> ??
   bytes workspace_id = 1;
   string name = 2;
   string description = 3;
@@ -112,7 +112,7 @@ message AddShelf { //[x]
   RequestMetadata metadata = 6;
 } //[x] Notify 
 
-message EditShelf { //[x] 
+message EditShelf { //[x] //[?] Fields are Option<String> ??
   bytes shelf_id = 1;
   bytes workspace_id = 2;
   string name = 3;

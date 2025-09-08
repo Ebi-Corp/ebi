@@ -1,7 +1,6 @@
 use crate::shelf::{Shelf, ShelfId, ShelfOwner};
 use crate::tag::Tag;
 use crate::workspace::{Workspace, WorkspaceId, WorkspaceInfo};
-use arc_swap::ArcSwap;
 use ebi_proto::rpc::*;
 use iroh::NodeId;
 use tokio::sync::RwLock;
@@ -15,7 +14,7 @@ use std::{
     task::{Context, Poll},
 };
 use tower::Service;
-use crate::stateful::{StatefulMap, StatefulUpdate};
+use crate::stateful::{StatefulMap, SwapRef};
 use crate::sharedref::{StatefulRef, History, ImmutRef, Ref};
 
 type L = ();
@@ -42,7 +41,7 @@ pub struct GroupState {
 }
 impl GroupState {
     fn new() -> Self {
-        Self { workspaces: StatefulMap::new(Arc::new(())), shelf_assignment: StatefulMap::new(Arc::new(())) }
+        Self { workspaces: StatefulMap::new(SwapRef::new(())), shelf_assignment: StatefulMap::new(SwapRef::new(())) }   //[!] Add Bloom Filter
     }
 }
 
@@ -95,21 +94,18 @@ impl Service<CreateWorkspace> for StateService {
         let lock = self.lock.clone();
         Box::pin(async move {
 
-            let updater = Arc::new(()); // [TODO] Spawn bloom filters
+            let w_state = SwapRef::new(()); // [TODO] Spawn bloom filters
             let workspace = Workspace {
-                info: ArcSwap::new(Arc::new(WorkspaceInfo {
-                    name: req.name,
-                    description: req.description,
-                })),
-                shelves: StatefulMap::new(updater.clone()), // Placeholder for local shelves
-                tags: StatefulMap::new(updater.clone()),
-                lookup: StatefulMap::new(updater.clone()),
+                info: StatefulRef::new(WorkspaceInfo::new(Some(req.name), Some(req.description)), lock.clone()),
+                shelves: StatefulMap::new(w_state.clone()), // Placeholder for local shelves
+                tags: StatefulMap::new(w_state.clone()),
+                lookup: StatefulMap::new(w_state.clone()),
             };
-            let w_ref = StatefulRef::new(workspace, lock);
-            let w_id = w_ref.id.clone();
+            let w_ref = StatefulRef::new(workspace, lock.clone());
+            let w_id = w_ref.id;
 
             state.staged.stateful_rcu(|s| {
-                let (u_m, u_s) = s.workspaces.s_insert((w_id, w_ref.clone().into()));
+                let (u_m, u_s) = s.workspaces.insert(w_id, w_ref.clone().into());
                 let u_w = GroupState {
                     workspaces: u_m,
                     shelf_assignment: s.shelf_assignment.clone(),
@@ -174,10 +170,7 @@ impl Service<GetWorkspaces> for StateService {
                     let tag_id = tag.id;
                     let name = tag.name.clone();
                     let priority = tag.priority;
-                    let parent_id = match tag.parent.clone() {
-                        Some(parent) => Some(parent.id.as_bytes().to_vec()),
-                        None => None,
-                    };
+                    let parent_id = tag.parent.clone().map(|parent| parent.id.as_bytes().to_vec());
                     tag_ls.push(ebi_proto::rpc::Tag {
                         tag_id: tag_id.as_bytes().to_vec(),
                         name,
@@ -190,8 +183,8 @@ impl Service<GetWorkspaces> for StateService {
                 let wk_info = workspace.info.load();
                 let ws = ebi_proto::rpc::Workspace {
                     workspace_id: workspace_id.as_bytes().to_vec(),
-                    name: wk_info.name.clone(),
-                    description: wk_info.description.clone(),
+                    name: wk_info.name.get().clone(),
+                    description: wk_info.description.get().clone(),
                     tags: tag_ls,
                 };
                 workspace_ls.push(ws);
@@ -227,9 +220,9 @@ impl Service<UnassignShelf> for StateService {
             };
 
             wk.stateful_rcu(|w| {
-                let (u_m, u_s) = w.shelves.s_remove(&req.shelf_id);
+                let (u_m, u_s) = w.shelves.remove(&req.shelf_id);
                 let u_w = Workspace {
-                    info: ArcSwap::new(w.info.load_full()),
+                    info: w.info.clone(),
                     shelves: u_m,
                     tags: w.tags.clone(),
                     lookup: w.lookup.clone()
@@ -251,7 +244,7 @@ pub struct AssignShelf {
     pub workspace_id: WorkspaceId,
 }
 
-impl Service<AssignShelf> for StateService {
+impl Service<AssignShelf> for StateService { //[?] Create Shelf during assignment (if it does not exist) ?? //[/] Would help with having ShelfInfo in history
     type Response = ShelfId;
     type Error = ReturnCode;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
@@ -262,6 +255,7 @@ impl Service<AssignShelf> for StateService {
 
     fn call(&mut self, req: AssignShelf) -> Self::Future {
         let g_state = self.state.clone();
+        let lock = self.lock.clone();
 
         Box::pin(async move {
             let state = g_state.staged.load();
@@ -288,7 +282,7 @@ impl Service<AssignShelf> for StateService {
                         None => {
                             // clean references if workspace ref upgrade failed.
                             g_state.staged.stateful_rcu(|w| {
-                                let (u_m, u_s) = w.shelf_assignment.s_remove(&shelf_id);
+                                let (u_m, u_s) = w.shelf_assignment.remove(&shelf_id);
                                 let u_w = GroupState {
                                     shelf_assignment: u_m,
                                     workspaces: w.workspaces.clone(),
@@ -303,6 +297,7 @@ impl Service<AssignShelf> for StateService {
             if new_shelf {
                 let path = req.path.clone();
                 let Ok(shelf) = Shelf::new(
+                    lock,
                     req.remote,
                     path,
                     req.name.unwrap_or_else(|| {
@@ -314,7 +309,7 @@ impl Service<AssignShelf> for StateService {
                             .unwrap_or_default()
                             .to_string()
                     }),
-                    ShelfOwner::Node(req.node_id.clone()),
+                    ShelfOwner::Node(req.node_id),
                     None,
                     req.description.unwrap_or_default(),
                 ) else {
@@ -326,12 +321,12 @@ impl Service<AssignShelf> for StateService {
 
             let shelf_ref = shelf_ref.unwrap();
 
-            let shelf_id = shelf_ref.id.clone();
+            let shelf_id = shelf_ref.id;
 
             workspace.stateful_rcu(|w| {
-                let (u_m, u_s) = w.shelves.s_insert((shelf_id, shelf_ref.clone().into()));
+                let (u_m, u_s) = w.shelves.insert(shelf_id, shelf_ref.clone());
                 let u_w = Workspace {
-                    info: ArcSwap::new(w.info.load_full()),
+                    info: w.info.clone(),
                     shelves: u_m,
                     tags: w.tags.clone(),
                     lookup: w.lookup.clone()
@@ -343,7 +338,7 @@ impl Service<AssignShelf> for StateService {
 
             if new_shelf {
                 g_state.staged.stateful_rcu(|s| {
-                    let (u_m, u_s) = s.shelf_assignment.s_insert((shelf_id, Vec::from([w_ref.clone()])));
+                    let (u_m, u_s) = s.shelf_assignment.insert(shelf_id, Vec::from([w_ref.clone()]));
                     let u_g = GroupState {
                         shelf_assignment: u_m,
                         workspaces: s.workspaces.clone()
@@ -354,7 +349,7 @@ impl Service<AssignShelf> for StateService {
                 g_state.staged.stateful_rcu(|s| {
                     let mut vec = s.shelf_assignment.get(&shelf_id).unwrap().clone();
                     vec.push(w_ref.clone());
-                    let (u_m, u_s) = s.shelf_assignment.s_insert((shelf_id, vec));
+                    let (u_m, u_s) = s.shelf_assignment.insert(shelf_id, vec);
                     let u_g = GroupState {
                         shelf_assignment: u_m,
                         workspaces: s.workspaces.clone()
@@ -385,7 +380,7 @@ impl Service<RemoveWorkspace> for StateService {
         let g_state = self.state.clone();
         Box::pin(async move {
             g_state.staged.stateful_rcu(|s| {
-                let (u_m, u_s) = s.workspaces.s_remove(&req.workspace_id);
+                let (u_m, u_s) = s.workspaces.remove(&req.workspace_id);
                 let u_g = GroupState {
                     shelf_assignment: s.shelf_assignment.clone(),
                     workspaces: u_m,
