@@ -28,3 +28,4 @@ tracing-subscriber = { version = "0.3.19", default-features = false, features = 
 arc-swap = { version = "1.7.1", features = ["weak", "serde"] }
 papaya = { version = "0.2.3", features = ["serde"] }
 im = { version = "15.1.0", features = ["serde"] }
+file-id = "0.2.3"

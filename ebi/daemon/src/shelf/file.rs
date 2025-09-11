@@ -1,4 +1,4 @@
-use crate::sharedref::{SharedRef, ImmutRef};
+use crate::sharedref::{ImmutRef, SharedRef};
 use crate::shelf::ShelfOwner;
 use crate::tag::Tag;
 use chrono::{DateTime, Utc};
@@ -20,7 +20,6 @@ pub struct File {
     pub tags: HashSet<TagRef>,
     pub dtags: HashSet<TagRef>,
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileSummary {

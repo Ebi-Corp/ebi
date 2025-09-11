@@ -1,66 +1,73 @@
+use crate::uuid::Uuid;
 use arc_swap::{ArcSwap, AsRaw, Guard};
-use tokio::sync::RwLock;
 use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
-use std::ops::Deref;
-use std::pin::Pin;
-use std::ptr;
-use std::sync::Arc;
-use uuid::Uuid;
-use std::future::Future;
+use std::{future::Future, ops::Deref, pin::Pin, ptr, sync::Arc};
+use tokio::sync::RwLock;
 
-pub trait Ref<T> {
+pub type ImmutRef<T, I = Uuid> = Arc<Inner<T, I>>;
+pub type SharedRef<T, I = Uuid> = Arc<Inner<ArcSwap<T>, I>>;
+
+pub trait Ref<T, I> {
     fn new_ref(data: T) -> Self;
-    fn new_ref_id(id: Uuid, data: T) -> Self;
+    fn new_ref_id(id: I, data: T) -> Self;
 }
 
-pub type ImmutRef<T> = Arc<Inner<T>>;
-pub type SharedRef<T> = Arc<Inner<ArcSwap<T>>>;
-
-impl<T> Ref<T> for ImmutRef<T> {
+impl<T, I> Ref<T, I> for ImmutRef<T, I>
+where
+    I: Copy + Default,
+{
     fn new_ref(data: T) -> Self {
-        let id = Uuid::new_v4();
+        let id = I::default();
         Arc::new(Inner { id, data })
     }
-    fn new_ref_id(id: Uuid, data: T) -> Self {
+    fn new_ref_id(id: I, data: T) -> Self {
         Arc::new(Inner { id, data })
     }
 }
 
-impl<T> Ref<T> for SharedRef<T> {
+impl<T, I> Ref<T, I> for SharedRef<T, I>
+where
+    I: Copy + Default,
+{
     fn new_ref(data: T) -> Self {
-        let id = Uuid::new_v4();
+        let id = I::default();
         let data = ArcSwap::new(Arc::new(data));
         Arc::new(Inner { id, data })
     }
-    fn new_ref_id(id: Uuid, data: T) -> Self {
+    fn new_ref_id(id: I, data: T) -> Self {
         let data = ArcSwap::new(Arc::new(data));
         Arc::new(Inner { id, data })
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct Inner<T> where 
-{
-    pub id: Uuid,
-    data: T
+pub struct Inner<T, I> {
+    pub id: I,
+    data: T,
 }
 
-impl<T> PartialEq for Inner<T> {
+impl<T, I> PartialEq for Inner<T, I>
+where
+    I: PartialEq,
+{
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id
     }
 }
 
-impl<T> Hash for Inner<T> {
+impl<T, I> Hash for Inner<T, I>
+where
+    I: Hash,
+{
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.id.hash(state);
     }
 }
 
-impl<T> Eq for Inner<T> {}
+impl<T, I> Eq for Inner<T, I> where I: PartialEq {}
 
-impl<T> Deref for Inner<T> {
+impl<T, I> Deref for Inner<T, I> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -69,11 +76,10 @@ impl<T> Deref for Inner<T> {
 }
 
 #[derive(Debug)]
-pub struct History<T> where
-{
-    pub staged: StatefulRef<T>,
-    pub synced: Option<StatefulRef<T>>,
-    pub hist: VecDeque<StatefulRef<T>>
+pub struct History<T, I = Uuid> {
+    pub staged: StatefulRef<T, I>,
+    pub synced: Option<StatefulRef<T, I>>,
+    pub hist: VecDeque<StatefulRef<T, I>>,
 }
 
 const HIST_L: usize = 3;
@@ -81,13 +87,16 @@ const HIST_L: usize = 3;
 // Lock type
 type L = ();
 
-impl<T> History<T> {
+impl<T, I> History<T, I>
+where
+    I: Copy + Default,
+{
     pub fn new(val: T, lock: Arc<RwLock<L>>) -> Self {
-        let first = StatefulRef::new(val, lock);
+        let first = StatefulRef::new_ref(val, lock);
         History {
             staged: first,
             synced: None,
-            hist: VecDeque::new()
+            hist: VecDeque::new(),
         }
     }
 
@@ -101,44 +110,48 @@ impl<T> History<T> {
         }
         History {
             staged: StatefulRef {
-                id: Uuid::new_v4(),
+                id: I::default(),
                 data: ArcSwap::new(self.staged.load_full()),
-                s_lock: self.staged.s_lock.clone()
+                s_lock: self.staged.s_lock.clone(),
             },
             synced: Some(self.staged.clone()),
-            hist
+            hist,
         }
     }
 }
 
 #[derive(Debug)]
-pub struct StatefulRef<T> where
-{
-    pub id: Uuid,
+pub struct StatefulRef<T, I = Uuid> {
+    pub id: I,
     data: ArcSwap<T>,
     s_lock: Arc<RwLock<L>>,
 }
-impl<T> Clone for StatefulRef<T> {
+impl<T, I> Clone for StatefulRef<T, I>
+where
+    I: Copy,
+{
     fn clone(&self) -> Self {
         Self {
             id: self.id,
             data: ArcSwap::new(self.data.load_full()),
-            s_lock: self.s_lock.clone()
+            s_lock: self.s_lock.clone(),
         }
     }
 }
 
-
-impl<T> StatefulRef<T> {
-    pub fn new(val: T, s_lock: Arc<RwLock<L>>) -> Self {
+impl<T, I> StatefulRef<T, I>
+where
+    I: Copy + Default,
+{
+    pub fn new_ref(val: T, s_lock: Arc<RwLock<L>>) -> Self {
         StatefulRef {
-            id: Uuid::new_v4(),
+            id: I::default(),
             data: ArcSwap::new(Arc::new(val)),
-            s_lock
+            s_lock,
         }
     }
 
-    pub fn new_with_id(id: Uuid, val: T, s_lock: Arc<RwLock<L>>) -> Self {
+    pub fn new_ref_id(id: I, val: T, s_lock: Arc<RwLock<L>>) -> Self {
         StatefulRef {
             id,
             data: ArcSwap::new(Arc::new(val)),
@@ -146,10 +159,13 @@ impl<T> StatefulRef<T> {
         }
     }
 
-    pub fn id(&self) -> Uuid {
+    pub fn id(&self) -> I
+    where
+        I: Copy,
+    {
         self.id
     }
-    pub fn id_ref(&self) -> &Uuid {
+    pub fn id_ref(&self) -> &I {
         &self.id
     }
 
@@ -190,16 +206,22 @@ where
     ptr::eq(a, b)
 }
 
-impl<T> PartialEq for StatefulRef<T> {
+impl<T, I> PartialEq for StatefulRef<T, I>
+where
+    I: PartialEq,
+{
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id
     }
 }
 
-impl<T> Hash for StatefulRef<T> {
+impl<T, I> Hash for StatefulRef<T, I>
+where
+    I: Hash,
+{
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.id.hash(state);
     }
 }
 
-impl<T> Eq for StatefulRef<T> {}
+impl<T, I> Eq for StatefulRef<T, I> where I: PartialEq {}

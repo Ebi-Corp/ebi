@@ -1,9 +1,8 @@
+use crate::prelude::*;
 use crate::shelf::file::FileRef;
 use crate::shelf::{Shelf, ShelfId};
 use crate::stateful::{InfoState, StatefulField, StatefulMap};
-use crate::sharedref::{ImmutRef, StatefulRef};
 use crate::tag::{Tag, TagId};
-use uuid::Uuid;
 
 pub type WorkspaceId = Uuid;
 
@@ -18,11 +17,10 @@ pub struct Workspace {
     pub lookup: StatefulMap<String, TagId>,
 }
 
-
 #[derive(Debug)]
 pub struct WorkspaceInfo {
     pub name: StatefulField<WorkspaceInfoField, String>,
-    pub description: StatefulField<WorkspaceInfoField, String>
+    pub description: StatefulField<WorkspaceInfoField, String>,
 }
 
 impl WorkspaceInfo {
@@ -34,17 +32,23 @@ impl WorkspaceInfo {
         let info_state: InfoState<WorkspaceInfoField> = InfoState::new();
         WorkspaceInfo {
             name: {
-                let field = StatefulField::<WorkspaceInfoField, String>::new(WorkspaceInfoField::Name, info_state.clone());
+                let field = StatefulField::<WorkspaceInfoField, String>::new(
+                    WorkspaceInfoField::Name,
+                    info_state.clone(),
+                );
                 let (field, updater) = field.set(&name);
                 drop(updater); // No State Update required for Info Creation
                 field
-            }, 
+            },
             description: {
-                let field = StatefulField::<WorkspaceInfoField, String>::new(WorkspaceInfoField::Description, info_state.clone());
+                let field = StatefulField::<WorkspaceInfoField, String>::new(
+                    WorkspaceInfoField::Description,
+                    info_state.clone(),
+                );
                 let (field, updater) = field.set(&description);
                 drop(updater); // No State Update required for Info Creation
                 field
-            }
+            },
         }
     }
 }
@@ -52,7 +56,7 @@ impl WorkspaceInfo {
 #[derive(Clone, Hash, Eq, PartialEq, Debug)]
 pub enum WorkspaceInfoField {
     Name,
-    Description
+    Description,
 }
 
 impl Clone for Workspace {
@@ -61,7 +65,7 @@ impl Clone for Workspace {
             info: self.info.clone(),
             shelves: self.shelves.clone(),
             tags: self.tags.clone(),
-            lookup: self.lookup.clone()
+            lookup: self.lookup.clone(),
         }
     }
 }

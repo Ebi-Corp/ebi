@@ -1,10 +1,19 @@
+pub mod prelude {
+    pub use super::AssignShelf;
+    pub use super::GetWorkspace;
+    pub use super::RemoveWorkspace;
+    pub use super::StateService;
+    pub use super::UnassignShelf;
+}
+
+use crate::sharedref::{History, ImmutRef, Ref, StatefulRef};
 use crate::shelf::{Shelf, ShelfId, ShelfOwner};
+use crate::stateful::{StatefulMap, SwapRef};
 use crate::tag::Tag;
+use crate::uuid::Uuid;
 use crate::workspace::{Workspace, WorkspaceId, WorkspaceInfo};
 use ebi_proto::rpc::*;
 use iroh::NodeId;
-use tokio::sync::RwLock;
-use uuid::Uuid;
 use std::path::PathBuf;
 use std::sync::Weak;
 use std::{
@@ -13,9 +22,8 @@ use std::{
     sync::Arc,
     task::{Context, Poll},
 };
+use tokio::sync::RwLock;
 use tower::Service;
-use crate::stateful::{StatefulMap, SwapRef};
-use crate::sharedref::{StatefulRef, History, ImmutRef, Ref};
 
 type L = ();
 
@@ -29,7 +37,10 @@ impl StateService {
     pub fn new() -> Self {
         let lock = Arc::new(RwLock::new(()));
         let state = Arc::new(History::new(GroupState::new(), lock.clone()));
-        Self { state, lock: lock.clone() }
+        Self {
+            state,
+            lock: lock.clone(),
+        }
     }
 }
 
@@ -41,10 +52,12 @@ pub struct GroupState {
 }
 impl GroupState {
     fn new() -> Self {
-        Self { workspaces: StatefulMap::new(SwapRef::new(())), shelf_assignment: StatefulMap::new(SwapRef::new(())) }   //[!] Add Bloom Filter
+        Self {
+            workspaces: StatefulMap::new(SwapRef::new(())),
+            shelf_assignment: StatefulMap::new(SwapRef::new(())),
+        } //[!] Add Bloom Filter
     }
 }
-
 
 enum Operations {
     GetWorkspace(WorkspaceId),
@@ -93,25 +106,30 @@ impl Service<CreateWorkspace> for StateService {
         let state = self.state.clone();
         let lock = self.lock.clone();
         Box::pin(async move {
-
             let w_state = SwapRef::new(()); // [TODO] Spawn bloom filters
             let workspace = Workspace {
-                info: StatefulRef::new(WorkspaceInfo::new(Some(req.name), Some(req.description)), lock.clone()),
+                info: StatefulRef::new_ref(
+                    WorkspaceInfo::new(Some(req.name), Some(req.description)),
+                    lock.clone(),
+                ),
                 shelves: StatefulMap::new(w_state.clone()), // Placeholder for local shelves
                 tags: StatefulMap::new(w_state.clone()),
                 lookup: StatefulMap::new(w_state.clone()),
             };
-            let w_ref = StatefulRef::new(workspace, lock.clone());
+            let w_ref = StatefulRef::new_ref(workspace, lock.clone());
             let w_id = w_ref.id;
 
-            state.staged.stateful_rcu(|s| {
-                let (u_m, u_s) = s.workspaces.insert(w_id, w_ref.clone().into());
-                let u_w = GroupState {
-                    workspaces: u_m,
-                    shelf_assignment: s.shelf_assignment.clone(),
-                };
-                (u_w, u_s)
-            }).await;
+            state
+                .staged
+                .stateful_rcu(|s| {
+                    let (u_m, u_s) = s.workspaces.insert(w_id, w_ref.clone().into());
+                    let u_w = GroupState {
+                        workspaces: u_m,
+                        shelf_assignment: s.shelf_assignment.clone(),
+                    };
+                    (u_w, u_s)
+                })
+                .await;
 
             Ok(w_id)
         })
@@ -139,7 +157,7 @@ impl Service<CreateTag> for StateService {
             let tag = Tag {
                 priority: req.priority,
                 name: req.name,
-                parent: req.parent
+                parent: req.parent,
             };
             let tag_ref = ImmutRef::new_ref(tag);
 
@@ -170,7 +188,10 @@ impl Service<GetWorkspaces> for StateService {
                     let tag_id = tag.id;
                     let name = tag.name.clone();
                     let priority = tag.priority;
-                    let parent_id = tag.parent.clone().map(|parent| parent.id.as_bytes().to_vec());
+                    let parent_id = tag
+                        .parent
+                        .clone()
+                        .map(|parent| parent.id.as_bytes().to_vec());
                     tag_ls.push(ebi_proto::rpc::Tag {
                         tag_id: tag_id.as_bytes().to_vec(),
                         name,
@@ -225,10 +246,11 @@ impl Service<UnassignShelf> for StateService {
                     info: w.info.clone(),
                     shelves: u_m,
                     tags: w.tags.clone(),
-                    lookup: w.lookup.clone()
+                    lookup: w.lookup.clone(),
                 };
                 (u_w, u_s)
-            }).await;
+            })
+            .await;
 
             Ok(())
         })
@@ -244,7 +266,8 @@ pub struct AssignShelf {
     pub workspace_id: WorkspaceId,
 }
 
-impl Service<AssignShelf> for StateService { //[?] Create Shelf during assignment (if it does not exist) ?? //[/] Would help with having ShelfInfo in history
+impl Service<AssignShelf> for StateService {
+    //[?] Create Shelf during assignment (if it does not exist) ?? //[/] Would help with having ShelfInfo in history
     type Response = ShelfId;
     type Error = ReturnCode;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
@@ -264,12 +287,16 @@ impl Service<AssignShelf> for StateService { //[?] Create Shelf during assignmen
             };
 
             // The ID is deterministically created on node + path
-            let bytes = [&req.node_id.as_bytes()[0..8], req.path.to_str().unwrap().as_bytes()].concat();
+            let bytes = [
+                &req.node_id.as_bytes()[0..8],
+                req.path.to_str().unwrap().as_bytes(),
+            ]
+            .concat();
             let shelf_id = Uuid::new_v5(&Uuid::NAMESPACE_DNS, &bytes);
 
             let mut new_shelf: bool = true;
             let mut shelf_ref: Option<ImmutRef<Shelf>> = None; // workaround for compiler, is not
-                                                               // aware of guaranteed intialization
+            // aware of guaranteed intialization
 
             if let Some(v_wk) = state.shelf_assignment.get(&shelf_id) {
                 for w_ref in v_wk {
@@ -278,17 +305,20 @@ impl Service<AssignShelf> for StateService { //[?] Create Shelf during assignmen
                             shelf_ref = Some(w_ref.load().shelves.get(&shelf_id).unwrap().clone());
                             new_shelf = false;
                             break;
-                        },
+                        }
                         None => {
                             // clean references if workspace ref upgrade failed.
-                            g_state.staged.stateful_rcu(|w| {
-                                let (u_m, u_s) = w.shelf_assignment.remove(&shelf_id);
-                                let u_w = GroupState {
-                                    shelf_assignment: u_m,
-                                    workspaces: w.workspaces.clone(),
-                                };
-                                (u_w, u_s)
-                            }).await;
+                            g_state
+                                .staged
+                                .stateful_rcu(|w| {
+                                    let (u_m, u_s) = w.shelf_assignment.remove(&shelf_id);
+                                    let u_w = GroupState {
+                                        shelf_assignment: u_m,
+                                        workspaces: w.workspaces.clone(),
+                                    };
+                                    (u_w, u_s)
+                                })
+                                .await;
                         }
                     }
                 }
@@ -323,39 +353,49 @@ impl Service<AssignShelf> for StateService { //[?] Create Shelf during assignmen
 
             let shelf_id = shelf_ref.id;
 
-            workspace.stateful_rcu(|w| {
-                let (u_m, u_s) = w.shelves.insert(shelf_id, shelf_ref.clone());
-                let u_w = Workspace {
-                    info: w.info.clone(),
-                    shelves: u_m,
-                    tags: w.tags.clone(),
-                    lookup: w.lookup.clone()
-                };
-                (u_w, u_s)
-            }).await;
+            workspace
+                .stateful_rcu(|w| {
+                    let (u_m, u_s) = w.shelves.insert(shelf_id, shelf_ref.clone());
+                    let u_w = Workspace {
+                        info: w.info.clone(),
+                        shelves: u_m,
+                        tags: w.tags.clone(),
+                        lookup: w.lookup.clone(),
+                    };
+                    (u_w, u_s)
+                })
+                .await;
 
             let w_ref = Arc::downgrade(workspace);
 
             if new_shelf {
-                g_state.staged.stateful_rcu(|s| {
-                    let (u_m, u_s) = s.shelf_assignment.insert(shelf_id, Vec::from([w_ref.clone()]));
-                    let u_g = GroupState {
-                        shelf_assignment: u_m,
-                        workspaces: s.workspaces.clone()
-                    };
-                    (u_g, u_s)
-                }).await;
+                g_state
+                    .staged
+                    .stateful_rcu(|s| {
+                        let (u_m, u_s) = s
+                            .shelf_assignment
+                            .insert(shelf_id, Vec::from([w_ref.clone()]));
+                        let u_g = GroupState {
+                            shelf_assignment: u_m,
+                            workspaces: s.workspaces.clone(),
+                        };
+                        (u_g, u_s)
+                    })
+                    .await;
             } else {
-                g_state.staged.stateful_rcu(|s| {
-                    let mut vec = s.shelf_assignment.get(&shelf_id).unwrap().clone();
-                    vec.push(w_ref.clone());
-                    let (u_m, u_s) = s.shelf_assignment.insert(shelf_id, vec);
-                    let u_g = GroupState {
-                        shelf_assignment: u_m,
-                        workspaces: s.workspaces.clone()
-                    };
-                    (u_g, u_s)
-                }).await;
+                g_state
+                    .staged
+                    .stateful_rcu(|s| {
+                        let mut vec = s.shelf_assignment.get(&shelf_id).unwrap().clone();
+                        vec.push(w_ref.clone());
+                        let (u_m, u_s) = s.shelf_assignment.insert(shelf_id, vec);
+                        let u_g = GroupState {
+                            shelf_assignment: u_m,
+                            workspaces: s.workspaces.clone(),
+                        };
+                        (u_g, u_s)
+                    })
+                    .await;
             }
 
             Ok(shelf_id)
@@ -379,14 +419,17 @@ impl Service<RemoveWorkspace> for StateService {
     fn call(&mut self, req: RemoveWorkspace) -> Self::Future {
         let g_state = self.state.clone();
         Box::pin(async move {
-            g_state.staged.stateful_rcu(|s| {
-                let (u_m, u_s) = s.workspaces.remove(&req.workspace_id);
-                let u_g = GroupState {
-                    shelf_assignment: s.shelf_assignment.clone(),
-                    workspaces: u_m,
-                };
-                (u_g, u_s)
-            }).await;
+            g_state
+                .staged
+                .stateful_rcu(|s| {
+                    let (u_m, u_s) = s.workspaces.remove(&req.workspace_id);
+                    let u_g = GroupState {
+                        shelf_assignment: s.shelf_assignment.clone(),
+                        workspaces: u_m,
+                    };
+                    (u_g, u_s)
+                })
+                .await;
             Ok(())
         })
     }

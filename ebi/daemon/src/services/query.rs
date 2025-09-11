@@ -15,15 +15,15 @@ use ebi_proto::rpc::{
     ClientQuery, ClientQueryData, Data, ErrorData, File, PeerQuery, Request, RequestMetadata,
     Response, ResponseMetadata, ReturnCode, parse_code,
 };
+use im::{HashMap, HashSet};
 use iroh::NodeId;
 use rayon::prelude::*;
-use im::{HashMap, HashSet};
 use std::{
-    vec,
     future::Future,
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
+    vec,
 };
 use tokio::task::JoinSet;
 use tower::Service;

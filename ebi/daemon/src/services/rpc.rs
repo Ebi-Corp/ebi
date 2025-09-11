@@ -1,10 +1,6 @@
-use crate::services::peer::PeerService;
-use crate::services::query::QueryService;
-use crate::services::state::{
-    AssignShelf, GetWorkspace, RemoveWorkspace, UnassignShelf,
-    StateService,
-};
-use crate::sharedref::{ImmutRef, Ref, StatefulRef};
+use crate::prelude::*;
+use crate::services::prelude::*;
+use crate::services::state::prelude::*;
 use crate::shelf::{ShelfId, ShelfInfo, ShelfOwner, ShelfType, UpdateErr};
 use crate::stateful::{InfoState, StatefulField};
 use crate::workspace::{Workspace, WorkspaceInfo};
@@ -15,13 +11,13 @@ use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::task::{Context, Poll};
-use tokio::sync::{watch::{Receiver, Sender}, RwLock};
+use tokio::sync::{
+    RwLock,
+    watch::{Receiver, Sender},
+};
 use tokio::task::JoinHandle;
 use tower::Service;
-
-use uuid::Uuid;
 
 pub type RequestId = Uuid;
 
@@ -78,7 +74,7 @@ pub enum Notification {
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub enum DaemonInfoField {
-    Name
+    Name,
 }
 
 #[derive(Debug)]
@@ -92,7 +88,10 @@ impl DaemonInfo {
         DaemonInfo {
             id: Arc::new(id),
             name: {
-                let field = StatefulField::<DaemonInfoField, String>::new(DaemonInfoField::Name, InfoState::new());
+                let field = StatefulField::<DaemonInfoField, String>::new(
+                    DaemonInfoField::Name,
+                    InfoState::new(),
+                );
                 let (field, updater) = field.set(&name);
                 drop(updater); // No State Update required for Info Creation
                 field
@@ -199,7 +198,7 @@ impl Service<PeerQuery> for RpcService {
                         Ok(PeerQueryResponse {
                             files,
                             metadata: Some(ResponseMetadata {
-                                request_uuid: Uuid::now_v7().into(),
+                                request_uuid: Uuid::new_v4().into(),
                                 return_code: ReturnCode::Success as u32, // [?] Should this always be success ??
                                 error_data: Some(ErrorData { error_data: errors }),
                             }),
@@ -208,7 +207,7 @@ impl Service<PeerQuery> for RpcService {
                         Ok(PeerQueryResponse {
                             files: Vec::<u8>::new(),
                             metadata: Some(ResponseMetadata {
-                                request_uuid: Uuid::now_v7().into(),
+                                request_uuid: Uuid::new_v4().into(),
                                 return_code: ReturnCode::PeerServiceError as u32, // [!] Encode Error
                                 error_data: Some(ErrorData { error_data: errors }),
                             }),
@@ -218,7 +217,7 @@ impl Service<PeerQuery> for RpcService {
                 Err(ret_code) => Ok(PeerQueryResponse {
                     files: Vec::<u8>::new(),
                     metadata: Some(ResponseMetadata {
-                        request_uuid: Uuid::now_v7().into(),
+                        request_uuid: Uuid::new_v4().into(),
                         return_code: ret_code as u32,
                         error_data: None,
                     }),
@@ -296,16 +295,18 @@ impl Service<DeleteTag> for RpcService {
                 }
             }
 
-            workspace_ref.stateful_rcu(|w| {
-                let (u_m, u_s) = w.tags.remove(&tag_id);
-                let u_w = Workspace {
-                    tags: u_m,
-                    info: w.info.clone(),
-                    shelves: w.shelves.clone(),
-                    lookup: w.lookup.clone()
-                };
-                (u_w, u_s)
-            }).await;
+            workspace_ref
+                .stateful_rcu(|w| {
+                    let (u_m, u_s) = w.tags.remove(&tag_id);
+                    let u_w = Workspace {
+                        tags: u_m,
+                        info: w.info.clone(),
+                        shelves: w.shelves.clone(),
+                        lookup: w.lookup.clone(),
+                    };
+                    (u_w, u_s)
+                })
+                .await;
 
             notify_queue.write().await.push_back({
                 Notification::Operation(Operation {
@@ -382,7 +383,6 @@ impl Service<StripTag> for RpcService {
                     error_data
                 );
             };
-
 
             let return_code = match &shelf.shelf_type {
                 ShelfType::Local(shelf_data) => {
@@ -492,7 +492,6 @@ impl Service<DetachTag> for RpcService {
                 );
             };
 
-
             //[/] Business Logic
             let return_code = {
                 match &shelf.shelf_type {
@@ -598,7 +597,6 @@ impl Service<AttachTag> for RpcService {
             let workspace = workspace_ref.load();
 
             let Some(shelf) = workspace.shelves.get(&shelf_id) else {
-
                 return_error!(
                     ReturnCode::ShelfNotFound,
                     AttachTagResponse,
@@ -726,7 +724,6 @@ impl Service<RemoveShelf> for RpcService {
                 );
             };
 
-
             //[/] Business Logic
             let return_code = {
                 match &shelf.shelf_type {
@@ -839,34 +836,41 @@ impl Service<EditShelf> for RpcService {
                 match shelf.shelf_type {
                     ShelfType::Local(_) => {
                         let s = (***shelf).clone();
-                        s.info.stateful_rcu(|info| {
-                            let (u_f, u_s) = info.name.set(&req.name);  
-                            let u_i = ShelfInfo {
-                                name: u_f,
-                                description: info.description.clone(),
-                                root: info.root.clone()
-                            };
-                            (u_i, u_s)
-                        }).await;
-                        s.info.stateful_rcu(|info| {
-                            let (u_f, u_s) = info.description.set(&req.description);
-                            let u_i = ShelfInfo {
-                                name: info.name.clone(),
-                                description: u_f,
-                                root: info.root.clone()
-                            };
-                            (u_i, u_s)
-                        }).await;
-                        workspace_ref.stateful_rcu(|w| {                            
-                            let (u_m, u_s) = w.shelves.insert(shelf.id, ImmutRef::new_ref(s.clone()));
-                            let u_w = Workspace {
-                                shelves: u_m,
-                                tags: w.tags.clone(),
-                                lookup: w.lookup.clone(),
-                                info: w.info.clone()
-                            };
-                            (u_w, u_s)
-                        }).await;
+                        s.info
+                            .stateful_rcu(|info| {
+                                let (u_f, u_s) = info.name.set(&req.name);
+                                let u_i = ShelfInfo {
+                                    name: u_f,
+                                    description: info.description.clone(),
+                                    root: info.root.clone(),
+                                };
+                                (u_i, u_s)
+                            })
+                            .await;
+                        s.info
+                            .stateful_rcu(|info| {
+                                let (u_f, u_s) = info.description.set(&req.description);
+                                let u_i = ShelfInfo {
+                                    name: info.name.clone(),
+                                    description: u_f,
+                                    root: info.root.clone(),
+                                };
+                                (u_i, u_s)
+                            })
+                            .await;
+                        workspace_ref
+                            .stateful_rcu(|w| {
+                                let (u_m, u_s) =
+                                    w.shelves.insert(shelf.id, ImmutRef::new_ref(s.clone()));
+                                let u_w = Workspace {
+                                    shelves: u_m,
+                                    tags: w.tags.clone(),
+                                    lookup: w.lookup.clone(),
+                                    info: w.info.clone(),
+                                };
+                                (u_w, u_s)
+                            })
+                            .await;
                         if let ShelfOwner::Sync(_sync_id) = shelf.shelf_owner {
                             //[TODO] Sync Notification
                         }
@@ -1119,9 +1123,8 @@ impl Service<EditTag> for RpcService {
                             metadata.request_uuid,
                             error_data
                         );
-                    }; 
+                    };
                     Some(parent_tag)
-
                 } else {
                     None
                 }
@@ -1190,8 +1193,7 @@ impl Service<EditWorkspace> for RpcService {
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
-            let Ok(workspace) = try_get_workspace(&req.workspace_id, &mut state_srv).await
-            else {
+            let Ok(workspace) = try_get_workspace(&req.workspace_id, &mut state_srv).await else {
                 return_error!(
                     ReturnCode::WorkspaceNotFound,
                     EditWorkspaceResponse,
@@ -1215,22 +1217,26 @@ impl Service<EditWorkspace> for RpcService {
             //[/] Business Logic
             let return_code = {
                 let w = (*workspace.load_full()).clone();
-                w.info.stateful_rcu(|info| {
-                    let (u_f, u_s) = info.name.set(&req.name);  
-                    let u_i = WorkspaceInfo {
-                        name: u_f,
-                        description: info.description.clone()
-                    };
-                    (u_i, u_s)
-                }).await;
-                w.info.stateful_rcu(|info| {
-                    let (u_f, u_s) = info.description.set(&req.description);
-                    let u_i = WorkspaceInfo {
-                        name: info.name.clone(),
-                        description: u_f
-                    };
-                    (u_i, u_s)
-                }).await;
+                w.info
+                    .stateful_rcu(|info| {
+                        let (u_f, u_s) = info.name.set(&req.name);
+                        let u_i = WorkspaceInfo {
+                            name: u_f,
+                            description: info.description.clone(),
+                        };
+                        (u_i, u_s)
+                    })
+                    .await;
+                w.info
+                    .stateful_rcu(|info| {
+                        let (u_f, u_s) = info.description.set(&req.description);
+                        let u_i = WorkspaceInfo {
+                            name: info.name.clone(),
+                            description: u_f,
+                        };
+                        (u_i, u_s)
+                    })
+                    .await;
                 ReturnCode::Success
             };
 
@@ -1271,8 +1277,7 @@ impl Service<GetShelves> for RpcService {
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
-            let Ok(workspace) = try_get_workspace(&req.workspace_id, &mut state_srv).await
-            else {
+            let Ok(workspace) = try_get_workspace(&req.workspace_id, &mut state_srv).await else {
                 return_error!(
                     ReturnCode::WorkspaceNotFound,
                     GetShelvesResponse,
@@ -1426,10 +1431,9 @@ impl Service<CreateTag> for RpcService {
                 );
             };
 
-           let parent = {
-               if let Some(parent_id) = req.parent_id {
-
-                   let Ok(parent_id) = uuid(&parent_id) else {
+            let parent = {
+                if let Some(parent_id) = req.parent_id {
+                    let Ok(parent_id) = uuid(&parent_id) else {
                         return_error!(
                             ReturnCode::ParseError,
                             CreateTagResponse,
@@ -1448,17 +1452,18 @@ impl Service<CreateTag> for RpcService {
                     };
 
                     Some(parent_tag.clone())
-               } else {
-                   None
-               }
-           };
+                } else {
+                    None
+                }
+            };
 
             let c_tag = state_srv
                 .call(crate::services::state::CreateTag {
                     priority: req.priority,
                     parent,
                     name: req.name.clone(),
-                }).await;
+                })
+                .await;
 
             let Ok(tag) = c_tag else {
                 let ret_code = c_tag.unwrap_err();
@@ -1470,17 +1475,19 @@ impl Service<CreateTag> for RpcService {
                 );
             };
 
-            workspace_ref.stateful_rcu(|w| {
-                let (u_l, _) = w.lookup.insert(req.name.clone(), tag.id);
-                let (u_t, u_s) = w.tags.insert(tag.id, tag.clone());
-                let u_w = Workspace {
-                    tags: u_t,
-                    info: w.info.clone(),
-                    shelves: w.shelves.clone(),
-                    lookup: u_l,
-                };
-                (u_w, u_s)
-            }).await;
+            workspace_ref
+                .stateful_rcu(|w| {
+                    let (u_l, _) = w.lookup.insert(req.name.clone(), tag.id);
+                    let (u_t, u_s) = w.tags.insert(tag.id, tag.clone());
+                    let u_w = Workspace {
+                        tags: u_t,
+                        info: w.info.clone(),
+                        shelves: w.shelves.clone(),
+                        lookup: u_l,
+                    };
+                    (u_w, u_s)
+                })
+                .await;
 
             notify_queue.write().await.push_back({
                 Notification::Operation(Operation {

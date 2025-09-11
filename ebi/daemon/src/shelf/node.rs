@@ -1,12 +1,10 @@
-use crate::sharedref::{Ref, SharedRef, ImmutRef};
+use crate::prelude::*;
 use crate::shelf::file::{File, FileMetadata};
 use crate::tag::Tag;
 use jwalk::WalkDir;
 use papaya::{HashMap, HashSet};
 use std::io;
 use std::path::PathBuf;
-use std::sync::Arc;
-use uuid::Uuid;
 
 type FileRef = SharedRef<File>;
 type TagRef = ImmutRef<Tag>;
@@ -105,7 +103,7 @@ fn walk_dir_init(root: &PathBuf, dirs: &mut Vec<PathBuf>) -> HashMap<PathBuf, Fi
                             HashSet::new(),
                             HashSet::new(),
                             FileMetadata::new(&entry.path()),
-                        )
+                        ),
                     ),
                 ))
             } else if entry.file_type().is_dir() {

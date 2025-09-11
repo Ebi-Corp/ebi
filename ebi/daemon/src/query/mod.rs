@@ -2,10 +2,10 @@ pub mod file_order;
 use crate::query::file_order::{FileOrder, OrderedFileSummary};
 use crate::services::query::Retriever;
 use crate::tag::TagId;
+use im::HashSet;
 use rand_chacha::ChaCha12Rng;
 use scalable_cuckoo_filter::{DefaultHasher, ScalableCuckooFilter};
 use serde::{Deserialize, Serialize};
-use im::HashSet;
 use std::fmt;
 
 peg::parser! {
