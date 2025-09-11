@@ -1,12 +1,12 @@
-use im::HashMap;
-use std::fmt::Debug;
-use std::{any::Any, hash::Hash};
-use std::ops::Deref;
-use std::sync::Arc;
-use std::future::Future;
-use std::pin::Pin;
 use arc_swap::ArcSwap;
 use chrono::{DateTime, Utc};
+use im::HashMap;
+use std::fmt::Debug;
+use std::future::Future;
+use std::ops::Deref;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::{any::Any, hash::Hash};
 
 #[derive(Debug, Clone)]
 pub struct SwapRef<T>(Arc<ArcSwap<T>>);
@@ -31,7 +31,6 @@ impl<T> std::ops::Deref for SwapRef<T> {
     }
 }
 
-
 pub trait GenericValue: Any + Send + Sync + Debug {
     fn clone_box(&self) -> Box<dyn GenericValue>;
 }
@@ -48,23 +47,25 @@ where
 type TimedFieldValue = (Arc<dyn GenericValue>, DateTime<Utc>);
 
 enum InfoError {
-    FieldMissing // Should never occur
+    FieldMissing, // Should never occur
 }
 
 #[derive(Debug, Clone)]
 pub struct InfoState<K>
 where
-    K: Clone + Send + Sync + Hash + Eq
-{ 
-    state: SwapRef<HashMap<K, TimedFieldValue>>
+    K: Clone + Send + Sync + Hash + Eq,
+{
+    state: SwapRef<HashMap<K, TimedFieldValue>>,
 }
 
-impl<K> InfoState<K> 
+impl<K> InfoState<K>
 where
-    K: Clone + Send + Sync + Hash + Eq
-{ 
+    K: Clone + Send + Sync + Hash + Eq,
+{
     pub fn new() -> Self {
-        InfoState { state: SwapRef::new(HashMap::new()) }
+        InfoState {
+            state: SwapRef::new(HashMap::new()),
+        }
     }
 
     pub fn rcu<F>(&self, mut f: F) -> Arc<HashMap<K, TimedFieldValue>>
@@ -75,7 +76,8 @@ where
     }
 
     pub fn entries(&self) -> Vec<(K, TimedFieldValue)> {
-        self.state.load()
+        self.state
+            .load()
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect()
@@ -83,20 +85,20 @@ where
 }
 
 #[derive(Debug, Clone)]
-pub struct StatefulField<K, V> 
+pub struct StatefulField<K, V>
 where
     K: Clone + Send + Sync + Hash + Eq,
-    V: Clone + Send + Sync + Default
+    V: Clone + Send + Sync + Default,
 {
     field: Arc<K>,
     value: V,
-    state: InfoState<K>
+    state: InfoState<K>,
 }
 
-impl<K, V> Deref for StatefulField<K, V> 
+impl<K, V> Deref for StatefulField<K, V>
 where
     K: Clone + Send + Sync + Hash + Eq,
-    V: Clone + Send + Sync + Default
+    V: Clone + Send + Sync + Default,
 {
     type Target = V;
 
@@ -105,42 +107,45 @@ where
     }
 }
 
-impl<K, V> StatefulField<K, V> 
+impl<K, V> StatefulField<K, V>
 where
     K: Clone + Send + Sync + Hash + Eq,
-    V: Clone + Send + Sync + Default + GenericValue
+    V: Clone + Send + Sync + Default + GenericValue,
 {
     pub fn new(field: K, state: InfoState<K>) -> Self {
         StatefulField {
             field: Arc::new(field),
             value: V::default(),
-            state: state.clone()
+            state: state.clone(),
         }
     }
 
-    pub fn set<'a>(&self, value: &V) -> (Self, Pin<Box<dyn Future<Output = ()> + Send + 'a>>) 
-    where 
-        K: 'a, 
-        V: 'a
+    pub fn set<'a>(&self, value: &V) -> (Self, Pin<Box<dyn Future<Output = ()> + Send + 'a>>)
+    where
+        K: 'a,
+        V: 'a,
     {
         let field = self.field.clone();
         let state = self.state.clone();
         let updated_value = value.clone();
 
-        let update_state = Box::pin(async move { 
+        let update_state = Box::pin(async move {
             state.rcu(|update_map| {
                 let mut update_map = update_map.clone();
-                update_map.insert((*field).clone(), (Arc::new(updated_value.clone()), Utc::now()));
+                update_map.insert(
+                    (*field).clone(),
+                    (Arc::new(updated_value.clone()), Utc::now()),
+                );
                 update_map
             });
         });
-        
+
         let updated_field = StatefulField {
             field: self.field.clone(),
             value: value.clone(),
-            state: self.state.clone()
+            state: self.state.clone(),
         };
-        
+
         (updated_field, update_state)
     }
 
@@ -149,10 +154,8 @@ where
     }
 }
 
-
-
 #[derive(Debug, Clone, Default)]
-pub struct StatefulMap<K, V> 
+pub struct StatefulMap<K, V>
 where
     K: Hash + std::cmp::Eq + Clone,
     V: Clone,
@@ -161,7 +164,7 @@ where
     state: SwapRef<()>, // rateless bloom filter
 }
 
-impl<K, V> Deref for StatefulMap<K, V> 
+impl<K, V> Deref for StatefulMap<K, V>
 where
     K: Hash + std::cmp::Eq + Clone,
     V: Clone,
@@ -173,7 +176,7 @@ where
     }
 }
 
-impl<K, V> StatefulMap<K, V> 
+impl<K, V> StatefulMap<K, V>
 where
     K: Hash + std::cmp::Eq + Clone,
     V: Clone,
@@ -181,37 +184,37 @@ where
     pub fn new(state: SwapRef<()>) -> Self {
         StatefulMap {
             map: HashMap::new(),
-            state
+            state,
         }
     }
 
     pub fn insert(&self, key: K, value: V) -> (Self, Pin<Box<dyn Future<Output = ()> + Send>>) {
         let mut updated_map = self.map.clone();
         updated_map.insert(key, value);
-        
+
         let update_state = Box::pin(async move {});
         // [TODO] prepare future for INSERT filter
-        
+
         let map = StatefulMap {
             map: updated_map,
-            state: self.state.clone()
+            state: self.state.clone(),
         };
-        
+
         (map, update_state)
     }
 
     pub fn remove(&self, key: &K) -> (Self, Pin<Box<dyn Future<Output = ()> + Send>>) {
         let mut updated_map = self.map.clone();
         updated_map.remove(key);
-        
+
         let update_state = Box::pin(async move {});
         // [TODO] update REMOVE filter
-        
+
         let map = StatefulMap {
             map: updated_map,
-            state: self.state.clone()
+            state: self.state.clone(),
         };
-        
+
         (map, update_state)
     }
 }

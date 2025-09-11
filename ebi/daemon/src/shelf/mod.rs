@@ -1,9 +1,9 @@
 pub mod file;
 pub mod node;
-use crate::sharedref::{ImmutRef, Ref, StatefulRef};
+use crate::prelude::*;
 use crate::shelf::node::Node;
 use crate::stateful::{InfoState, StatefulField};
-use crate::tag::{TagId, Tag};
+use crate::tag::{Tag, TagId};
 use crate::workspace::ChangeSummary;
 use arc_swap::ArcSwap;
 use chrono::Duration;
@@ -15,10 +15,8 @@ use scalable_cuckoo_filter::{ScalableCuckooFilter, ScalableCuckooFilterBuilder};
 use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
 use std::io;
-use std::path::{PathBuf};
+use std::path::PathBuf;
 use std::result::Result;
-use std::sync::{Arc};
-use uuid::Uuid;
 use tokio::sync::RwLock;
 
 use file::FileRef;
@@ -85,7 +83,6 @@ impl Clone for Shelf {
 }
 
 impl Shelf {
-
     pub fn new(
         lock: Arc<RwLock<()>>,
         remote: bool,
@@ -106,7 +103,7 @@ impl Shelf {
             shelf_owner,
             config: config.unwrap_or_default(),
             filter_tags: generate_tag_filter(), // [TODO] Filter parameters (size, ...) should be configurable
-            info: StatefulRef::new(ShelfInfo::new(Some(name), Some(description), path), lock),
+            info: StatefulRef::new_ref(ShelfInfo::new(Some(name), Some(description), path), lock),
         };
         Ok(shelf)
     }
@@ -143,14 +140,14 @@ impl PartialEq for ShelfData {
 pub enum ShelfInfoField {
     Name,
     Description,
-    Root
+    Root,
 }
 
 #[derive(Debug)]
 pub struct ShelfInfo {
     pub name: StatefulField<ShelfInfoField, String>,
     pub description: StatefulField<ShelfInfoField, String>,
-    pub root: StatefulField<ShelfInfoField, PathBuf>
+    pub root: StatefulField<ShelfInfoField, PathBuf>,
 }
 
 impl ShelfInfo {
@@ -166,23 +163,32 @@ impl ShelfInfo {
         let info_state: InfoState<ShelfInfoField> = InfoState::new();
         ShelfInfo {
             name: {
-                let field = StatefulField::<ShelfInfoField, String>::new(ShelfInfoField::Name, info_state.clone());
+                let field = StatefulField::<ShelfInfoField, String>::new(
+                    ShelfInfoField::Name,
+                    info_state.clone(),
+                );
                 let (field, updater) = field.set(&name);
                 drop(updater); // No State Update required for Info Creation
                 field
-            }, 
+            },
             description: {
-                let field = StatefulField::<ShelfInfoField, String>::new(ShelfInfoField::Description, info_state.clone());
+                let field = StatefulField::<ShelfInfoField, String>::new(
+                    ShelfInfoField::Description,
+                    info_state.clone(),
+                );
                 let (field, updater) = field.set(&description);
                 drop(updater); // No State Update required for Info Creation
                 field
             },
             root: {
-                let field = StatefulField::<ShelfInfoField, PathBuf>::new(ShelfInfoField::Root, info_state.clone());
+                let field = StatefulField::<ShelfInfoField, PathBuf>::new(
+                    ShelfInfoField::Root,
+                    info_state.clone(),
+                );
                 let (field, updater) = field.set(&root_path);
                 drop(updater); // No State Update required for Info Creation
                 field
-            }
+            },
         }
     }
 }
@@ -200,8 +206,7 @@ impl ShelfData {
     }
 
     pub fn contains(&self, tag: TagRef) -> bool {
-        self.root.tags.pin().contains_key(&tag)
-            || self.root.dtag_files.pin().contains_key(&tag)
+        self.root.tags.pin().contains_key(&tag) || self.root.dtag_files.pin().contains_key(&tag)
     }
 
     pub async fn refresh(&self) -> Result<ChangeSummary, io::Error> {
@@ -226,7 +231,7 @@ impl ShelfData {
                     .pin()
                     .get(&PathBuf::from(&dir))
                     .ok_or(UpdateErr::PathNotFound)?)
-                    .clone();
+                .clone();
 
                 node_ref.push(child.clone());
                 curr_node = child;
@@ -271,7 +276,7 @@ impl ShelfData {
                     .pin()
                     .get(&PathBuf::from(&dir))
                     .ok_or(UpdateErr::PathNotFound)?)
-                    .clone();
+                .clone();
 
                 node_ref.push(child.clone());
                 curr_node = child;
@@ -374,7 +379,7 @@ impl ShelfData {
 
             node.dtag_files
                 .pin()
-                .get_or_insert_with(dtag.clone(),HashSet::new)
+                .get_or_insert_with(dtag.clone(), HashSet::new)
                 .extend(files.clone());
             files
         }
@@ -460,9 +465,7 @@ pub enum UpdateErr {
     PathNotDir,
 }
 
-pub fn merge<T: Clone + std::cmp::Eq + std::hash::Hash>(
-    files: Vec<im::HashSet<T>>,
-) -> Vec<T> {
+pub fn merge<T: Clone + std::cmp::Eq + std::hash::Hash>(files: Vec<im::HashSet<T>>) -> Vec<T> {
     //[?] Is the tournament-style Merge-Sort approach the most efficient method ??
     //[/] BTreeSets are not guaranteed to be the same size
     //[TODO] Time & Space Complexity analysis
@@ -490,14 +493,16 @@ pub fn merge<T: Clone + std::cmp::Eq + std::hash::Hash>(
 #[cfg(test)]
 mod tests {
     use crate::{
-        sharedref::{ImmutRef, Inner, SharedRef}, shelf::file::{File, FileMetadata, FileRef}, tag::Tag
+        sharedref::{ImmutRef, Inner, SharedRef},
+        shelf::file::{File, FileMetadata, FileRef},
+        tag::Tag,
     };
-    use std::fs::{self, File as FileIO};
-    use std::sync::Arc;
     use jwalk::WalkDir;
-    use rayon::prelude::*;
     use papaya::HashSet;
+    use rayon::prelude::*;
+    use std::fs::{self, File as FileIO};
     use std::path::PathBuf;
+    use std::sync::Arc;
 
     use super::*;
     fn list_files(root: PathBuf) -> Vec<FileRef> {
@@ -506,13 +511,12 @@ mod tests {
             .filter_map(|entry_res| {
                 let entry = entry_res.unwrap();
                 if entry.file_type().is_file() {
-                    Some(SharedRef::new_ref(
-                        File::new(
-                            entry.path().clone(),
-                            HashSet::new(),
-                            HashSet::new(),
-                            FileMetadata::new(&entry.path()),
-                        )))
+                    Some(SharedRef::new_ref(File::new(
+                        entry.path().clone(),
+                        HashSet::new(),
+                        HashSet::new(),
+                        FileMetadata::new(&entry.path()),
+                    )))
                 } else {
                     None
                 }
@@ -537,22 +541,18 @@ mod tests {
             parent: None,
         };
         let tag_ref: Arc<Inner<Tag>> = ImmutRef::new_ref(tag.clone());
-        let (shelf_attached, file_attached) =
-            shelf.attach(file_path0.clone(), &tag_ref).unwrap();
+        let (shelf_attached, file_attached) = shelf.attach(file_path0.clone(), &tag_ref).unwrap();
 
         // newly attached to (shelf, file)
         assert_eq!((shelf_attached, file_attached), (true, true));
         assert!(shelf.root.tags.pin().contains_key(&tag_ref));
 
-
-        let (shelf_attached, file_attached) =
-            shelf.attach(file_path0.clone(), &tag_ref).unwrap();
+        let (shelf_attached, file_attached) = shelf.attach(file_path0.clone(), &tag_ref).unwrap();
 
         // not newly attached to (shelf, file)
         assert_eq!((shelf_attached, file_attached), (false, false));
 
-        let (shelf_attached, file_attached) =
-            shelf.attach(file_path1.clone(), &tag_ref).unwrap();
+        let (shelf_attached, file_attached) = shelf.attach(file_path1.clone(), &tag_ref).unwrap();
 
         // newly attached to file only
         assert_eq!((shelf_attached, file_attached), (false, true));

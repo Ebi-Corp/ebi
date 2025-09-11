@@ -1,31 +1,38 @@
 #![allow(dead_code)]
-use crate::services::cache::CacheService;
-use crate::services::peer::{Client, Peer, PeerService};
-use crate::services::query::QueryService;
-use crate::services::rpc::{DaemonInfo, RequestId, RpcService, TaskID};
-use crate::services::state::StateService;
-use ebi_proto::rpc::*;
+mod query;
+mod services;
+mod sharedref;
+mod shelf;
+mod stateful;
+mod tag;
+mod uuid;
+mod workspace;
+
+pub mod prelude {
+    pub use crate::sharedref::{ImmutRef, Ref, SharedRef, StatefulRef};
+    pub use crate::uuid::Uuid;
+    pub use std::sync::Arc;
+}
+
+use crate::prelude::*;
+use crate::services::peer::{Client, Peer};
+use crate::services::prelude::*;
+use crate::services::rpc::{DaemonInfo, RequestId, TaskID};
 use anyhow::Result;
+use ebi_proto::rpc::*;
 use iroh::{Endpoint, NodeId, SecretKey};
 use paste::paste;
 use std::collections::{HashMap, VecDeque};
-use std::sync::Arc;
-use tokio::{net::TcpListener, io::{AsyncReadExt, AsyncWriteExt}};
-use tokio::sync::{mpsc, watch, RwLock};
-use tokio::task::{JoinSet, JoinHandle};
+use tokio::sync::{RwLock, mpsc, watch};
+use tokio::task::{JoinHandle, JoinSet};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpListener,
+};
 use tower::{Service, ServiceBuilder};
 use tracing::{Level, span};
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{EnvFilter, fmt};
-use uuid::Uuid;
-
-mod query;
-mod services;
-mod sharedref;
-mod stateful;
-mod shelf;
-mod tag;
-mod workspace;
 
 const HEADER_SIZE: usize = 10; //[!] Move to Constant file 
 const ALPN: &[u8] = b"ebi";
@@ -119,7 +126,7 @@ async fn main() -> Result<()> {
     let responses = Arc::new(RwLock::new(HashMap::<RequestId, Response>::new()));
     let notify_queue = Arc::new(RwLock::new(VecDeque::new()));
     let id: NodeId = ep.node_id();
-    let (broadcast, watcher) = watch::channel::<RequestId>(Uuid::now_v7());
+    let (broadcast, watcher) = watch::channel::<RequestId>(Uuid::new_v4());
 
     //[/] The Peer service subscribes to the ResponseHandler when a request is sent.
     //[/] It is then notified when a response is received so it can acquire the read lock on the Response map.

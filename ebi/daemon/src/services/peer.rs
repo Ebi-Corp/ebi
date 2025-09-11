@@ -1,3 +1,4 @@
+use crate::uuid::Uuid;
 use ebi_proto::rpc::*;
 use iroh::NodeId;
 use std::collections::HashMap;
@@ -11,7 +12,6 @@ use std::{
 use tokio::sync::{RwLock, mpsc::Sender, watch::Receiver};
 use tokio::time::{Duration, sleep};
 use tower::Service;
-use uuid::Uuid;
 
 use crate::services::rpc::RequestId;
 
@@ -49,7 +49,7 @@ pub struct Client {
 }
 
 async fn wait_call(mut watcher: Receiver<Uuid>, request_uuid: Uuid) {
-    let mut id = Uuid::now_v7();
+    let mut id = Uuid::new_v4();
     while id != request_uuid {
         // this returns an error only if sender in main is dropped
         watcher.changed().await.unwrap();
@@ -86,7 +86,7 @@ impl Service<(NodeId, Data)> for PeerService {
             };
 
             let mut payload = Vec::new();
-            let request_uuid = Uuid::now_v7();
+            let request_uuid = Uuid::new_v4();
 
             let req = req.1.clone();
             // [TODO] metadata of requests should be checked for in a validation service
@@ -128,7 +128,7 @@ impl Service<(NodeId, Request)> for PeerService {
             drop(r_lock);
 
             let mut payload = Vec::new();
-            let request_uuid = Uuid::now_v7();
+            let request_uuid = Uuid::new_v4();
             let req = req.1.clone();
             // [TODO] metadata of requests should be checked for in a validation service
             req.metadata().as_mut().unwrap().request_uuid = request_uuid.as_bytes().to_vec();

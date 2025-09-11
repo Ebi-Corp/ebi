@@ -1,7 +1,6 @@
-use crate::sharedref::ImmutRef;
+use crate::prelude::*;
+use serde::{Serialize, Serializer, ser::SerializeStruct};
 use std::hash::Hash;
-use serde::{ser::SerializeStruct, Serialize, Serializer};
-use uuid::Uuid;
 
 pub type TagId = Uuid;
 pub type TagRef = ImmutRef<Tag>;
@@ -31,9 +30,9 @@ impl Serialize for Tag {
         state.serialize_field("name", &self.name)?;
 
         // Serialize parent ID instead of the full reference
-        let parent_id = self.parent.as_ref().map(|p| p.id);  // Assuming SharedRef has an id field
+        let parent_id = self.parent.as_ref().map(|p| p.id); // Assuming SharedRef has an id field
         state.serialize_field("parent_id", &parent_id)?;
-        
+
         state.end()
     }
 }
