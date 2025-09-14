@@ -124,7 +124,6 @@ async fn main() -> Result<()> {
     let clients = Arc::new(RwLock::new(Vec::<Client>::new()));
     let tasks = Arc::new(HashMap::<TaskID, JoinHandle<()>>::new());
     let responses = Arc::new(RwLock::new(HashMap::<RequestId, Response>::new()));
-    let notify_queue = Arc::new(RwLock::new(VecDeque::new()));
     let id: NodeId = ep.node_id();
     let (broadcast, watcher) = watch::channel::<RequestId>(Uuid::new_v4());
 
@@ -151,7 +150,6 @@ async fn main() -> Result<()> {
         state_srv: state_srv.clone(),
         query_srv,
         responses: responses.clone(),
-        notify_queue: notify_queue.clone(),
         tasks: tasks.clone(),
         broadcast: broadcast.clone(),
         watcher: watcher.clone(),
