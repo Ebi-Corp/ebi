@@ -59,7 +59,6 @@ pub struct RpcService {
 
     // [!] This should be Mutexes. reason about read-write ratio
     pub responses: Arc<RwLock<HashMap<RequestId, Response>>>,
-    pub notify_queue: Arc<RwLock<VecDeque<Notification>>>,
     pub broadcast: Sender<Uuid>,
     pub watcher: Receiver<Uuid>,
 }
@@ -238,7 +237,6 @@ impl Service<DeleteTag> for RpcService {
 
     fn call(&mut self, req: DeleteTag) -> Self::Future {
         let metadata = req.metadata.clone().unwrap();
-        let notify_queue = self.notify_queue.clone();
         let mut state_srv = self.state_srv.clone();
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
@@ -308,14 +306,6 @@ impl Service<DeleteTag> for RpcService {
                 })
                 .await;
 
-            notify_queue.write().await.push_back({
-                Notification::Operation(Operation {
-                    target: ActionTarget::Tag.into(),
-                    id: tag_id.into_bytes().to_vec(),
-                    action: ActionType::Delete.into(),
-                })
-            });
-
             let metadata = ResponseMetadata {
                 request_uuid: metadata.request_uuid,
                 return_code: ReturnCode::Success as u32,
@@ -339,7 +329,6 @@ impl Service<StripTag> for RpcService {
 
     fn call(&mut self, req: StripTag) -> Self::Future {
         let metadata = req.metadata.clone().unwrap();
-        let notify_queue = self.notify_queue.clone();
         let mut peer_srv = self.peer_srv.clone();
         let mut state_srv = self.state_srv.clone();
         Box::pin(async move {
@@ -414,16 +403,6 @@ impl Service<StripTag> for RpcService {
                 }
             };
 
-            if return_code == ReturnCode::Success {
-                notify_queue.write().await.push_back({
-                    Notification::Operation(Operation {
-                        target: ActionTarget::Shelf.into(),
-                        id: shelf_id.into_bytes().to_vec(),
-                        action: ActionType::Edit.into(),
-                    })
-                });
-            };
-
             let metadata = ResponseMetadata {
                 request_uuid: metadata.request_uuid,
                 return_code: return_code as u32,
@@ -447,7 +426,6 @@ impl Service<DetachTag> for RpcService {
 
     fn call(&mut self, req: DetachTag) -> Self::Future {
         let metadata = req.metadata.clone().unwrap();
-        let notify_queue = self.notify_queue.clone();
         let mut state_srv = self.state_srv.clone();
         let mut peer_srv = self.peer_srv.clone();
         Box::pin(async move {
@@ -536,16 +514,6 @@ impl Service<DetachTag> for RpcService {
                 }
             };
 
-            if return_code == ReturnCode::Success {
-                notify_queue.write().await.push_back({
-                    Notification::Operation(Operation {
-                        target: ActionTarget::Shelf.into(),
-                        id: shelf_id.into_bytes().to_vec(),
-                        action: ActionType::Edit.into(),
-                    })
-                });
-            };
-
             let metadata = ResponseMetadata {
                 request_uuid: metadata.request_uuid,
                 return_code: return_code as u32,
@@ -569,7 +537,6 @@ impl Service<AttachTag> for RpcService {
 
     fn call(&mut self, req: AttachTag) -> Self::Future {
         let metadata = req.metadata.clone().unwrap();
-        let notify_queue = self.notify_queue.clone();
         let mut state_srv = self.state_srv.clone();
         let mut peer_srv = self.peer_srv.clone();
         Box::pin(async move {
@@ -656,16 +623,6 @@ impl Service<AttachTag> for RpcService {
                 }
             };
 
-            if return_code == ReturnCode::Success {
-                notify_queue.write().await.push_back({
-                    Notification::Operation(Operation {
-                        target: ActionTarget::Shelf.into(),
-                        id: shelf_id.into_bytes().to_vec(),
-                        action: ActionType::Edit.into(),
-                    })
-                });
-            };
-
             let metadata = ResponseMetadata {
                 request_uuid: metadata.request_uuid,
                 return_code: return_code as u32,
@@ -689,7 +646,6 @@ impl Service<RemoveShelf> for RpcService {
 
     fn call(&mut self, req: RemoveShelf) -> Self::Future {
         let metadata = req.metadata.clone().unwrap();
-        let notify_queue = self.notify_queue.clone();
         let mut peer_srv = self.peer_srv.clone();
         let mut state_srv = self.state_srv.clone();
         Box::pin(async move {
@@ -734,13 +690,6 @@ impl Service<RemoveShelf> for RpcService {
                                 workspace_id: workspace_ref.id,
                             })
                             .await;
-                        notify_queue.write().await.push_back({
-                            Notification::Operation(Operation {
-                                target: ActionTarget::Shelf.into(),
-                                id: shelf_id.as_bytes().to_vec(),
-                                action: ActionType::Delete.into(),
-                            })
-                        });
                         if let ShelfOwner::Sync(_sync_id) = shelf.shelf_owner {
                             //[TODO] Sync Notification
                         }
@@ -761,16 +710,6 @@ impl Service<RemoveShelf> for RpcService {
                     }
                 }
             };
-
-            if return_code == ReturnCode::Success {
-                notify_queue.write().await.push_back({
-                    Notification::Operation(Operation {
-                        target: ActionTarget::Workspace.into(),
-                        id: workspace_ref.id.as_bytes().to_vec(),
-                        action: ActionType::Edit.into(),
-                    })
-                });
-            }
 
             let metadata = ResponseMetadata {
                 request_uuid: metadata.request_uuid,
@@ -796,7 +735,6 @@ impl Service<EditShelf> for RpcService {
     fn call(&mut self, req: EditShelf) -> Self::Future {
         let metadata = req.metadata.clone();
         let metadata = metadata.unwrap();
-        let notify_queue = self.notify_queue.clone();
         let mut peer_srv = self.peer_srv.clone();
         let mut state_srv = self.state_srv.clone();
         Box::pin(async move {
@@ -892,16 +830,6 @@ impl Service<EditShelf> for RpcService {
                 }
             };
 
-            if return_code == ReturnCode::Success {
-                notify_queue.write().await.push_back({
-                    Notification::Operation(Operation {
-                        target: ActionTarget::Workspace.into(),
-                        id: shelf_id.into_bytes().to_vec(),
-                        action: ActionType::Edit.into(),
-                    })
-                });
-            }
-
             let metadata = ResponseMetadata {
                 request_uuid: metadata.request_uuid,
                 return_code: return_code as u32,
@@ -927,7 +855,6 @@ impl Service<AddShelf> for RpcService {
         let mut state_srv = self.state_srv.clone();
         let metadata = req.metadata.clone();
         let metadata = metadata.unwrap();
-        let notify_queue = self.notify_queue.clone();
         let daemon_info = self.daemon_info.clone();
         let mut peer_srv = self.peer_srv.clone();
 
@@ -984,15 +911,6 @@ impl Service<AddShelf> for RpcService {
 
             let encoded_shelf_id = shelf_id.map(|shelf_id| shelf_id.as_bytes().to_vec());
 
-            if return_code == ReturnCode::Success {
-                notify_queue.write().await.push_back({
-                    Notification::Operation(Operation {
-                        target: ActionTarget::Workspace.into(),
-                        id: workspace_id.into_bytes().to_vec(),
-                        action: ActionType::Edit.into(),
-                    })
-                });
-            }
             let metadata = ResponseMetadata {
                 request_uuid: metadata.request_uuid,
                 return_code: return_code as u32,
@@ -1018,7 +936,6 @@ impl Service<DeleteWorkspace> for RpcService {
     fn call(&mut self, req: DeleteWorkspace) -> Self::Future {
         let mut state_srv = self.state_srv.clone();
         let metadata = req.metadata.unwrap();
-        let notify_queue = self.notify_queue.clone();
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
@@ -1039,14 +956,6 @@ impl Service<DeleteWorkspace> for RpcService {
                     error_data
                 );
             };
-
-            notify_queue.write().await.push_back({
-                Notification::Operation(Operation {
-                    target: ActionTarget::Workspace.into(),
-                    id: workspace_id.into_bytes().to_vec(),
-                    action: ActionType::Delete.into(),
-                })
-            });
 
             let metadata = ResponseMetadata {
                 request_uuid: metadata.request_uuid,
@@ -1072,7 +981,6 @@ impl Service<EditTag> for RpcService {
     fn call(&mut self, req: EditTag) -> Self::Future {
         let mut state_srv = self.state_srv.clone();
         let metadata = req.metadata.unwrap();
-        let notify_queue = self.notify_queue.clone();
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
@@ -1155,16 +1063,6 @@ impl Service<EditTag> for RpcService {
                 ReturnCode::Success
             };
 
-            if return_code == ReturnCode::Success {
-                notify_queue.write().await.push_back({
-                    Notification::Operation(Operation {
-                        target: ActionTarget::Tag.into(),
-                        id: req.tag_id,
-                        action: ActionType::Edit.into(),
-                    })
-                });
-            }
-
             let metadata = ResponseMetadata {
                 request_uuid: metadata.request_uuid,
                 return_code: return_code as u32,
@@ -1189,7 +1087,6 @@ impl Service<EditWorkspace> for RpcService {
     fn call(&mut self, req: EditWorkspace) -> Self::Future {
         let mut state_srv = self.state_srv.clone();
         let metadata = req.metadata.unwrap();
-        let notify_queue = self.notify_queue.clone();
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
@@ -1239,16 +1136,6 @@ impl Service<EditWorkspace> for RpcService {
                     .await;
                 ReturnCode::Success
             };
-
-            if return_code == ReturnCode::Success {
-                notify_queue.write().await.push_back({
-                    Notification::Operation(Operation {
-                        target: ActionTarget::Workspace.into(),
-                        id: req.workspace_id,
-                        action: ActionType::Edit.into(),
-                    })
-                });
-            }
 
             let metadata = ResponseMetadata {
                 request_uuid: metadata.request_uuid,
@@ -1362,7 +1249,6 @@ impl Service<CreateWorkspace> for RpcService {
 
     fn call(&mut self, req: CreateWorkspace) -> Self::Future {
         let mut state_srv = self.state_srv.clone();
-        let notify_queue = self.notify_queue.clone();
         let metadata = req.metadata.clone().unwrap();
         Box::pin(async move {
             let id = state_srv
@@ -1372,14 +1258,6 @@ impl Service<CreateWorkspace> for RpcService {
                 })
                 .await
                 .unwrap();
-
-            notify_queue.write().await.push_back({
-                Notification::Operation(Operation {
-                    target: ActionTarget::Workspace.into(),
-                    id: id.as_bytes().to_vec(),
-                    action: ActionType::Create.into(),
-                })
-            });
 
             let metadata = ResponseMetadata {
                 request_uuid: metadata.request_uuid,
@@ -1405,7 +1283,6 @@ impl Service<CreateTag> for RpcService {
 
     fn call(&mut self, req: CreateTag) -> Self::Future {
         let mut state_srv = self.state_srv.clone();
-        let notify_queue = self.notify_queue.clone();
         let metadata = req.metadata.clone().unwrap();
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
@@ -1489,13 +1366,6 @@ impl Service<CreateTag> for RpcService {
                 })
                 .await;
 
-            notify_queue.write().await.push_back({
-                Notification::Operation(Operation {
-                    target: ActionTarget::Tag.into(),
-                    id: tag.id.into_bytes().to_vec(),
-                    action: ActionType::Delete.into(),
-                })
-            });
             // If the tag was created successfully, return the response with the tag ID
             let metadata = ResponseMetadata {
                 request_uuid: metadata.request_uuid,
