@@ -722,6 +722,7 @@ dependencies = [
  "rayon",
  "regex",
  "scalable_cuckoo_filter",
+ "seize",
  "serde",
  "tokio",
  "tower",
@@ -2260,12 +2261,10 @@ checksum = "b15813163c1d831bf4a13c3610c05c0d03b39feb07f7e09fa234dac9b15aaf39"
 [[package]]
 name = "papaya"
 version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f92dd0b07c53a0a0c764db2ace8c541dc47320dad97c2200c2a637ab9dd2328f"
+source = "git+https://github.com/yamabiiko/papaya#8d198d87b85998a1b8f59fe6e6aabfc1704eb858"
 dependencies = [
  "equivalent",
  "seize",
- "serde",
 ]
 
 [[package]]

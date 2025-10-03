@@ -1,44 +1,96 @@
 use crate::prelude::*;
-use crate::shelf::file::{File, FileMetadata};
-use crate::tag::Tag;
+use crate::sharedref::WeakRef;
+use crate::shelf::file::{File, FileRef};
+use crate::tag::TagRef;
+use file_id::{FileId, get_file_id};
 use jwalk::WalkDir;
-use papaya::{HashMap, HashSet};
+use seize::Collector;
+use std::hash::RandomState;
 use std::io;
 use std::path::PathBuf;
 
-type FileRef = SharedRef<File>;
-type TagRef = ImmutRef<Tag>;
+pub type NodeRef = WeakRef<Node, FileId>;
+pub type HashSet<T> = papaya::HashSet<T, RandomState, Arc<Collector>>;
+pub type HashMap<K, V> = papaya::HashMap<K, V, RandomState, Arc<Collector>>;
 
-#[derive(Debug, Default)]
 pub struct Node {
-    pub files: HashMap<PathBuf, FileRef>,
+    pub path: PathBuf,
+    pub files: HashSet<FileRef>,
+    pub collector: Arc<Collector>,
     pub tags: HashMap<TagRef, HashSet<FileRef>>,
-    pub dtags: HashSet<TagRef>, // directory level tags, to be applied down
-    pub dtag_files: HashMap<TagRef, HashSet<FileRef>>, // files tagged with directory level tags
-    pub directories: HashMap<PathBuf, Arc<Node>>,
+    pub dtags: HashSet<TagRef>, // dtags applied from above, to be applied down
+    pub dtag_nodes: HashMap<TagRef, Vec<NodeRef>>, // list of dtagged directories starting at any point below
+    pub parent: Option<NodeRef>,
+    pub subdirs: HashSet<NodeRef>,
 }
 
 impl Node {
     pub fn new(path: PathBuf) -> Result<Self, io::Error> {
+        let collector = Arc::new(Collector::new());
+        let files: HashSet<FileRef> = WalkDir::new(path.clone())
+            .follow_links(false)
+            .skip_hidden(false)
+            .sort(false)
+            .into_iter()
+            .flat_map(|entry_res| {
+                let entry = entry_res.unwrap();
+                if entry.file_type().is_file() {
+                    if let Ok(id) = get_file_id(entry.path()) {
+                        Some(FileRef::new_ref_id(
+                            id,
+                            File::new(
+                                entry.path().clone(),
+                                papaya::HashSet::builder()
+                                    .shared_collector(collector.clone())
+                                    .build(),
+                            ),
+                        ))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect();
+        Ok(Node {
+            files,
+            path,
+            collector,
+            tags: HashMap::default(),
+            dtags: HashSet::default(),
+            dtag_nodes: HashMap::default(),
+            parent: None,
+            subdirs: HashSet::default(),
+        })
+    }
+
+    /*
+    pub fn full_init(path: PathBuf) -> Result<Self, io::Error> {
         let mut dirs = Vec::<PathBuf>::new();
-        let files = walk_dir_init(&path, &mut dirs);
+        let collector = Arc::new(Collector::new());
+        let files = walk_dir_init(&path, &mut dirs, &collector);
         let directories = dirs
             .into_iter()
             .map(|dir| {
                 (
                     dir.strip_prefix(&path).unwrap().to_path_buf(),
-                    Arc::new(Node::new(dir).unwrap()),
+                    Arc::new(Node::full_init(dir).unwrap()),
                 )
             })
             .collect::<HashMap<PathBuf, Arc<Node>>>();
         Ok(Node {
+            path,
             files,
+            collector,
             tags: HashMap::new(),
             dtags: HashSet::new(),
             dtag_files: HashMap::new(),
-            directories,
+            parent: None, // TODO: Initialize properly
+            subdirs: HashSet::new(),
         })
     }
+    */
 
     pub fn attach_dtag(&self, dtag: &TagRef) -> bool {
         self.dtags.pin().insert(dtag.clone())
@@ -55,7 +107,7 @@ impl Node {
         if let Some(set) = tags.get(tag) {
             set.pin().insert(file.clone());
         } else {
-            let new_set = HashSet::new();
+            let new_set = HashSet::default();
             new_set.pin().insert(file.clone());
             tags.insert(tag.clone(), new_set);
         }
@@ -81,7 +133,12 @@ impl Node {
     }
 }
 
-fn walk_dir_init(root: &PathBuf, dirs: &mut Vec<PathBuf>) -> HashMap<PathBuf, FileRef> {
+/*
+fn walk_dir_init(
+    root: &PathBuf,
+    dirs: &mut Vec<PathBuf>,
+    collector: &Arc<Collector>,
+) -> HashSet<FileRef> {
     let mut visited_root = false;
     WalkDir::new(root)
         .follow_links(false)
@@ -91,21 +148,18 @@ fn walk_dir_init(root: &PathBuf, dirs: &mut Vec<PathBuf>) -> HashMap<PathBuf, Fi
         .flat_map(|entry_res| {
             let entry = entry_res.unwrap();
             if entry.file_type().is_file() {
-                Some((
-                    entry.path(),
-                    SharedRef::new_ref_id(
-                        Uuid::new_v5(
-                            &Uuid::NAMESPACE_URL,
-                            entry.path().as_os_str().as_encoded_bytes(),
-                        ),
+                if let Ok(id) = get_file_id(entry.path()) {
+                    Some(FileRef::new_ref_id(
+                        id,
                         File::new(
                             entry.path().clone(),
-                            HashSet::new(),
-                            HashSet::new(),
-                            FileMetadata::new(&entry.path()),
+                            papaya::HashSet::builder().collector(collector.clone()).build(),
+                            papaya::HashSet::builder().collector(collector.clone()).build(),
                         ),
-                    ),
-                ))
+                    ))
+                } else {
+                    None
+                }
             } else if entry.file_type().is_dir() {
                 if !visited_root {
                     visited_root = true
@@ -119,3 +173,4 @@ fn walk_dir_init(root: &PathBuf, dirs: &mut Vec<PathBuf>) -> HashMap<PathBuf, Fi
         })
         .collect()
 }
+*/

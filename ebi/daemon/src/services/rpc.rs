@@ -49,11 +49,12 @@ pub fn parse_peer_id(bytes: &[u8]) -> Result<NodeId, ()> {
     NodeId::from_bytes(bytes).map_err(|_| ())
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct RpcService {
     pub daemon_info: Arc<DaemonInfo>,
     pub peer_srv: PeerService,
     pub state_srv: StateService,
+    pub fs_srv: FileSysService,
     pub query_srv: QueryService,
     pub tasks: Arc<HashMap<TaskID, JoinHandle<()>>>,
 
@@ -274,7 +275,8 @@ impl Service<DeleteTag> for RpcService {
             for (_id, shelf) in workspace.shelves.iter() {
                 match &shelf.shelf_type {
                     ShelfType::Local(shelf_data) => {
-                        let _ = shelf_data.strip(PathBuf::from(""), tag_ref);
+                        let node_id = shelf_data.root.id;
+                        let _ = shelf_data.strip(node_id, tag_ref);
 
                         //[?] Are (remote) Sync'd shelves also in shelves ??
                         if let ShelfOwner::Sync(_sync_id) = shelf.shelf_owner {
@@ -331,6 +333,7 @@ impl Service<StripTag> for RpcService {
         let metadata = req.metadata.clone().unwrap();
         let mut peer_srv = self.peer_srv.clone();
         let mut state_srv = self.state_srv.clone();
+        let mut fs_srv = self.fs_srv.clone();
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
@@ -375,7 +378,17 @@ impl Service<StripTag> for RpcService {
 
             let return_code = match &shelf.shelf_type {
                 ShelfType::Local(shelf_data) => {
-                    let result = shelf_data.strip(PathBuf::from(&req.path), tag);
+                    let path = PathBuf::from(&req.path);
+                    let node_id = match fs_srv
+                        .get_or_init_node(shelf_data.clone(), path.clone())
+                        .await
+                    {
+                        Ok(node_id) => node_id,
+                        Err(res) => {
+                            return_error!(res, StripTagResponse, metadata.request_uuid, error_data);
+                        }
+                    };
+                    let result = shelf_data.strip(node_id, tag);
 
                     if let ShelfOwner::Sync(_sync_id) = shelf.shelf_owner {
                         //[TODO] Sync Notification
@@ -428,6 +441,7 @@ impl Service<DetachTag> for RpcService {
         let metadata = req.metadata.clone().unwrap();
         let mut state_srv = self.state_srv.clone();
         let mut peer_srv = self.peer_srv.clone();
+        let mut fs_srv = self.fs_srv.clone();
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
@@ -475,10 +489,24 @@ impl Service<DetachTag> for RpcService {
                 match &shelf.shelf_type {
                     ShelfType::Local(shelf_data) => {
                         let path = PathBuf::from(&req.path);
+                        let node_id = match fs_srv
+                            .get_or_init_node(shelf_data.clone(), path.clone())
+                            .await
+                        {
+                            Ok(node_id) => node_id,
+                            Err(res) => {
+                                return_error!(
+                                    res,
+                                    DetachTagResponse,
+                                    metadata.request_uuid,
+                                    error_data
+                                );
+                            }
+                        };
                         let result = if path.is_file() {
-                            shelf_data.detach(path, tag)
+                            shelf_data.detach(node_id, path, tag)
                         } else {
-                            shelf_data.detach_dtag(path, tag)
+                            shelf_data.detach_dtag(node_id, tag)
                         };
 
                         if let ShelfOwner::Sync(_sync_id) = shelf.shelf_owner {
@@ -537,6 +565,7 @@ impl Service<AttachTag> for RpcService {
 
     fn call(&mut self, req: AttachTag) -> Self::Future {
         let metadata = req.metadata.clone().unwrap();
+        let mut fs_srv = self.fs_srv.clone();
         let mut state_srv = self.state_srv.clone();
         let mut peer_srv = self.peer_srv.clone();
         Box::pin(async move {
@@ -585,10 +614,31 @@ impl Service<AttachTag> for RpcService {
                 match &shelf.shelf_type {
                     ShelfType::Local(shelf_data) => {
                         let path = PathBuf::from(&req.path);
+                        let node_id = match fs_srv
+                            .get_or_init_node(shelf_data.clone(), path.clone())
+                            .await
+                        {
+                            Ok(node_id) => node_id,
+                            Err(res) => {
+                                return_error!(
+                                    res,
+                                    AttachTagResponse,
+                                    metadata.request_uuid,
+                                    error_data
+                                );
+                            }
+                        };
                         let result = if path.is_file() {
-                            shelf_data.attach(path, tag)
+                            shelf_data.attach(node_id, path, tag)
+                        } else if path.is_dir() {
+                            shelf_data.attach_dtag(node_id, tag)
                         } else {
-                            shelf_data.attach_dtag(path, tag)
+                            return_error!(
+                                ReturnCode::PathNotDir, // [TODO] should be invalid path (e.g symlink)
+                                AttachTagResponse,
+                                metadata.request_uuid,
+                                error_data
+                            );
                         };
                         if let ShelfOwner::Sync(_sync_id) = shelf.shelf_owner {
                             //[TODO] Sync Notification
@@ -1032,7 +1082,7 @@ impl Service<EditTag> for RpcService {
                             error_data
                         );
                     };
-                    Some(parent_tag)
+                    Some(parent_tag.clone())
                 } else {
                     None
                 }
@@ -1048,10 +1098,7 @@ impl Service<EditTag> for RpcService {
                 );
             }
 
-            //[/] Business Logic
             let return_code = {
-                todo!();
-                /*
                 tag.rcu(|t| {
                     let mut u_t = (**t).clone();
                     u_t.name = req.name.clone();
@@ -1059,7 +1106,6 @@ impl Service<EditTag> for RpcService {
                     u_t.parent = parent.clone();
                     u_t
                 });
-                */
                 ReturnCode::Success
             };
 

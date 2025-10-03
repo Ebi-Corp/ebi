@@ -1,24 +1,22 @@
-use crate::sharedref::{ImmutRef, SharedRef};
+use crate::prelude::*;
 use crate::shelf::ShelfOwner;
 use crate::tag::Tag;
 use chrono::{DateTime, Utc};
-use papaya::HashSet;
+use file_id::FileId;
 use serde::{Deserialize, Serialize};
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 #[cfg(windows)]
 use std::os::windows::fs::MetadataExt;
 use std::path::PathBuf;
-pub type FileRef = SharedRef<File>;
-pub type TagRef = ImmutRef<Tag>;
+pub type FileRef = ImmutRef<File, FileId>;
+pub type TagRef = SharedRef<Tag>;
+use crate::shelf::HashSet;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct File {
     pub path: PathBuf,
-    pub hash: u64,
-    pub metadata: FileMetadata,
     pub tags: HashSet<TagRef>,
-    pub dtags: HashSet<TagRef>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,7 +28,8 @@ pub struct FileSummary {
 }
 
 impl FileSummary {
-    fn new(owner: ShelfOwner, path: PathBuf, metadata: FileMetadata) -> Self {
+    fn new(owner: ShelfOwner, path: PathBuf) -> Self {
+        let metadata = FileMetadata::new(&path);
         FileSummary {
             owner,
             path,
@@ -38,7 +37,7 @@ impl FileSummary {
         }
     }
     pub fn from(file: &File, shelf: ShelfOwner) -> Self {
-        FileSummary::new(shelf, file.path.clone(), file.metadata.clone())
+        FileSummary::new(shelf, file.path.clone())
     }
 }
 
@@ -141,19 +140,8 @@ impl From<FileMetadata> for ebi_proto::rpc::FileMetadata {
 }
 
 impl File {
-    pub fn new(
-        path: PathBuf,
-        tags: HashSet<TagRef>,
-        dtags: HashSet<TagRef>,
-        metadata: FileMetadata,
-    ) -> Self {
-        File {
-            path,
-            hash: 0,
-            metadata,
-            tags,
-            dtags,
-        }
+    pub fn new(path: PathBuf, tags: HashSet<TagRef>) -> Self {
+        File { path, tags }
     }
 
     pub fn attach(&self, tag: &TagRef) -> bool {
@@ -162,13 +150,5 @@ impl File {
 
     pub fn detach(&self, tag: &TagRef) -> bool {
         self.tags.pin().remove(tag)
-    }
-
-    pub fn attach_dtag(&self, tag: &TagRef) -> bool {
-        self.dtags.pin().insert(tag.clone())
-    }
-
-    pub fn detach_dtag(&self, tag: &TagRef) -> bool {
-        self.dtags.pin().remove(tag)
     }
 }
