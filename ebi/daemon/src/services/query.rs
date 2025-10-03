@@ -32,7 +32,7 @@ use uuid::Uuid;
 type TaskID = u64;
 pub type TokenId = Uuid;
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct QueryService {
     pub peer_srv: PeerService,
     pub cache: CacheService,
@@ -72,37 +72,20 @@ impl Retriever {
             } else {
                 let root_ref = &*self.shelf_data.root;
 
-                let mut tags = match root_ref.tags.pin().get(tag_ref) {
+                let tags = match root_ref.tags.pin().get(tag_ref) {
                     Some(tag_set) => tag_set
                         .pin()
                         .iter()
                         .map(|f| OrderedFileSummary {
-                            file_summary: FileSummary::from(&f.load(), self.shelf_owner.clone()),
+                            file_summary: FileSummary::from(&f, self.shelf_owner.clone()),
                             order: self.order.clone(),
                         })
                         .collect::<im::HashSet<OrderedFileSummary>>(),
                     None => im::HashSet::new(),
                 };
 
-                let mut dtags = match root_ref.tags.pin().get(tag_ref) {
-                    Some(dtag_set) => dtag_set
-                        .pin()
-                        .iter()
-                        .map(|f| OrderedFileSummary {
-                            file_summary: FileSummary::from(&f.load(), self.shelf_owner.clone()),
-                            order: self.order.clone(),
-                        })
-                        .collect::<HashSet<OrderedFileSummary>>(),
-                    None => HashSet::new(),
-                };
-
-                if tags.len() >= dtags.len() {
-                    tags.extend(dtags);
-                    Ok(tags)
-                } else {
-                    dtags.extend(tags);
-                    Ok(dtags)
-                }
+                // [TODO] handle dtags
+                Ok(tags)
             }
         } else {
             Err(RetrieveErr::TagParseError)
@@ -113,7 +96,6 @@ impl Retriever {
         //[!] Check cache
         let root_ref = &*self.shelf_data.root;
         let tags = root_ref.tags.pin();
-        let dtags = root_ref.dtag_files.pin();
 
         let tags = tags.iter().flat_map(|(tag_ref, set)| {
             let cached = self.cache.retrieve(tag_ref);
@@ -123,28 +105,15 @@ impl Retriever {
                 set.pin()
                     .iter()
                     .map(|f| OrderedFileSummary {
-                        file_summary: FileSummary::from(&f.load(), self.shelf_owner.clone()),
+                        file_summary: FileSummary::from(&f, self.shelf_owner.clone()),
                         order: self.order.clone(),
                     })
                     .collect::<HashSet<OrderedFileSummary>>()
             }
         });
-        let dtags = dtags.iter().flat_map(|(tag_ref, set)| {
-            let cached = self.cache.retrieve(tag_ref);
-            if let Some(cached) = cached {
-                cached
-            } else {
-                set.pin()
-                    .iter()
-                    //.par_bridge()
-                    .map(|f| OrderedFileSummary {
-                        file_summary: FileSummary::from(&f.load(), self.shelf_owner.clone()),
-                        order: self.order.clone(),
-                    })
-                    .collect::<HashSet<OrderedFileSummary>>()
-            }
-        });
-        Ok(tags.chain(dtags).collect())
+        // [TODO] handle dtags
+
+        Ok(tags.collect())
     }
 }
 

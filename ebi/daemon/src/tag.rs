@@ -3,7 +3,7 @@ use serde::{Serialize, Serializer, ser::SerializeStruct};
 use std::hash::Hash;
 
 pub type TagId = Uuid;
-pub type TagRef = ImmutRef<Tag>;
+pub type TagRef = SharedRef<Tag>;
 
 #[derive(Clone)]
 pub struct TagData {

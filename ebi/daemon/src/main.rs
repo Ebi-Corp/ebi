@@ -5,13 +5,12 @@ mod sharedref;
 mod shelf;
 mod stateful;
 mod tag;
-mod uuid;
 mod workspace;
 
 pub mod prelude {
     pub use crate::sharedref::{ImmutRef, Ref, SharedRef, StatefulRef};
-    pub use crate::uuid::Uuid;
     pub use std::sync::Arc;
+    pub use uuid::Uuid;
 }
 
 use crate::prelude::*;
@@ -144,10 +143,14 @@ async fn main() -> Result<()> {
         state_srv: state_srv.clone(),
         daemon_info: daemon_info.clone(),
     };
+    let fs_srv = FileSysService {
+        nodes: Arc::new(papaya::HashSet::new()),
+    };
     let service = ServiceBuilder::new().service(RpcService {
         daemon_info: daemon_info.clone(),
         peer_srv: peer_srv.clone(),
         state_srv: state_srv.clone(),
+        fs_srv,
         query_srv,
         responses: responses.clone(),
         tasks: tasks.clone(),

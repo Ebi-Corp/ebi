@@ -1,43 +1,110 @@
-use crate::uuid::Uuid;
+use crate::shelf::file::File;
+use crate::shelf::node::Node;
 use arc_swap::{ArcSwap, AsRaw, Guard};
+use file_id::{FileId, get_file_id};
+use std::borrow::Borrow;
 use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
+use std::path::PathBuf;
+use std::sync::Weak;
 use std::{future::Future, ops::Deref, pin::Pin, ptr, sync::Arc};
 use tokio::sync::RwLock;
+use uuid::Uuid;
 
-pub type ImmutRef<T, I = Uuid> = Arc<Inner<T, I>>;
+pub type WeakRef<T, I = Uuid> = Inner<Weak<T>, I>;
+pub type ImmutRef<T, I = Uuid> = Inner<Arc<T>, I>;
 pub type SharedRef<T, I = Uuid> = Arc<Inner<ArcSwap<T>, I>>;
 
 pub trait Ref<T, I> {
     fn new_ref(data: T) -> Self;
     fn new_ref_id(id: I, data: T) -> Self;
+    fn inner_ptr(&self) -> *const T;
 }
 
-impl<T, I> Ref<T, I> for ImmutRef<T, I>
-where
-    I: Copy + Default,
-{
+impl<T> Ref<T, Uuid> for ImmutRef<T, Uuid> {
     fn new_ref(data: T) -> Self {
-        let id = I::default();
-        Arc::new(Inner { id, data })
+        let id = Uuid::new_v4();
+        //Arc::new(Inner { id, data })
+        Inner {
+            id,
+            data: Arc::new(data),
+        }
     }
-    fn new_ref_id(id: I, data: T) -> Self {
-        Arc::new(Inner { id, data })
+    fn new_ref_id(id: Uuid, data: T) -> Self {
+        //Arc::new(Inner { id, data })
+        Inner {
+            id,
+            data: Arc::new(data),
+        }
+    }
+
+    fn inner_ptr(&self) -> *const T {
+        Arc::as_ptr(&self.data)
     }
 }
 
-impl<T, I> Ref<T, I> for SharedRef<T, I>
-where
-    I: Copy + Default,
-{
+impl<T> Ref<T, Uuid> for SharedRef<T, Uuid> {
     fn new_ref(data: T) -> Self {
-        let id = I::default();
+        let id = Uuid::new_v4();
         let data = ArcSwap::new(Arc::new(data));
         Arc::new(Inner { id, data })
     }
-    fn new_ref_id(id: I, data: T) -> Self {
+    fn new_ref_id(id: Uuid, data: T) -> Self {
         let data = ArcSwap::new(Arc::new(data));
         Arc::new(Inner { id, data })
+    }
+    fn inner_ptr(&self) -> *const T {
+        Arc::as_ptr(&self.data.load())
+    }
+}
+
+impl Ref<File, FileId> for ImmutRef<File, FileId> {
+    fn new_ref(data: File) -> Self {
+        let id = get_file_id(&data.path).unwrap(); // this should be avoided.
+        //Arc::new(Inner { id, data })
+
+        Inner {
+            id,
+            data: Arc::new(data),
+        }
+    }
+    fn new_ref_id(id: FileId, data: File) -> Self {
+        Inner {
+            id,
+            data: Arc::new(data),
+        }
+        //Arc::new(Inner { id, data })
+    }
+    fn inner_ptr(&self) -> *const File {
+        Arc::as_ptr(&self.data)
+    }
+}
+
+impl Ref<Node, FileId> for ImmutRef<Node, FileId> {
+    fn new_ref(data: Node) -> Self {
+        todo!();
+
+        //Inner { id, data: Arc::new(data) }
+    }
+    fn new_ref_id(id: FileId, data: Node) -> Self {
+        Inner {
+            id,
+            data: Arc::new(data),
+        }
+        //Arc::new(Inner { id, data })
+    }
+
+    fn inner_ptr(&self) -> *const Node {
+        Arc::as_ptr(&self.data)
+    }
+}
+
+impl<T, I: Copy> ImmutRef<T, I> {
+    pub fn downgrade(&self) -> WeakRef<T, I> {
+        Inner {
+            id: self.id,
+            data: Arc::downgrade(&self.data),
+        }
     }
 }
 
@@ -45,6 +112,29 @@ where
 pub struct Inner<T, I> {
     pub id: I,
     data: T,
+}
+
+impl Borrow<PathBuf> for ImmutRef<Node, FileId> {
+    fn borrow(&self) -> &PathBuf {
+        &self.data.path
+    }
+}
+
+impl Borrow<PathBuf> for ImmutRef<File, FileId> {
+    fn borrow(&self) -> &PathBuf {
+        &self.data.path
+    }
+}
+
+impl<T, I> Borrow<I> for ImmutRef<T, I> {
+    fn borrow(&self) -> &I {
+        &self.id
+    }
+}
+impl<T, I> Borrow<I> for WeakRef<T, I> {
+    fn borrow(&self) -> &I {
+        &self.id
+    }
 }
 
 impl<T, I> PartialEq for Inner<T, I>
@@ -196,7 +286,7 @@ where
     }
 }
 
-fn ptr_eq<Base, A, B>(a: A, b: B) -> bool
+pub fn ptr_eq<Base, A, B>(a: A, b: B) -> bool
 where
     A: AsRaw<Base>,
     B: AsRaw<Base>,

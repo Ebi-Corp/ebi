@@ -6,14 +6,13 @@ use crate::tag::{Tag, TagId};
 
 pub type WorkspaceId = Uuid;
 
-#[derive(Debug)]
 pub struct Workspace {
     // Workspace Info
     pub info: StatefulRef<WorkspaceInfo>,
     // Shelf Management
     pub shelves: StatefulMap<ShelfId, ImmutRef<Shelf>>,
     // Tag Management
-    pub tags: StatefulMap<TagId, ImmutRef<Tag>>,
+    pub tags: StatefulMap<TagId, SharedRef<Tag>>,
     pub lookup: StatefulMap<String, TagId>,
 }
 

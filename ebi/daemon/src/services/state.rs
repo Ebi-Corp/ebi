@@ -6,11 +6,11 @@ pub mod prelude {
     pub use super::UnassignShelf;
 }
 
-use crate::sharedref::{History, ImmutRef, Ref, StatefulRef};
+use crate::prelude::*;
+use crate::sharedref::History;
 use crate::shelf::{Shelf, ShelfId, ShelfOwner};
 use crate::stateful::{StatefulMap, SwapRef};
 use crate::tag::Tag;
-use crate::uuid::Uuid;
 use crate::workspace::{Workspace, WorkspaceId, WorkspaceInfo};
 use ebi_proto::rpc::*;
 use iroh::NodeId;
@@ -27,7 +27,7 @@ use tower::Service;
 
 type L = ();
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct StateService {
     pub state: Arc<History<GroupState>>,
     pub lock: Arc<RwLock<L>>,
@@ -45,7 +45,6 @@ impl StateService {
 }
 
 // TODO: () is a paceholder
-#[derive(Debug)]
 pub struct GroupState {
     pub workspaces: StatefulMap<WorkspaceId, Arc<StatefulRef<Workspace>>>,
     pub shelf_assignment: StatefulMap<ShelfId, Vec<Weak<StatefulRef<Workspace>>>>,
@@ -139,11 +138,11 @@ impl Service<CreateWorkspace> for StateService {
 pub struct CreateTag {
     pub priority: u64,
     pub name: String,
-    pub parent: Option<ImmutRef<Tag>>,
+    pub parent: Option<SharedRef<Tag>>,
 }
 
 impl Service<CreateTag> for StateService {
-    type Response = ImmutRef<Tag>;
+    type Response = SharedRef<Tag>;
     type Error = ReturnCode;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
@@ -159,7 +158,7 @@ impl Service<CreateTag> for StateService {
                 name: req.name,
                 parent: req.parent,
             };
-            let tag_ref = ImmutRef::new_ref(tag);
+            let tag_ref = SharedRef::new_ref(tag);
 
             // [TODO] notice the create filter
             Ok(tag_ref)
@@ -186,6 +185,7 @@ impl Service<GetWorkspaces> for StateService {
                 let mut tag_ls = Vec::new();
                 for tag in workspace.load().tags.values() {
                     let tag_id = tag.id;
+                    let tag = tag.load();
                     let name = tag.name.clone();
                     let priority = tag.priority;
                     let parent_id = tag

@@ -1,4 +1,4 @@
-use crate::uuid::Uuid;
+use crate::prelude::*;
 use ebi_proto::rpc::*;
 use iroh::NodeId;
 use std::collections::HashMap;
@@ -6,7 +6,6 @@ use std::net::SocketAddr;
 use std::{
     future::Future,
     pin::Pin,
-    sync::Arc,
     task::{Context, Poll},
 };
 use tokio::sync::{RwLock, mpsc::Sender, watch::Receiver};

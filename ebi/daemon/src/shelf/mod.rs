@@ -1,17 +1,19 @@
 pub mod file;
 pub mod node;
 use crate::prelude::*;
-use crate::shelf::node::Node;
+use crate::sharedref::ptr_eq;
+use crate::shelf::file::File;
+use crate::shelf::node::{HashSet, Node, NodeRef};
 use crate::stateful::{InfoState, StatefulField};
 use crate::tag::{Tag, TagId};
-use crate::workspace::ChangeSummary;
 use arc_swap::ArcSwap;
 use chrono::Duration;
+use file::FileRef;
+use file_id::{FileId, get_file_id};
 use iroh::NodeId;
-use papaya::HashSet;
 use rand_chacha::{ChaCha12Rng, rand_core::SeedableRng};
-use rayon::prelude::*;
 use scalable_cuckoo_filter::{ScalableCuckooFilter, ScalableCuckooFilterBuilder};
+use seize::Collector;
 use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
 use std::io;
@@ -19,10 +21,8 @@ use std::path::PathBuf;
 use std::result::Result;
 use tokio::sync::RwLock;
 
-use file::FileRef;
-
 pub type ShelfId = Uuid;
-pub type TagRef = ImmutRef<Tag>;
+pub type TagRef = SharedRef<Tag>;
 
 const SEED: u64 = 0; // [TODO] Move seed to proper initialization
 
@@ -30,7 +30,7 @@ pub type ShelfDataRef = ImmutRef<ShelfData>;
 pub type TagFilter =
     ScalableCuckooFilter<TagId, scalable_cuckoo_filter::DefaultHasher, ChaCha12Rng>;
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub enum ShelfType {
     Local(ShelfDataRef),
     Remote,
@@ -61,7 +61,6 @@ pub struct ShelfConfig {
     pub sync_config: Option<SyncConfig>,
 }
 
-#[derive(Debug)]
 pub struct Shelf {
     pub shelf_type: ShelfType,
     pub shelf_owner: ShelfOwner,
@@ -95,7 +94,7 @@ impl Shelf {
         let shelf_type = if remote {
             ShelfType::Remote
         } else {
-            let shelf_data = ShelfData::new(path.clone())?;
+            let shelf_data = ShelfData::new(&path)?;
             ShelfType::Local(ImmutRef::new_ref(shelf_data))
         };
         let shelf = Shelf {
@@ -116,18 +115,10 @@ pub fn generate_tag_filter() -> ArcSwap<TagFilter> {
     ArcSwap::new(Arc::new(builder.finish::<TagId>()))
 }
 
-#[derive(Debug)]
 pub struct ShelfData {
-    pub root: Arc<Node>,
+    pub root: ImmutRef<Node, FileId>,
+    pub nodes: HashSet<NodeRef>,
     pub root_path: PathBuf,
-}
-impl Clone for ShelfData {
-    fn clone(&self) -> Self {
-        ShelfData {
-            root: self.root.clone(),
-            root_path: self.root_path.clone(),
-        }
-    }
 }
 
 impl PartialEq for ShelfData {
@@ -194,63 +185,69 @@ impl ShelfInfo {
 }
 
 impl ShelfData {
-    pub fn new(path: PathBuf) -> Result<Self, io::Error> {
+    pub fn new(path: &PathBuf) -> Result<Self, io::Error> {
+        let file_id = get_file_id(&path)?;
+        let collector = Arc::new(Collector::new());
         Ok(ShelfData {
-            root: Arc::new(Node::new(path.clone())?),
+            root: ImmutRef::<Node, FileId>::new_ref_id(file_id, Node::new(path.clone())?),
+            nodes: papaya::HashSet::builder()
+                .shared_collector(collector)
+                .build(),
             root_path: path.clone(),
         })
     }
 
     pub async fn files(&self) -> Vec<FileRef> {
-        self.root.files.pin().values().cloned().collect()
+        self.root.files.pin().iter().cloned().collect()
     }
 
     pub fn contains(&self, tag: TagRef) -> bool {
-        self.root.tags.pin().contains_key(&tag) || self.root.dtag_files.pin().contains_key(&tag)
+        self.root.tags.pin().contains_key(&tag) || self.root.dtag_nodes.pin().contains_key(&tag)
     }
 
-    pub async fn refresh(&self) -> Result<ChangeSummary, io::Error> {
-        todo!();
-    }
+    pub fn attach(
+        &self,
+        node_id: FileId,
+        path: PathBuf,
+        tag: &TagRef,
+    ) -> Result<(bool, bool), UpdateErr> {
+        let bind = self.nodes.pin();
+        let Some(mut node_ref) = bind.get(&node_id).and_then(|p| p.upgrade()) else {
+            return Err(UpdateErr::PathNotFound);
+        };
 
-    pub fn attach(&self, path: PathBuf, tag: &TagRef) -> Result<(bool, bool), UpdateErr> {
-        // [/] newly attached to (shelf, file)
-        let stripped_path = path
-            .strip_prefix(&self.root_path)
-            .map_err(|_| UpdateErr::PathNotFound)?
-            .parent();
-
-        let mut node_ref: Vec<Arc<Node>> = Vec::new();
-        // load the root Arc
-        let mut curr_node = self.root.clone();
-
-        if let Some(path) = stripped_path {
-            for dir in path.components().as_path() {
-                let child = (curr_node
-                    .directories
-                    .pin()
-                    .get(&PathBuf::from(&dir))
-                    .ok_or(UpdateErr::PathNotFound)?)
-                .clone();
-
-                node_ref.push(child.clone());
-                curr_node = child;
+        let file = match node_ref.files.pin().get(&path) {
+            Some(file) => file.clone(),
+            None => {
+                let file_id = get_file_id(&path).map_err(|_| UpdateErr::FileNotFound)?;
+                let file = File::new(
+                    path,
+                    papaya::HashSet::builder()
+                        .shared_collector(self.root.collector.clone())
+                        .build(),
+                );
+                let file = ImmutRef::new_ref_id(file_id, file);
+                node_ref.files.pin().insert(file.clone());
+                file
             }
-        }
+        };
 
-        let file_pin = curr_node.files.pin();
+        let file_attached = file.attach(tag);
 
-        let file = file_pin.get(&path).ok_or(UpdateErr::FileNotFound)?;
-        let file_attached = file.load().attach(tag);
-
-        for node in node_ref.into_iter().rev() {
-            if file_attached {
-                node.attach(tag, file);
+        if file_attached {
+            // traverse up to root
+            while !ptr_eq(&node_ref, self.root.inner_ptr()) {
+                node_ref.attach(tag, &file.clone());
+                node_ref = node_ref
+                    .parent
+                    .as_ref()
+                    .and_then(|p| p.upgrade())
+                    .ok_or(UpdateErr::PathNotFound)?; // this means that the node has been moved
             }
         }
 
         let shelf_attached = if file_attached {
-            curr_node.attach(tag, file)
+            node_ref.attach(tag, &file.clone())
         } else {
             false
         };
@@ -258,201 +255,163 @@ impl ShelfData {
         Ok((shelf_attached, file_attached))
     }
 
-    pub fn detach(&self, path: PathBuf, tag: &TagRef) -> Result<(bool, bool), UpdateErr> {
-        // [/] newly attached to (shelf, file)
-        let stripped_path = path
-            .strip_prefix(&self.root_path)
-            .map_err(|_| UpdateErr::PathNotFound)?
-            .parent();
+    pub fn detach(
+        &self,
+        node_id: FileId,
+        path: PathBuf,
+        tag: &TagRef,
+    ) -> Result<(bool, bool), UpdateErr> {
+        let bind = self.nodes.pin();
+        let Some(mut node_ref) = bind.get(&node_id).and_then(|p| p.upgrade()) else {
+            return Err(UpdateErr::PathNotFound);
+        };
 
-        let mut node_ref: Vec<Arc<Node>> = Vec::new();
-        // load the root Arc
-        let mut curr_node = self.root.clone();
+        let file = match node_ref.files.pin().get(&path) {
+            Some(file) => file.clone(),
+            None => {
+                let file_id = get_file_id(&path).map_err(|_| UpdateErr::FileNotFound)?;
+                let file = File::new(
+                    path,
+                    papaya::HashSet::builder()
+                        .shared_collector(self.root.collector.clone())
+                        .build(),
+                );
+                let file = ImmutRef::new_ref_id(file_id, file);
+                node_ref.files.pin().insert(file.clone());
+                file
+            }
+        };
+        let file_detached = file.detach(tag);
 
-        if let Some(path) = stripped_path {
-            for dir in path.components().as_path() {
-                let child = (curr_node
-                    .directories
-                    .pin()
-                    .get(&PathBuf::from(&dir))
-                    .ok_or(UpdateErr::PathNotFound)?)
-                .clone();
-
-                node_ref.push(child.clone());
-                curr_node = child;
+        if file_detached {
+            // traverse up to root
+            while !ptr_eq(&node_ref, self.root.inner_ptr()) {
+                node_ref.detach(tag, Some(&file.clone()));
+                node_ref = node_ref
+                    .parent
+                    .as_ref()
+                    .and_then(|p| p.upgrade())
+                    .ok_or(UpdateErr::PathNotFound)?; // this means that the node has been moved
             }
         }
 
-        let file_pin = curr_node.files.pin();
-
-        let file = file_pin.get(&path).ok_or(UpdateErr::FileNotFound)?;
-        let file_detached = file.load().detach(tag);
-
-        for node in node_ref.into_iter().rev() {
-            if file_detached {
-                node.detach(tag, Some(file));
-            }
-        }
-
-        let shelf_attached = if file_detached {
-            curr_node.detach(tag, Some(file))
+        let shelf_detached = if file_detached {
+            node_ref.detach(tag, Some(&file))
         } else {
             false
         };
 
-        Ok((shelf_attached, file_detached))
+        Ok((shelf_detached, file_detached))
     }
 
-    pub fn strip(&self, path: PathBuf, tag: &TagRef) -> Result<(), UpdateErr> {
-        let mut curr_node = self.root.clone();
-
-        if !path.is_dir() {
-            return Err(UpdateErr::PathNotDir);
-        }
-
-        for dir in path.components() {
-            let dir: PathBuf = dir.as_os_str().into();
-            let child = curr_node
-                .directories
-                .pin()
-                .get(&dir)
-                .ok_or(UpdateErr::PathNotFound)?
-                .clone();
-            curr_node = child;
-        }
+    pub fn strip(&self, node_id: FileId, tag: &TagRef) -> Result<(), UpdateErr> {
+        let bind = self.nodes.pin();
+        let Some(node_ref) = bind.get(&node_id).and_then(|p| p.upgrade()) else {
+            return Err(UpdateErr::PathNotFound);
+        };
 
         pub fn recursive_remove(node: Arc<Node>, tag: &TagRef) {
             node.dtags.pin().remove(tag);
             node.tags.pin().remove(tag);
-            node.dtag_files.pin().remove(tag);
-            for file in node.files.pin().values() {
-                file.load().detach(tag);
+            node.dtag_nodes.pin().remove(tag);
+            for file in node.files.pin().iter() {
+                file.detach(tag);
             }
-            node.directories.pin().values().for_each(|child| {
-                recursive_remove(child.clone(), tag);
-            });
+            for child in node.subdirs.pin().iter() {
+                let Some(child) = child.upgrade() else {
+                    break;
+                };
+                recursive_remove(child, tag);
+            }
         }
 
-        recursive_remove(curr_node, tag);
+        recursive_remove(node_ref, tag);
         Ok(())
     }
 
-    pub fn attach_dtag(&self, path: PathBuf, dtag: &TagRef) -> Result<(bool, bool), UpdateErr> {
-        // [/] newly attached to (shelf, dir)
-        let dpath = path
-            .strip_prefix(&self.root_path)
-            .map_err(|_| UpdateErr::PathNotFound)?;
+    pub fn attach_dtag(&self, node_id: FileId, dtag: &TagRef) -> Result<(bool, bool), UpdateErr> {
+        let bind = self.nodes.pin();
+        let Some(node_ref) = bind.get(&node_id).and_then(|p| p.upgrade()) else {
+            return Err(UpdateErr::PathNotFound);
+        };
 
-        let mut dtagged_parent = false;
-        let mut curr_node = self.root.clone();
-        let mut node_ref: Vec<Arc<Node>> = Vec::new();
-        for dir in dpath.components() {
-            let dir: PathBuf = dir.as_os_str().into();
-            let child = curr_node
-                .directories
-                .pin()
-                .get(&dir)
-                .ok_or(UpdateErr::PathNotFound)?
-                .clone();
-            if child.dtags.pin().contains(dtag) {
-                dtagged_parent = true;
+        let dir_attached = node_ref.dtags.pin().insert(dtag.clone());
+
+        let attach_node = bind.get(&node_id).unwrap();
+        let mut shelf_attached = true;
+        while node_ref.parent.is_some() {
+            let Some(parent) = node_ref.parent.as_ref().unwrap().upgrade() else {
+                return Err(UpdateErr::PathNotFound);
+            };
+            if let Some(_) = parent.dtag_nodes.pin().get(dtag) {
+                parent.dtag_nodes.pin().update(dtag.clone(), |v| {
+                    vec![[attach_node.clone()].as_slice(), v].concat()
+                });
+                shelf_attached = false;
+            } else {
+                parent
+                    .dtag_nodes
+                    .pin()
+                    .insert(dtag.clone(), vec![attach_node.clone()]);
+                shelf_attached = true;
             }
-
-            node_ref.push(child.clone());
-            curr_node = child;
         }
 
-        if dtagged_parent {
-            return Ok((false, curr_node.attach_dtag(dtag)));
-        }
+        fn recursive_attach(node: &NodeRef, dtag: &TagRef) {
+            if let Some(node) = node.upgrade() {
+                for subnode in node.subdirs.pin().iter() {
+                    recursive_attach(&subnode, dtag);
+                }
 
-        let shelf_attached = !curr_node.dtag_files.pin().contains_key(dtag);
-
-        let dir_attached = curr_node.attach_dtag(dtag);
-
-        fn recursive_attach(node: Arc<Node>, dtag: &TagRef) -> std::collections::HashSet<FileRef> {
-            let mut files: std::collections::HashSet<FileRef> =
-                node.files.pin().values().cloned().collect();
-            for (_, subnode) in node.directories.pin().iter() {
-                files.extend(recursive_attach(subnode.clone(), dtag));
+                node.dtags.pin().insert(dtag.clone());
             }
-
-            node.dtag_files
-                .pin()
-                .get_or_insert_with(dtag.clone(), HashSet::new)
-                .extend(files.clone());
-            files
         }
 
-        let files = recursive_attach(curr_node, dtag);
-
-        files.par_iter().for_each(|f| {
-            f.load().attach_dtag(dtag);
-        });
+        recursive_attach(attach_node, dtag);
 
         Ok((shelf_attached, dir_attached))
     }
-    pub fn detach_dtag(&self, path: PathBuf, dtag: &TagRef) -> Result<(bool, bool), UpdateErr> {
-        // eliminated from (shelf, file)
-        let dpath = path
-            .strip_prefix(&self.root_path)
-            .map_err(|_| UpdateErr::PathNotFound)?;
+    pub fn detach_dtag(&self, node_id: FileId, dtag: &TagRef) -> Result<(bool, bool), UpdateErr> {
+        let bind = self.nodes.pin();
+        let Some(node_ref) = bind.get(&node_id).and_then(|p| p.upgrade()) else {
+            return Err(UpdateErr::PathNotFound);
+        };
 
-        let mut dtagged_parent = false;
-        let mut curr_node = self.root.clone();
-        let mut node_ref: Vec<Arc<Node>> = Vec::new();
+        let dir_detached = node_ref.dtags.pin().remove(dtag);
 
-        for dir in dpath.components() {
-            let dir: PathBuf = dir.as_os_str().into();
-            let child = curr_node
-                .directories
-                .pin()
-                .get(&dir)
-                .ok_or(UpdateErr::PathNotFound)?
-                .clone();
-            if child.dtags.pin().contains(dtag) {
-                dtagged_parent = true;
-            }
-            node_ref.push(child.clone());
-            curr_node = child;
-        }
-
-        if dtagged_parent {
-            return Ok((false, curr_node.detach_dtag(dtag)));
-        }
-
-        let dir_detached = curr_node.detach_dtag(dtag);
-
-        fn recursive_detach(node: Arc<Node>, dtag: &TagRef) -> std::collections::HashSet<FileRef> {
-            // Stop detaching the dtag when encountering a child node already dtagged with it
-            if node.dtags.pin().contains(dtag) {
-                return std::collections::HashSet::new();
-            }
-            let mut files: std::collections::HashSet<FileRef> =
-                node.files.pin().values().cloned().collect();
-
-            for (_, subnode) in node.directories.pin().iter() {
-                files.extend(recursive_detach(subnode.clone(), dtag))
-            }
-
-            if let Some(set) = node.dtag_files.pin().get(dtag) {
-                files.iter().for_each(|f| {
-                    set.pin().remove(f);
-                });
-                if set.pin().is_empty() {
-                    node.dtag_files.pin().remove(dtag);
+        let detach_node = bind.get(&node_id).unwrap();
+        let mut shelf_detached = true;
+        while node_ref.parent.is_some() {
+            let Some(parent) = node_ref.parent.as_ref().unwrap().upgrade() else {
+                return Err(UpdateErr::PathNotFound);
+            };
+            parent.dtag_nodes.pin().update(dtag.clone(), |v| {
+                v.into_iter()
+                    .cloned()
+                    .filter(|n| n != detach_node)
+                    .collect()
+            });
+            if let Some(vec_node) = parent.dtag_nodes.pin().get(dtag) {
+                if vec_node.is_empty() {
+                    parent.dtag_nodes.pin().remove(dtag);
+                    shelf_detached = true;
+                } else {
+                    shelf_detached = false;
                 }
             }
-            files
         }
 
-        let files = recursive_detach(curr_node, dtag);
+        fn recursive_detach(node: &NodeRef, dtag: &TagRef) {
+            if let Some(node) = node.upgrade() {
+                for subnode in node.subdirs.pin().iter() {
+                    recursive_detach(&subnode, dtag);
+                }
 
-        files.par_iter().for_each(|f| {
-            f.load().detach_dtag(dtag);
-        });
+                node.dtags.pin().remove(dtag);
+            }
+        }
 
-        let shelf_detached = !self.root.clone().dtag_files.pin().contains_key(dtag);
+        recursive_detach(detach_node, dtag);
 
         Ok((shelf_detached, dir_detached))
     }
