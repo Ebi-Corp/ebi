@@ -7,7 +7,7 @@ use crate::workspace::{Workspace, WorkspaceInfo};
 use bincode::serde::encode_to_vec;
 use ebi_proto::rpc::*;
 use iroh::NodeId;
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -380,7 +380,7 @@ impl Service<StripTag> for RpcService {
                 ShelfType::Local(shelf_data) => {
                     let path = PathBuf::from(&req.path);
                     let node_id = match fs_srv
-                        .get_or_init_node(shelf_data.clone(), path.clone())
+                        .get_or_init_dir(shelf_data.clone(), path.clone())
                         .await
                     {
                         Ok(node_id) => node_id,
@@ -490,7 +490,7 @@ impl Service<DetachTag> for RpcService {
                     ShelfType::Local(shelf_data) => {
                         let path = PathBuf::from(&req.path);
                         let node_id = match fs_srv
-                            .get_or_init_node(shelf_data.clone(), path.clone())
+                            .get_or_init_dir(shelf_data.clone(), path.clone())
                             .await
                         {
                             Ok(node_id) => node_id,
@@ -615,7 +615,7 @@ impl Service<AttachTag> for RpcService {
                     ShelfType::Local(shelf_data) => {
                         let path = PathBuf::from(&req.path);
                         let node_id = match fs_srv
-                            .get_or_init_node(shelf_data.clone(), path.clone())
+                            .get_or_init_dir(shelf_data.clone(), path.clone())
                             .await
                         {
                             Ok(node_id) => node_id,

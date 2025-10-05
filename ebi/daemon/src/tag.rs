@@ -1,15 +1,28 @@
 use crate::prelude::*;
-use serde::{Serialize, Serializer, ser::SerializeStruct};
+use serde::{Deserialize, Serialize, Serializer, ser::SerializeStruct};
 use std::hash::Hash;
 
 pub type TagId = Uuid;
 pub type TagRef = SharedRef<Tag>;
 
-#[derive(Clone)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub struct TagData {
     pub name: String,
     pub priority: u64,
     pub parent: Option<Box<TagData>>,
+}
+
+impl From<&Tag> for TagData {
+    fn from(tag: &Tag) -> Self {
+        TagData {
+            name: tag.name.clone(),
+            priority: tag.priority,
+            parent: tag
+                .parent
+                .clone()
+                .map(|p| Box::new((Into::<TagData>::into(&*p.load_full())).clone())),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Default)]

@@ -1,9 +1,9 @@
+pub mod dir;
 pub mod file;
-pub mod node;
 use crate::prelude::*;
 use crate::sharedref::ptr_eq;
+use crate::shelf::dir::{HashSet, ShelfDir, ShelfDirRef};
 use crate::shelf::file::File;
-use crate::shelf::node::{HashSet, Node, NodeRef};
 use crate::stateful::{InfoState, StatefulField};
 use crate::tag::{Tag, TagId};
 use arc_swap::ArcSwap;
@@ -116,8 +116,8 @@ pub fn generate_tag_filter() -> ArcSwap<TagFilter> {
 }
 
 pub struct ShelfData {
-    pub root: ImmutRef<Node, FileId>,
-    pub nodes: HashSet<NodeRef>,
+    pub root: ImmutRef<ShelfDir, FileId>,
+    pub nodes: HashSet<ShelfDirRef>,
     pub root_path: PathBuf,
 }
 
@@ -189,7 +189,7 @@ impl ShelfData {
         let file_id = get_file_id(&path)?;
         let collector = Arc::new(Collector::new());
         Ok(ShelfData {
-            root: ImmutRef::<Node, FileId>::new_ref_id(file_id, Node::new(path.clone())?),
+            root: ImmutRef::<ShelfDir, FileId>::new_ref_id(file_id, ShelfDir::new(path.clone())?),
             nodes: papaya::HashSet::builder()
                 .shared_collector(collector)
                 .build(),
@@ -272,7 +272,7 @@ impl ShelfData {
                 let file_id = get_file_id(&path).map_err(|_| UpdateErr::FileNotFound)?;
                 let file = File::new(
                     path,
-                    papaya::HashSet::builder()
+                    papaya::HashSet::<TagRef>::builder()
                         .shared_collector(self.root.collector.clone())
                         .build(),
                 );
@@ -310,7 +310,7 @@ impl ShelfData {
             return Err(UpdateErr::PathNotFound);
         };
 
-        pub fn recursive_remove(node: Arc<Node>, tag: &TagRef) {
+        pub fn recursive_remove(node: Arc<ShelfDir>, tag: &TagRef) {
             node.dtags.pin().remove(tag);
             node.tags.pin().remove(tag);
             node.dtag_nodes.pin().remove(tag);
@@ -357,7 +357,7 @@ impl ShelfData {
             }
         }
 
-        fn recursive_attach(node: &NodeRef, dtag: &TagRef) {
+        fn recursive_attach(node: &ShelfDirRef, dtag: &TagRef) {
             if let Some(node) = node.upgrade() {
                 for subnode in node.subdirs.pin().iter() {
                     recursive_attach(&subnode, dtag);
@@ -401,7 +401,7 @@ impl ShelfData {
             }
         }
 
-        fn recursive_detach(node: &NodeRef, dtag: &TagRef) {
+        fn recursive_detach(node: &ShelfDirRef, dtag: &TagRef) {
             if let Some(node) = node.upgrade() {
                 for subnode in node.subdirs.pin().iter() {
                     recursive_detach(&subnode, dtag);

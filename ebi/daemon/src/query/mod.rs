@@ -2,6 +2,8 @@ pub mod file_order;
 use crate::query::file_order::{FileOrder, OrderedFileSummary};
 use crate::services::query::Retriever;
 use crate::tag::TagId;
+use ebi_proto::rpc::ReturnCode;
+use file_id::FileId;
 use im::HashSet;
 use rand_chacha::ChaCha12Rng;
 use scalable_cuckoo_filter::{DefaultHasher, ScalableCuckooFilter};
@@ -106,14 +108,21 @@ impl fmt::Debug for Formula {
 pub struct Query {
     formula: Formula,
     pub order: FileOrder,
+    pub node_id: Option<FileId>,
     pub ascending: bool,
 }
 
 impl Query {
-    pub fn new(query: &str, order: FileOrder, ascending: bool) -> Result<Self, QueryErr> {
+    pub fn new(
+        node_id: Option<FileId>,
+        query: &str,
+        order: FileOrder,
+        ascending: bool,
+    ) -> Result<Self, QueryErr> {
         let formula = tag_query::expression(query).map_err(|_err| QueryErr::SyntaxError)??;
 
         let mut query = Query {
+            node_id,
             formula,
             ascending,
             order,
@@ -134,56 +143,66 @@ impl Query {
 
     //[!] Tags should be Validated inside the QueryService
 
-    pub fn evaluate(
+    pub async fn evaluate(
         //[/] Only local shelves
         &mut self,
-        retriever: Retriever,
+        mut retriever: Retriever,
     ) -> Result<HashSet<OrderedFileSummary>, QueryErr> {
-        Query::recursive_evaluate(&self.formula, &retriever)
+        self.recursive_evaluate(&self.formula, &mut retriever).await
     }
 
-    fn recursive_evaluate(
+    async fn recursive_evaluate(
+        &self,
         formula: &Formula,
-        ret_srv: &Retriever,
+        ret_srv: &mut Retriever,
     ) -> Result<HashSet<OrderedFileSummary>, QueryErr> {
         //[!] Execute concurrently where possible
         match formula {
             Formula::BinaryExpression(BinaryOp::AND, x, y) => match (x.as_ref(), y.as_ref()) {
                 (_, Formula::UnaryExpression(UnaryOp::NOT, b)) => {
-                    let a = Query::recursive_evaluate(x, ret_srv)?;
-                    let b = Query::recursive_evaluate(b, ret_srv)?;
+                    let a = Box::pin(self.recursive_evaluate(x, ret_srv)).await?;
+                    let b = Box::pin(self.recursive_evaluate(b, ret_srv)).await?;
                     Ok(a.difference(b))
                 }
                 (Formula::UnaryExpression(UnaryOp::NOT, a), _) => {
-                    let a = Query::recursive_evaluate(a, ret_srv)?;
-                    let b = Query::recursive_evaluate(y, ret_srv)?;
+                    let a = Box::pin(self.recursive_evaluate(a, ret_srv)).await?;
+                    let b = Box::pin(self.recursive_evaluate(y, ret_srv)).await?;
                     Ok(b.difference(a))
                 }
                 _ => {
-                    let a = Query::recursive_evaluate(x, ret_srv)?;
-                    let b = Query::recursive_evaluate(y, ret_srv)?;
+                    let a = Box::pin(self.recursive_evaluate(x, ret_srv)).await?;
+                    let b = Box::pin(self.recursive_evaluate(y, ret_srv)).await?;
                     Ok(a.intersection(b))
                 }
             },
             Formula::BinaryExpression(BinaryOp::OR, x, y) => {
-                let mut a = Query::recursive_evaluate(x, ret_srv)?;
-                let b = Query::recursive_evaluate(y, ret_srv)?;
+                let mut a = Box::pin(self.recursive_evaluate(x, ret_srv)).await?;
+                let b = Box::pin(self.recursive_evaluate(y, ret_srv)).await?;
                 a.extend(b); // equivalent to union, slightly more efficient
                 Ok(a)
             }
             Formula::BinaryExpression(BinaryOp::XOR, x, y) => {
-                let a = Query::recursive_evaluate(x, ret_srv)?;
-                let b = Query::recursive_evaluate(y, ret_srv)?;
+                let a = Box::pin(self.recursive_evaluate(x, ret_srv)).await?;
+                let b = Box::pin(self.recursive_evaluate(y, ret_srv)).await?;
                 Ok(a.symmetric_difference(b))
             }
             Formula::UnaryExpression(UnaryOp::NOT, x) => {
-                let all = ret_srv.get_all().map_err(QueryErr::RuntimeError)?;
-                let subset = Query::recursive_evaluate(x, ret_srv)?;
+                let all = ret_srv
+                    .get_all(self.node_id)
+                    .await
+                    .map_err(QueryErr::RuntimeError)?;
+                let subset = Box::pin(self.recursive_evaluate(x, ret_srv)).await?;
                 Ok(all.difference(subset))
             }
             Formula::Constant(false) => Ok(HashSet::new()),
-            Formula::Constant(true) => ret_srv.get_all().map_err(QueryErr::RuntimeError),
-            Formula::Proposition(p) => ret_srv.get(p.tag_id).map_err(QueryErr::RuntimeError),
+            Formula::Constant(true) => ret_srv
+                .get_all(self.node_id)
+                .await
+                .map_err(QueryErr::RuntimeError),
+            Formula::Proposition(p) => ret_srv
+                .get(self.node_id, p.tag_id)
+                .await
+                .map_err(QueryErr::RuntimeError),
         }
     }
 
@@ -440,15 +459,7 @@ impl Formula {
 // TODO: define appropriate errors, include I/O, etc.
 #[derive(Debug)]
 pub enum QueryErr {
-    SyntaxError,               // The Query is incorrectly formatted
-    ParseError,                // A Tag_ID is not a valid UUID
-    RuntimeError(RetrieveErr), // The Query could not be executed
-}
-
-//[!] Wrapper for a cacheservice.call() ?
-
-#[derive(Debug)]
-pub enum RetrieveErr {
-    CacheError,
-    TagParseError,
+    SyntaxError,              // The Query is incorrectly formatted
+    ParseError,               // A Tag_ID is not a valid UUID
+    RuntimeError(ReturnCode), // The Query could not be executed
 }

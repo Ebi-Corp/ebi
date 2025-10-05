@@ -1,5 +1,5 @@
+use crate::shelf::dir::ShelfDir;
 use crate::shelf::file::File;
-use crate::shelf::node::Node;
 use arc_swap::{ArcSwap, AsRaw, Guard};
 use file_id::{FileId, get_file_id};
 use std::borrow::Borrow;
@@ -80,13 +80,13 @@ impl Ref<File, FileId> for ImmutRef<File, FileId> {
     }
 }
 
-impl Ref<Node, FileId> for ImmutRef<Node, FileId> {
-    fn new_ref(data: Node) -> Self {
+impl Ref<ShelfDir, FileId> for ImmutRef<ShelfDir, FileId> {
+    fn new_ref(_data: ShelfDir) -> Self {
         todo!();
 
         //Inner { id, data: Arc::new(data) }
     }
-    fn new_ref_id(id: FileId, data: Node) -> Self {
+    fn new_ref_id(id: FileId, data: ShelfDir) -> Self {
         Inner {
             id,
             data: Arc::new(data),
@@ -94,7 +94,7 @@ impl Ref<Node, FileId> for ImmutRef<Node, FileId> {
         //Arc::new(Inner { id, data })
     }
 
-    fn inner_ptr(&self) -> *const Node {
+    fn inner_ptr(&self) -> *const ShelfDir {
         Arc::as_ptr(&self.data)
     }
 }
@@ -114,7 +114,7 @@ pub struct Inner<T, I> {
     data: T,
 }
 
-impl Borrow<PathBuf> for ImmutRef<Node, FileId> {
+impl Borrow<PathBuf> for ImmutRef<ShelfDir, FileId> {
     fn borrow(&self) -> &PathBuf {
         &self.data.path
     }

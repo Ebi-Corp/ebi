@@ -21,7 +21,7 @@ use anyhow::Result;
 use ebi_proto::rpc::*;
 use iroh::{Endpoint, NodeId, SecretKey};
 use paste::paste;
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use tokio::sync::{RwLock, mpsc, watch};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio::{
@@ -137,14 +137,16 @@ async fn main() -> Result<()> {
         clients: clients.clone(),
         responses: responses.clone(),
     };
+
+    let fs_srv = FileSysService {
+        nodes: Arc::new(papaya::HashSet::new()),
+    };
     let query_srv = QueryService {
         peer_srv: peer_srv.clone(),
         cache: CacheService {},
+        filesys: fs_srv.clone(),
         state_srv: state_srv.clone(),
         daemon_info: daemon_info.clone(),
-    };
-    let fs_srv = FileSysService {
-        nodes: Arc::new(papaya::HashSet::new()),
     };
     let service = ServiceBuilder::new().service(RpcService {
         daemon_info: daemon_info.clone(),
