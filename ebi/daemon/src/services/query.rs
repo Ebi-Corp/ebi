@@ -1,6 +1,7 @@
 use crate::query::file_order::{FileOrder, OrderedFileSummary};
-use crate::query::{Query, QueryErr, RetrieveErr};
+use crate::query::{Query, QueryErr};
 use crate::services::cache::CacheService;
+use crate::services::filesys::FileSysService;
 use crate::services::peer::PeerService;
 use crate::services::rpc::{DaemonInfo, parse_peer_id, try_get_workspace};
 use crate::services::state::StateService;
@@ -15,6 +16,7 @@ use ebi_proto::rpc::{
     ClientQuery, ClientQueryData, Data, ErrorData, File, PeerQuery, Request, RequestMetadata,
     Response, ResponseMetadata, ReturnCode, parse_code,
 };
+use file_id::FileId;
 use im::{HashMap, HashSet};
 use iroh::NodeId;
 use rayon::prelude::*;
@@ -37,12 +39,14 @@ pub struct QueryService {
     pub peer_srv: PeerService,
     pub cache: CacheService,
     pub state_srv: StateService,
+    pub filesys: FileSysService,
     pub daemon_info: Arc<DaemonInfo>,
 }
 
 pub struct Retriever {
     workspace: Guard<Arc<Workspace>>,
     cache: CacheService,
+    filesys: FileSysService,
     shelf_owner: ShelfOwner,
     shelf_data: ImmutRef<ShelfData>,
     order: FileOrder,
@@ -51,7 +55,8 @@ pub struct Retriever {
 impl Retriever {
     pub fn new(
         workspace: Guard<Arc<Workspace>>,
-        cache: CacheService, //[?] Requires lock ??
+        cache: CacheService,
+        filesys: FileSysService,
         shelf_owner: ShelfOwner,
         shelf_data: ImmutRef<ShelfData>,
         order: FileOrder,
@@ -59,61 +64,105 @@ impl Retriever {
         Retriever {
             workspace,
             cache,
+            filesys,
             shelf_owner,
             shelf_data,
             order,
         }
     }
 
-    pub fn get(&self, tag_id: TagId) -> Result<HashSet<OrderedFileSummary>, RetrieveErr> {
+    pub async fn get(
+        &mut self,
+        node_id: Option<FileId>,
+        tag_id: TagId,
+    ) -> Result<HashSet<OrderedFileSummary>, ReturnCode> {
         if let Some(tag_ref) = self.workspace.tags.get(&tag_id) {
             if let Some(set) = self.cache.retrieve(tag_ref) {
                 Ok(set)
             } else {
-                let root_ref = &*self.shelf_data.root;
-
-                let tags = match root_ref.tags.pin().get(tag_ref) {
-                    Some(tag_set) => tag_set
-                        .pin()
-                        .iter()
-                        .map(|f| OrderedFileSummary {
-                            file_summary: FileSummary::from(&f, self.shelf_owner.clone()),
-                            order: self.order.clone(),
-                        })
-                        .collect::<im::HashSet<OrderedFileSummary>>(),
-                    None => im::HashSet::new(),
+                let node_id = if node_id.is_some() {
+                    node_id.unwrap()
+                } else {
+                    self.shelf_data.root.id
                 };
 
-                // [TODO] handle dtags
-                Ok(tags)
+                let Some(node_ref) = self
+                    .shelf_data
+                    .nodes
+                    .pin()
+                    .get(&node_id)
+                    .and_then(|n| n.upgrade())
+                else {
+                    return Err(ReturnCode::PathNotFound);
+                };
+
+                let dtags = node_ref.dtags.pin_owned();
+                let root_dtag = dtags.get(tag_ref).clone();
+
+                if root_dtag.is_some() {
+                    Ok(self
+                        .filesys
+                        .retrieve_dir_recursive(node_ref.path.clone(), self.order.clone())
+                        .await?)
+                } else {
+                    let mut files = match node_ref.tags.pin_owned().get(tag_ref) {
+                        Some(tag_set) => tag_set
+                            .pin()
+                            .iter()
+                            .map(|f| OrderedFileSummary {
+                                file_summary: FileSummary::from(&f, Some(self.shelf_owner.clone())),
+                                order: self.order.clone(),
+                            })
+                            .collect::<im::HashSet<OrderedFileSummary>>(),
+                        None => im::HashSet::new(),
+                    };
+                    if let Some(sub_dtagged) = node_ref.dtag_nodes.pin_owned().get(tag_ref) {
+                        for subdir in sub_dtagged {
+                            if let Some(subdir) = subdir.upgrade() {
+                                files = files.union(
+                                    self.filesys
+                                        .retrieve_dir_recursive(
+                                            subdir.path.clone(),
+                                            self.order.clone(),
+                                        )
+                                        .await?,
+                                );
+                            }
+                        }
+                    }
+                    Ok(files)
+                }
             }
         } else {
-            Err(RetrieveErr::TagParseError)
+            Err(ReturnCode::TagNotFound)
         }
     }
 
-    pub fn get_all(&self) -> Result<HashSet<OrderedFileSummary>, RetrieveErr> {
-        //[!] Check cache
-        let root_ref = &*self.shelf_data.root;
-        let tags = root_ref.tags.pin();
+    pub async fn get_all(
+        &mut self,
+        node_id: Option<FileId>,
+    ) -> Result<HashSet<OrderedFileSummary>, ReturnCode> {
+        let node_id = if node_id.is_some() {
+            node_id.unwrap()
+        } else {
+            self.shelf_data.root.id
+        };
 
-        let tags = tags.iter().flat_map(|(tag_ref, set)| {
-            let cached = self.cache.retrieve(tag_ref);
-            if let Some(cached) = cached {
-                cached
-            } else {
-                set.pin()
-                    .iter()
-                    .map(|f| OrderedFileSummary {
-                        file_summary: FileSummary::from(&f, self.shelf_owner.clone()),
-                        order: self.order.clone(),
-                    })
-                    .collect::<HashSet<OrderedFileSummary>>()
-            }
-        });
-        // [TODO] handle dtags
-
-        Ok(tags.collect())
+        // [TODO] handle caching
+        let Some(node_ref) = self
+            .shelf_data
+            .nodes
+            .pin()
+            .get(&node_id)
+            .and_then(|n| n.upgrade())
+        else {
+            return Err(ReturnCode::PathNotFound);
+        };
+        let result = self
+            .filesys
+            .retrieve_dir_recursive(node_ref.path.clone(), self.order.clone())
+            .await?;
+        Ok(result)
     }
 }
 
@@ -129,6 +178,7 @@ impl Service<PeerQuery> for QueryService {
     fn call(&mut self, req: PeerQuery) -> Self::Future {
         let mut state_srv = self.state_srv.clone();
         let node_id = self.daemon_info.id.clone();
+        let filesys = self.filesys.clone();
         let cache = self.cache.clone();
         Box::pin(async move {
             let Ok(workspace_ref) = try_get_workspace(&req.workspace_id, &mut state_srv).await
@@ -169,6 +219,7 @@ impl Service<PeerQuery> for QueryService {
                     let shelf_owner = shelf.shelf_owner.clone();
                     let cache = cache.clone();
                     let file_order = file_order.clone();
+                    let filesys = filesys.clone();
                     let mut query = query.clone();
                     match &shelf.shelf_type {
                         ShelfType::Remote => {
@@ -178,9 +229,15 @@ impl Service<PeerQuery> for QueryService {
                             let workspace = workspace_ref.load();
                             let data = data.clone();
                             local_futures.spawn(async move {
-                                let retriever =
-                                    Retriever::new(workspace, cache, shelf_owner, data, file_order);
-                                query.evaluate(retriever)
+                                let retriever = Retriever::new(
+                                    workspace,
+                                    cache,
+                                    filesys,
+                                    shelf_owner,
+                                    data,
+                                    file_order,
+                                );
+                                query.evaluate(retriever).await
                             });
                         }
                     }
@@ -239,6 +296,7 @@ impl Service<ClientQuery> for QueryService {
         let peer_srv = self.peer_srv.clone();
         let node_id = self.daemon_info.id.clone();
         let cache = self.cache.clone();
+        let mut filesys = self.filesys.clone();
         Box::pin(async move {
             let query_str = req.query;
 
@@ -254,7 +312,41 @@ impl Service<ClientQuery> for QueryService {
             let client_node = parse_peer_id(&metadata.source_id).unwrap();
 
             let file_order = FileOrder::try_from(req.file_ord.unwrap().order_by)?;
+            let mut q_node_id: Option<FileId> = None;
+            let mut to_query: Option<NodeId> = None;
+            let mut nodes = HashSet::<NodeId>::new();
+            let mut local_shelves = HashSet::<ShelfId>::new();
+
+            if let Some(dir_path) = req.path {
+                for (_, shelf) in workspace_ref.load().shelves.iter() {
+                    let shelf_root = &shelf.info.load().root;
+                    if dir_path
+                        .to_string()
+                        .starts_with(shelf_root.to_str().unwrap())
+                    {
+                        match &shelf.shelf_type {
+                            ShelfType::Local(shelf_data) => {
+                                q_node_id = Some(
+                                    filesys
+                                        .get_or_init_dir(shelf_data.clone(), dir_path.into())
+                                        .await?,
+                                );
+                            }
+                            ShelfType::Remote => match shelf.shelf_owner {
+                                ShelfOwner::Node(node_id) => to_query = Some(node_id),
+                                ShelfOwner::Sync(_sync_id) => todo!(),
+                            },
+                        }
+                        break;
+                    }
+                }
+                if q_node_id.is_none() && to_query.is_none() {
+                    return Err(ReturnCode::PathNotFound); // [TODO] may need a better error. like path is not in workspace
+                }
+            }
+
             let mut query = Query::new(
+                q_node_id,
                 &query_str,
                 file_order.clone(),
                 req.file_ord.unwrap().ascending,
@@ -262,21 +354,21 @@ impl Service<ClientQuery> for QueryService {
             .map_err(|_| ReturnCode::InternalStateError)?;
 
             let workspace = workspace_ref.load();
-            let mut nodes = HashSet::<NodeId>::new();
-            let mut local_shelves = HashSet::<ShelfId>::new();
-            for (shelf_id, shelf) in workspace.shelves.iter() {
-                let filter = shelf.filter_tags.load();
-                match shelf.shelf_owner {
-                    ShelfOwner::Node(node_owner) => {
-                        if query.may_hold(&filter) {
-                            if node_owner != *node_id {
-                                nodes.insert(node_owner);
-                            } else {
-                                local_shelves.insert(*shelf_id);
+            if to_query.is_none() {
+                for (shelf_id, shelf) in workspace.shelves.iter() {
+                    let filter = shelf.filter_tags.load();
+                    match shelf.shelf_owner {
+                        ShelfOwner::Node(node_owner) => {
+                            if query.may_hold(&filter) {
+                                if node_owner != *node_id {
+                                    nodes.insert(node_owner);
+                                } else {
+                                    local_shelves.insert(*shelf_id);
+                                }
                             }
                         }
+                        ShelfOwner::Sync(_) => {} // [TODO] Sync version
                     }
-                    ShelfOwner::Sync(_) => {} // [TODO] Sync version
                 }
             }
 
@@ -307,7 +399,6 @@ impl Service<ClientQuery> for QueryService {
             let ser_token: Vec<u8> = token.into();
 
             //[/] Return ClientQueryResponse in RpcService before asynchronously calling QueryService
-            //
 
             struct TaskResult {
                 files: Vec<OrderedFileSummary>,
@@ -407,11 +498,12 @@ impl Service<ClientQuery> for QueryService {
                             let retriever = Retriever::new(
                                 workspace,
                                 cache.clone(),
+                                filesys.clone(),
                                 shelf_owner,
                                 data,
                                 file_order.clone(),
                             );
-                            local_futures.spawn(async move { query.evaluate(retriever) });
+                            local_futures.spawn(async move { query.evaluate(retriever).await });
                         }
                     }
                 }

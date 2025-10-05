@@ -19,9 +19,10 @@ message ErrorData {
 
 //[#] Query Protocol 
 
-message ClientQuery { //[x] 
+message ClientQuery {
   string query = 1;
   FileOrd file_ord = 2;
+  optional string path = 3;
   bytes workspace_id = 4;
   bool atomic = 5;
   RequestMetadata metadata = 6;

@@ -1,6 +1,6 @@
-use crate::prelude::*;
 use crate::shelf::ShelfOwner;
 use crate::tag::Tag;
+use crate::{prelude::*, tag::TagData};
 use chrono::{DateTime, Utc};
 use file_id::FileId;
 use serde::{Deserialize, Serialize};
@@ -11,33 +11,65 @@ use std::os::windows::fs::MetadataExt;
 use std::path::PathBuf;
 pub type FileRef = ImmutRef<File, FileId>;
 pub type TagRef = SharedRef<Tag>;
-use crate::shelf::HashSet;
+use im::HashSet;
 
 #[derive(Debug)]
 pub struct File {
     pub path: PathBuf,
-    pub tags: HashSet<TagRef>,
+    pub tags: crate::shelf::HashSet<TagRef>,
+}
+
+impl File {
+    pub fn new(path: PathBuf, tags: crate::shelf::HashSet<TagRef>) -> Self {
+        File { path, tags }
+    }
+
+    pub fn attach(&self, tag: &TagRef) -> bool {
+        self.tags.pin().insert(tag.clone())
+    }
+
+    pub fn detach(&self, tag: &TagRef) -> bool {
+        self.tags.pin().remove(tag)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileSummary {
-    pub owner: ShelfOwner,
+    pub id: FileId,
+    pub owner: Option<ShelfOwner>,
     pub path: PathBuf,
+    pub tags: HashSet<TagData>,
     pub metadata: FileMetadata,
     //[?] Icon/Preview ??
 }
 
 impl FileSummary {
-    fn new(owner: ShelfOwner, path: PathBuf) -> Self {
+    pub fn new(
+        id: FileId,
+        path: PathBuf,
+        owner: Option<ShelfOwner>,
+        tags: HashSet<TagData>,
+    ) -> Self {
         let metadata = FileMetadata::new(&path);
         FileSummary {
+            id,
             owner,
             path,
+            tags,
             metadata,
         }
     }
-    pub fn from(file: &File, shelf: ShelfOwner) -> Self {
-        FileSummary::new(shelf, file.path.clone())
+    pub fn from(file: &FileRef, shelf: Option<ShelfOwner>) -> Self {
+        FileSummary::new(
+            file.id,
+            file.path.clone(),
+            shelf,
+            file.tags
+                .pin()
+                .iter()
+                .map(|t| crate::tag::TagData::from(&*t.load_full()))
+                .collect(),
+        )
     }
 }
 
@@ -136,19 +168,5 @@ impl From<FileMetadata> for ebi_proto::rpc::FileMetadata {
             created: encode_timestamp(f_meta.created),
             os_metadata: Some(os_metadata),
         }
-    }
-}
-
-impl File {
-    pub fn new(path: PathBuf, tags: HashSet<TagRef>) -> Self {
-        File { path, tags }
-    }
-
-    pub fn attach(&self, tag: &TagRef) -> bool {
-        self.tags.pin().insert(tag.clone())
-    }
-
-    pub fn detach(&self, tag: &TagRef) -> bool {
-        self.tags.pin().remove(tag)
     }
 }

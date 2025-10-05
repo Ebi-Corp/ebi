@@ -1,7 +1,11 @@
 use crate::shelf::file::FileSummary;
 use ebi_proto::rpc::{OrderBy, ReturnCode};
+use file_id::FileId;
 use serde::{Deserialize, Serialize};
-use std::hash::{Hash, Hasher};
+use std::{
+    borrow::Borrow,
+    hash::{Hash, Hasher},
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrderedFileSummary {
@@ -19,6 +23,12 @@ pub enum FileOrder {
     Unordered,
 }
 
+impl Borrow<FileId> for OrderedFileSummary {
+    fn borrow(&self) -> &FileId {
+        &self.file_summary.id
+    }
+}
+
 impl Hash for OrderedFileSummary {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.file_summary.path.hash(state);
@@ -28,14 +38,10 @@ impl Hash for OrderedFileSummary {
 
 impl PartialEq for OrderedFileSummary {
     fn eq(&self, other: &Self) -> bool {
-        if self.file_summary.owner != other.file_summary.owner {
-            return false;
-        }
-        // [!] this should be changed to hash
-        self.file_summary.path.file_name() == other.file_summary.path.file_name()
-            && self.file_summary.metadata.size == other.file_summary.metadata.size
+        self.file_summary.id == other.file_summary.id
     }
 }
+
 impl Eq for OrderedFileSummary {}
 
 impl PartialOrd for OrderedFileSummary {
