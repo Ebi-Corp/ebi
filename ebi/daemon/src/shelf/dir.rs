@@ -53,14 +53,6 @@ impl ShelfDir {
         })
     }
 
-    pub fn attach_dtag(&self, dtag: &TagRef) -> bool {
-        self.dtags.pin().insert(dtag.clone())
-    }
-
-    pub fn detach_dtag(&self, dtag: &TagRef) -> bool {
-        self.dtags.pin().remove(dtag)
-    }
-
     pub fn attach(&self, tag: &TagRef, file: &FileRef) -> bool {
         let tags = self.tags.pin();
         let existed = tags.get(tag).is_some();

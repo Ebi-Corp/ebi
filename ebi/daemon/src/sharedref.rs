@@ -1,7 +1,7 @@
 use crate::shelf::dir::ShelfDir;
 use crate::shelf::file::File;
 use arc_swap::{ArcSwap, AsRaw, Guard};
-use file_id::{FileId, get_file_id};
+use file_id::FileId;
 use std::borrow::Borrow;
 use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
@@ -24,14 +24,12 @@ pub trait Ref<T, I> {
 impl<T> Ref<T, Uuid> for ImmutRef<T, Uuid> {
     fn new_ref(data: T) -> Self {
         let id = Uuid::new_v4();
-        //Arc::new(Inner { id, data })
         Inner {
             id,
             data: Arc::new(data),
         }
     }
     fn new_ref_id(id: Uuid, data: T) -> Self {
-        //Arc::new(Inner { id, data })
         Inner {
             id,
             data: Arc::new(data),
@@ -59,21 +57,15 @@ impl<T> Ref<T, Uuid> for SharedRef<T, Uuid> {
 }
 
 impl Ref<File, FileId> for ImmutRef<File, FileId> {
-    fn new_ref(data: File) -> Self {
-        let id = get_file_id(&data.path).unwrap(); // this should be avoided.
-        //Arc::new(Inner { id, data })
-
-        Inner {
-            id,
-            data: Arc::new(data),
-        }
+    fn new_ref(_data: File) -> Self {
+        unimplemented!("Use new_ref_id instead");
     }
+
     fn new_ref_id(id: FileId, data: File) -> Self {
         Inner {
             id,
             data: Arc::new(data),
         }
-        //Arc::new(Inner { id, data })
     }
     fn inner_ptr(&self) -> *const File {
         Arc::as_ptr(&self.data)
@@ -82,16 +74,14 @@ impl Ref<File, FileId> for ImmutRef<File, FileId> {
 
 impl Ref<ShelfDir, FileId> for ImmutRef<ShelfDir, FileId> {
     fn new_ref(_data: ShelfDir) -> Self {
-        todo!();
-
-        //Inner { id, data: Arc::new(data) }
+        unimplemented!("Use new_ref_id instead");
     }
+
     fn new_ref_id(id: FileId, data: ShelfDir) -> Self {
         Inner {
             id,
             data: Arc::new(data),
         }
-        //Arc::new(Inner { id, data })
     }
 
     fn inner_ptr(&self) -> *const ShelfDir {
@@ -174,14 +164,11 @@ pub struct History<T, I = Uuid> {
 
 const HIST_L: usize = 3;
 
-// Lock type
-type L = ();
-
 impl<T, I> History<T, I>
 where
     I: Copy + Default,
 {
-    pub fn new(val: T, lock: Arc<RwLock<L>>) -> Self {
+    pub fn new(val: T, lock: Arc<RwLock<()>>) -> Self {
         let first = StatefulRef::new_ref(val, lock);
         History {
             staged: first,
@@ -214,7 +201,7 @@ where
 pub struct StatefulRef<T, I = Uuid> {
     pub id: I,
     data: ArcSwap<T>,
-    s_lock: Arc<RwLock<L>>,
+    s_lock: Arc<RwLock<()>>,
 }
 impl<T, I> Clone for StatefulRef<T, I>
 where
@@ -233,7 +220,7 @@ impl<T, I> StatefulRef<T, I>
 where
     I: Copy + Default,
 {
-    pub fn new_ref(val: T, s_lock: Arc<RwLock<L>>) -> Self {
+    pub fn new_ref(val: T, s_lock: Arc<RwLock<()>>) -> Self {
         StatefulRef {
             id: I::default(),
             data: ArcSwap::new(Arc::new(val)),
@@ -241,7 +228,7 @@ where
         }
     }
 
-    pub fn new_ref_id(id: I, val: T, s_lock: Arc<RwLock<L>>) -> Self {
+    pub fn new_ref_id(id: I, val: T, s_lock: Arc<RwLock<()>>) -> Self {
         StatefulRef {
             id,
             data: ArcSwap::new(Arc::new(val)),

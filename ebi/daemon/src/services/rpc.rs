@@ -7,15 +7,12 @@ use crate::workspace::{Workspace, WorkspaceInfo};
 use bincode::serde::encode_to_vec;
 use ebi_proto::rpc::*;
 use iroh::NodeId;
-use std::collections::HashMap;
+use papaya::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use tokio::sync::{
-    RwLock,
-    watch::{Receiver, Sender},
-};
+use tokio::sync::watch::{Receiver, Sender};
 use tokio::task::JoinHandle;
 use tower::Service;
 
@@ -59,7 +56,7 @@ pub struct RpcService {
     pub tasks: Arc<HashMap<TaskID, JoinHandle<()>>>,
 
     // [!] This should be Mutexes. reason about read-write ratio
-    pub responses: Arc<RwLock<HashMap<RequestId, Response>>>,
+    pub responses: Arc<HashMap<RequestId, Response>>,
     pub broadcast: Sender<Uuid>,
     pub watcher: Receiver<Uuid>,
 }
@@ -130,7 +127,7 @@ impl Service<Response> for RpcService {
             let res = req;
             let metadata = res.metadata().ok_or(())?;
             let uuid = Uuid::try_from(metadata.request_uuid).map_err(|_| ())?;
-            responses.write().await.insert(uuid, res);
+            responses.pin().insert(uuid, res);
             broadcast.send(uuid).map_err(|_| ())?;
             Ok(())
         })
