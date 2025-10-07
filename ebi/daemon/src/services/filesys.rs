@@ -16,7 +16,7 @@ use tower::Service;
 
 #[derive(Clone)]
 pub struct FileSysService {
-    pub nodes: Arc<HashSet<ImmutRef<ShelfDir, FileId>>>,
+    pub shelf_dirs: Arc<HashSet<ImmutRef<ShelfDir, FileId>>>,
 }
 struct ShelfDirKey {
     id: FileId,
@@ -70,25 +70,25 @@ impl Service<RetrieveDirRecursive> for FileSysService {
     }
 
     fn call(&mut self, req: RetrieveDirRecursive) -> Self::Future {
-        let nodes = self.nodes.clone();
+        let shelf_dirs = self.shelf_dirs.clone();
         Box::pin(async move {
             let root = req.0;
             let order = req.1;
             let files = Arc::new(HashSet::<OrderedFileSummary>::new());
-            let nodes_c = nodes.clone();
+            let shelf_dirs_c = shelf_dirs.clone();
             let order_c = order.clone();
             WalkDirGeneric::<DirState>::new(root)
                 .process_read_dir(move |_depth, path, state, _entries| {
                     if let Ok(dir_id) = get_file_id(path)
-                        && let Some(dir) = nodes_c.pin().get(&dir_id)
+                        && let Some(sdir) = shelf_dirs_c.pin().get(&dir_id)
                     {
-                        state.dtags = dir
+                        state.dtags = sdir
                             .dtags
                             .pin()
                             .iter()
                             .map(|t| TagData::from(&*t.load_full()))
                             .collect();
-                        state.files = dir
+                        state.files = sdir
                             .files
                             .pin()
                             .iter()
@@ -143,7 +143,7 @@ impl Service<GetInitShelfDir> for FileSysService {
     }
 
     fn call(&mut self, req: GetInitShelfDir) -> Self::Future {
-        let nodes = self.nodes.clone();
+        let shelf_dirs = self.shelf_dirs.clone();
         Box::pin(async move {
             let shelf = req.0;
             let r_path = req.1;
@@ -158,7 +158,7 @@ impl Service<GetInitShelfDir> for FileSysService {
             } else {
                 r_path
             };
-            let mut new_subnode: Option<ImmutRef<ShelfDir, FileId>> = None;
+            let mut new_subdir: Option<ImmutRef<ShelfDir, FileId>> = None;
             let mut trav_path = path.clone();
             let Ok(nfile_id) = get_file_id(&trav_path) else {
                 return Err(ReturnCode::InternalStateError);
@@ -167,28 +167,28 @@ impl Service<GetInitShelfDir> for FileSysService {
                 let Ok(file_id) = get_file_id(&trav_path) else {
                     return Err(ReturnCode::InternalStateError);
                 };
-                let node = {
-                    if let Some(node) = nodes.pin().get(&file_id) {
-                        node.clone()
+                let sdir = {
+                    if let Some(sdir) = shelf_dirs.pin().get(&file_id) {
+                        sdir.clone()
                     } else {
-                        let Ok(node) = ShelfDir::new(path.clone()) else {
+                        let Ok(sdir) = ShelfDir::new(path.clone()) else {
                             return Err(ReturnCode::InternalStateError);
                         };
-                        let node_ref = ImmutRef::<ShelfDir, FileId>::new_ref_id(file_id, node);
-                        nodes.pin().insert(node_ref.clone());
-                        node_ref
+                        let sdir_ref = ImmutRef::<ShelfDir, FileId>::new_ref_id(file_id, sdir);
+                        shelf_dirs.pin().insert(sdir_ref.clone());
+                        sdir_ref
                     }
                 };
-                let node_wref = node.downgrade();
+                let sdir_wref = sdir.downgrade();
 
-                if let Some(subnode) = new_subnode {
-                    subnode.subdirs.pin().insert(node_wref.clone());
+                if let Some(subdir) = new_subdir {
+                    subdir.subdirs.pin().insert(sdir_wref.clone());
                 }
 
-                new_subnode = Some(node.clone());
+                new_subdir = Some(sdir.clone());
 
-                // if the node already existed in the shelf, we are done
-                if !shelf.nodes.pin().insert(node_wref.clone()) {
+                // if the dir already existed in the shelf, we are done
+                if !shelf.dirs.pin().insert(sdir_wref.clone()) {
                     break Ok(nfile_id);
                 }
                 trav_path = trav_path.parent().unwrap().to_path_buf();

@@ -108,13 +108,13 @@ impl fmt::Debug for Formula {
 pub struct Query {
     formula: Formula,
     pub order: FileOrder,
-    pub node_id: Option<FileId>,
+    pub sdir_id: Option<FileId>,
     pub ascending: bool,
 }
 
 impl Query {
     pub fn new(
-        node_id: Option<FileId>,
+        sdir_id: Option<FileId>,
         query: &str,
         order: FileOrder,
         ascending: bool,
@@ -122,7 +122,7 @@ impl Query {
         let formula = tag_query::expression(query).map_err(|_err| QueryErr::SyntaxError)??;
 
         let mut query = Query {
-            node_id,
+            sdir_id,
             formula,
             ascending,
             order,
@@ -188,7 +188,7 @@ impl Query {
             }
             Formula::UnaryExpression(UnaryOp::NOT, x) => {
                 let all = ret_srv
-                    .get_all(self.node_id)
+                    .get_all(self.sdir_id)
                     .await
                     .map_err(QueryErr::RuntimeError)?;
                 let subset = Box::pin(self.recursive_evaluate(x, ret_srv)).await?;
@@ -196,11 +196,11 @@ impl Query {
             }
             Formula::Constant(false) => Ok(HashSet::new()),
             Formula::Constant(true) => ret_srv
-                .get_all(self.node_id)
+                .get_all(self.sdir_id)
                 .await
                 .map_err(QueryErr::RuntimeError),
             Formula::Proposition(p) => ret_srv
-                .get(self.node_id, p.tag_id)
+                .get(self.sdir_id, p.tag_id)
                 .await
                 .map_err(QueryErr::RuntimeError),
         }

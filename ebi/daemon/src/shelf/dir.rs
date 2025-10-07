@@ -33,7 +33,7 @@ pub struct ShelfDir {
     pub collector: Arc<Collector>,
     pub tags: HashMap<TagRef, HashSet<FileRef>>,
     pub dtags: HashSet<TagRef>, // dtags applied from above, to be applied down
-    pub dtag_nodes: HashMap<TagRef, Vec<ShelfDirRef>>, // list of dtagged directories starting at any point below
+    pub dtag_dirs: HashMap<TagRef, Vec<ShelfDirRef>>, // list of dtagged directories starting at any point below
     pub parent: Option<ShelfDirRef>,
     pub subdirs: HashSet<ShelfDirRef>,
 }
@@ -47,7 +47,7 @@ impl ShelfDir {
             collector: collector.clone(),
             tags: hash_map!(collector),
             dtags: hash_set!(collector),
-            dtag_nodes: hash_map!(collector),
+            dtag_dirs: hash_map!(collector),
             parent: None,
             subdirs: hash_set!(collector),
         })

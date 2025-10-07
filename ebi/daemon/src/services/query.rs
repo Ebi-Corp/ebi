@@ -73,39 +73,39 @@ impl Retriever {
 
     pub async fn get(
         &mut self,
-        node_id: Option<FileId>,
+        dir_id: Option<FileId>,
         tag_id: TagId,
     ) -> Result<HashSet<OrderedFileSummary>, ReturnCode> {
         if let Some(tag_ref) = self.workspace.tags.get(&tag_id) {
             if let Some(set) = self.cache.retrieve(tag_ref) {
                 Ok(set)
             } else {
-                let node_id = if node_id.is_some() {
-                    node_id.unwrap()
+                let dir_id = if dir_id.is_some() {
+                    dir_id.unwrap()
                 } else {
                     self.shelf_data.root.id
                 };
 
-                let Some(node_ref) = self
+                let Some(sdir_ref) = self
                     .shelf_data
-                    .nodes
+                    .dirs
                     .pin()
-                    .get(&node_id)
+                    .get(&dir_id)
                     .and_then(|n| n.upgrade())
                 else {
                     return Err(ReturnCode::PathNotFound);
                 };
 
-                let dtags = node_ref.dtags.pin_owned();
+                let dtags = sdir_ref.dtags.pin_owned();
                 let root_dtag = dtags.get(tag_ref).clone();
 
                 if root_dtag.is_some() {
                     Ok(self
                         .filesys
-                        .retrieve_dir_recursive(node_ref.path.clone(), self.order.clone())
+                        .retrieve_dir_recursive(sdir_ref.path.clone(), self.order.clone())
                         .await?)
                 } else {
-                    let mut files = match node_ref.tags.pin_owned().get(tag_ref) {
+                    let mut files = match sdir_ref.tags.pin_owned().get(tag_ref) {
                         Some(tag_set) => tag_set
                             .pin()
                             .iter()
@@ -116,7 +116,7 @@ impl Retriever {
                             .collect::<im::HashSet<OrderedFileSummary>>(),
                         None => im::HashSet::new(),
                     };
-                    if let Some(sub_dtagged) = node_ref.dtag_nodes.pin_owned().get(tag_ref) {
+                    if let Some(sub_dtagged) = sdir_ref.dtag_dirs.pin_owned().get(tag_ref) {
                         for subdir in sub_dtagged {
                             if let Some(subdir) = subdir.upgrade() {
                                 files = files.union(
@@ -140,27 +140,27 @@ impl Retriever {
 
     pub async fn get_all(
         &mut self,
-        node_id: Option<FileId>,
+        dir_id: Option<FileId>,
     ) -> Result<HashSet<OrderedFileSummary>, ReturnCode> {
-        let node_id = if node_id.is_some() {
-            node_id.unwrap()
+        let dir_id = if dir_id.is_some() {
+            dir_id.unwrap()
         } else {
             self.shelf_data.root.id
         };
 
         // [TODO] handle caching
-        let Some(node_ref) = self
+        let Some(sdir_ref) = self
             .shelf_data
-            .nodes
+            .dirs
             .pin()
-            .get(&node_id)
+            .get(&dir_id)
             .and_then(|n| n.upgrade())
         else {
             return Err(ReturnCode::PathNotFound);
         };
         let result = self
             .filesys
-            .retrieve_dir_recursive(node_ref.path.clone(), self.order.clone())
+            .retrieve_dir_recursive(sdir_ref.path.clone(), self.order.clone())
             .await?;
         Ok(result)
     }
@@ -312,7 +312,7 @@ impl Service<ClientQuery> for QueryService {
             let client_node = parse_peer_id(&metadata.source_id).unwrap();
 
             let file_order = FileOrder::try_from(req.file_ord.unwrap().order_by)?;
-            let mut q_node_id: Option<FileId> = None;
+            let mut q_dir_id: Option<FileId> = None;
             let mut to_query: Option<NodeId> = None;
             let mut nodes = HashSet::<NodeId>::new();
             let mut local_shelves = HashSet::<ShelfId>::new();
@@ -326,7 +326,7 @@ impl Service<ClientQuery> for QueryService {
                     {
                         match &shelf.shelf_type {
                             ShelfType::Local(shelf_data) => {
-                                q_node_id = Some(
+                                q_dir_id = Some(
                                     filesys
                                         .get_or_init_dir(shelf_data.clone(), dir_path.into())
                                         .await?,
@@ -340,13 +340,13 @@ impl Service<ClientQuery> for QueryService {
                         break;
                     }
                 }
-                if q_node_id.is_none() && to_query.is_none() {
+                if q_dir_id.is_none() && to_query.is_none() {
                     return Err(ReturnCode::PathNotFound); // [TODO] may need a better error. like path is not in workspace
                 }
             }
 
             let mut query = Query::new(
-                q_node_id,
+                q_dir_id,
                 &query_str,
                 file_order.clone(),
                 req.file_ord.unwrap().ascending,

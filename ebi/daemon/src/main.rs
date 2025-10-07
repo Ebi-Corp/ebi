@@ -139,7 +139,7 @@ async fn main() -> Result<()> {
     };
 
     let fs_srv = FileSysService {
-        nodes: Arc::new(papaya::HashSet::new()),
+        shelf_dirs: Arc::new(papaya::HashSet::new()),
     };
     let query_srv = QueryService {
         peer_srv: peer_srv.clone(),

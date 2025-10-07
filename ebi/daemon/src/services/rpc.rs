@@ -275,8 +275,8 @@ impl Service<DeleteTag> for RpcService {
             for (_id, shelf) in workspace.shelves.iter() {
                 match &shelf.shelf_type {
                     ShelfType::Local(shelf_data) => {
-                        let node_id = shelf_data.root.id;
-                        let _ = shelf_data.strip(node_id, tag_ref);
+                        let sdir_id = shelf_data.root.id;
+                        let _ = shelf_data.strip(sdir_id, tag_ref);
 
                         //[?] Are (remote) Sync'd shelves also in shelves ??
                         if let ShelfOwner::Sync(_sync_id) = shelf.shelf_owner {
@@ -379,16 +379,16 @@ impl Service<StripTag> for RpcService {
             let return_code = match &shelf.shelf_type {
                 ShelfType::Local(shelf_data) => {
                     let path = PathBuf::from(&req.path);
-                    let node_id = match fs_srv
+                    let sdir_id = match fs_srv
                         .get_or_init_dir(shelf_data.clone(), path.clone())
                         .await
                     {
-                        Ok(node_id) => node_id,
+                        Ok(sdir_id) => sdir_id,
                         Err(res) => {
                             return_error!(res, StripTagResponse, metadata.request_uuid, error_data);
                         }
                     };
-                    let result = shelf_data.strip(node_id, tag);
+                    let result = shelf_data.strip(sdir_id, tag);
 
                     if let ShelfOwner::Sync(_sync_id) = shelf.shelf_owner {
                         //[TODO] Sync Notification
@@ -489,11 +489,11 @@ impl Service<DetachTag> for RpcService {
                 match &shelf.shelf_type {
                     ShelfType::Local(shelf_data) => {
                         let path = PathBuf::from(&req.path);
-                        let node_id = match fs_srv
+                        let sdir_id = match fs_srv
                             .get_or_init_dir(shelf_data.clone(), path.clone())
                             .await
                         {
-                            Ok(node_id) => node_id,
+                            Ok(sdir_id) => sdir_id,
                             Err(res) => {
                                 return_error!(
                                     res,
@@ -504,9 +504,9 @@ impl Service<DetachTag> for RpcService {
                             }
                         };
                         let result = if path.is_file() {
-                            shelf_data.detach(node_id, path, tag)
+                            shelf_data.detach(sdir_id, path, tag)
                         } else {
-                            shelf_data.detach_dtag(node_id, tag)
+                            shelf_data.detach_dtag(sdir_id, tag)
                         };
 
                         if let ShelfOwner::Sync(_sync_id) = shelf.shelf_owner {
@@ -614,11 +614,11 @@ impl Service<AttachTag> for RpcService {
                 match &shelf.shelf_type {
                     ShelfType::Local(shelf_data) => {
                         let path = PathBuf::from(&req.path);
-                        let node_id = match fs_srv
+                        let sdir_id = match fs_srv
                             .get_or_init_dir(shelf_data.clone(), path.clone())
                             .await
                         {
-                            Ok(node_id) => node_id,
+                            Ok(sdir_id) => sdir_id,
                             Err(res) => {
                                 return_error!(
                                     res,
@@ -629,9 +629,9 @@ impl Service<AttachTag> for RpcService {
                             }
                         };
                         let result = if path.is_file() {
-                            shelf_data.attach(node_id, path, tag)
+                            shelf_data.attach(sdir_id, path, tag)
                         } else if path.is_dir() {
-                            shelf_data.attach_dtag(node_id, tag)
+                            shelf_data.attach_dtag(sdir_id, tag)
                         } else {
                             return_error!(
                                 ReturnCode::PathNotDir, // [TODO] should be invalid path (e.g symlink)

@@ -117,7 +117,7 @@ pub fn generate_tag_filter() -> ArcSwap<TagFilter> {
 
 pub struct ShelfData {
     pub root: ImmutRef<ShelfDir, FileId>,
-    pub nodes: HashSet<ShelfDirRef>,
+    pub dirs: HashSet<ShelfDirRef>,
     pub root_path: PathBuf,
 }
 
@@ -190,7 +190,7 @@ impl ShelfData {
         let collector = Arc::new(Collector::new());
         Ok(ShelfData {
             root: ImmutRef::<ShelfDir, FileId>::new_ref_id(file_id, ShelfDir::new(path.clone())?),
-            nodes: papaya::HashSet::builder()
+            dirs: papaya::HashSet::builder()
                 .shared_collector(collector)
                 .build(),
             root_path: path.clone(),
@@ -202,21 +202,21 @@ impl ShelfData {
     }
 
     pub fn contains(&self, tag: TagRef) -> bool {
-        self.root.tags.pin().contains_key(&tag) || self.root.dtag_nodes.pin().contains_key(&tag)
+        self.root.tags.pin().contains_key(&tag) || self.root.dtag_dirs.pin().contains_key(&tag)
     }
 
     pub fn attach(
         &self,
-        node_id: FileId,
+        sdir_id: FileId,
         path: PathBuf,
         tag: &TagRef,
     ) -> Result<(bool, bool), UpdateErr> {
-        let bind = self.nodes.pin();
-        let Some(mut node_ref) = bind.get(&node_id).and_then(|p| p.upgrade()) else {
+        let bind = self.dirs.pin();
+        let Some(mut dir_ref) = bind.get(&sdir_id).and_then(|p| p.upgrade()) else {
             return Err(UpdateErr::PathNotFound);
         };
 
-        let file = match node_ref.files.pin().get(&path) {
+        let file = match dir_ref.files.pin().get(&path) {
             Some(file) => file.clone(),
             None => {
                 let file_id = get_file_id(&path).map_err(|_| UpdateErr::FileNotFound)?;
@@ -227,7 +227,7 @@ impl ShelfData {
                         .build(),
                 );
                 let file = ImmutRef::new_ref_id(file_id, file);
-                node_ref.files.pin().insert(file.clone());
+                dir_ref.files.pin().insert(file.clone());
                 file
             }
         };
@@ -236,18 +236,18 @@ impl ShelfData {
 
         if file_attached {
             // traverse up to root
-            while !ptr_eq(&node_ref, self.root.inner_ptr()) {
-                node_ref.attach(tag, &file.clone());
-                node_ref = node_ref
+            while !ptr_eq(&dir_ref, self.root.inner_ptr()) {
+                dir_ref.attach(tag, &file.clone());
+                dir_ref = dir_ref
                     .parent
                     .as_ref()
                     .and_then(|p| p.upgrade())
-                    .ok_or(UpdateErr::PathNotFound)?; // this means that the node has been moved
+                    .ok_or(UpdateErr::PathNotFound)?; // this means that the dir has been moved
             }
         }
 
         let shelf_attached = if file_attached {
-            node_ref.attach(tag, &file.clone())
+            dir_ref.attach(tag, &file.clone())
         } else {
             false
         };
@@ -257,16 +257,16 @@ impl ShelfData {
 
     pub fn detach(
         &self,
-        node_id: FileId,
+        sdir_id: FileId,
         path: PathBuf,
         tag: &TagRef,
     ) -> Result<(bool, bool), UpdateErr> {
-        let bind = self.nodes.pin();
-        let Some(mut node_ref) = bind.get(&node_id).and_then(|p| p.upgrade()) else {
+        let bind = self.dirs.pin();
+        let Some(mut dir_ref) = bind.get(&sdir_id).and_then(|p| p.upgrade()) else {
             return Err(UpdateErr::PathNotFound);
         };
 
-        let file = match node_ref.files.pin().get(&path) {
+        let file = match dir_ref.files.pin().get(&path) {
             Some(file) => file.clone(),
             None => {
                 let file_id = get_file_id(&path).map_err(|_| UpdateErr::FileNotFound)?;
@@ -277,7 +277,7 @@ impl ShelfData {
                         .build(),
                 );
                 let file = ImmutRef::new_ref_id(file_id, file);
-                node_ref.files.pin().insert(file.clone());
+                dir_ref.files.pin().insert(file.clone());
                 file
             }
         };
@@ -285,18 +285,18 @@ impl ShelfData {
 
         if file_detached {
             // traverse up to root
-            while !ptr_eq(&node_ref, self.root.inner_ptr()) {
-                node_ref.detach(tag, Some(&file.clone()));
-                node_ref = node_ref
+            while !ptr_eq(&dir_ref, self.root.inner_ptr()) {
+                dir_ref.detach(tag, Some(&file.clone()));
+                dir_ref = dir_ref
                     .parent
                     .as_ref()
                     .and_then(|p| p.upgrade())
-                    .ok_or(UpdateErr::PathNotFound)?; // this means that the node has been moved
+                    .ok_or(UpdateErr::PathNotFound)?; // this means that the dir has been moved
             }
         }
 
         let shelf_detached = if file_detached {
-            node_ref.detach(tag, Some(&file))
+            dir_ref.detach(tag, Some(&file))
         } else {
             false
         };
@@ -304,20 +304,20 @@ impl ShelfData {
         Ok((shelf_detached, file_detached))
     }
 
-    pub fn strip(&self, node_id: FileId, tag: &TagRef) -> Result<(), UpdateErr> {
-        let bind = self.nodes.pin();
-        let Some(node_ref) = bind.get(&node_id).and_then(|p| p.upgrade()) else {
+    pub fn strip(&self, sdir_id: FileId, tag: &TagRef) -> Result<(), UpdateErr> {
+        let bind = self.dirs.pin();
+        let Some(dir_ref) = bind.get(&sdir_id).and_then(|p| p.upgrade()) else {
             return Err(UpdateErr::PathNotFound);
         };
 
-        pub fn recursive_remove(node: Arc<ShelfDir>, tag: &TagRef) {
-            node.dtags.pin().remove(tag);
-            node.tags.pin().remove(tag);
-            node.dtag_nodes.pin().remove(tag);
-            for file in node.files.pin().iter() {
+        pub fn recursive_remove(dir: Arc<ShelfDir>, tag: &TagRef) {
+            dir.dtags.pin().remove(tag);
+            dir.tags.pin().remove(tag);
+            dir.dtag_dirs.pin().remove(tag);
+            for file in dir.files.pin().iter() {
                 file.detach(tag);
             }
-            for child in node.subdirs.pin().iter() {
+            for child in dir.subdirs.pin().iter() {
                 let Some(child) = child.upgrade() else {
                     break;
                 };
@@ -325,75 +325,72 @@ impl ShelfData {
             }
         }
 
-        recursive_remove(node_ref, tag);
+        recursive_remove(dir_ref, tag);
         Ok(())
     }
 
-    pub fn attach_dtag(&self, node_id: FileId, dtag: &TagRef) -> Result<(bool, bool), UpdateErr> {
-        let bind = self.nodes.pin();
-        let Some(node_ref) = bind.get(&node_id).and_then(|p| p.upgrade()) else {
+    pub fn attach_dtag(&self, sdir_id: FileId, dtag: &TagRef) -> Result<(bool, bool), UpdateErr> {
+        let bind = self.dirs.pin();
+        let Some(dir_ref) = bind.get(&sdir_id).and_then(|p| p.upgrade()) else {
             return Err(UpdateErr::PathNotFound);
         };
 
-        let dir_attached = node_ref.dtags.pin().insert(dtag.clone());
+        let dir_attached = dir_ref.dtags.pin().insert(dtag.clone());
 
-        let attach_node = bind.get(&node_id).unwrap();
+        let attach_dir = bind.get(&sdir_id).unwrap();
         let mut shelf_attached = true;
-        while node_ref.parent.is_some() {
-            let Some(parent) = node_ref.parent.as_ref().unwrap().upgrade() else {
+        while dir_ref.parent.is_some() {
+            let Some(parent) = dir_ref.parent.as_ref().unwrap().upgrade() else {
                 return Err(UpdateErr::PathNotFound);
             };
-            if let Some(_) = parent.dtag_nodes.pin().get(dtag) {
-                parent.dtag_nodes.pin().update(dtag.clone(), |v| {
-                    vec![[attach_node.clone()].as_slice(), v].concat()
+            if let Some(_) = parent.dtag_dirs.pin().get(dtag) {
+                parent.dtag_dirs.pin().update(dtag.clone(), |v| {
+                    vec![[attach_dir.clone()].as_slice(), v].concat()
                 });
                 shelf_attached = false;
             } else {
                 parent
-                    .dtag_nodes
+                    .dtag_dirs
                     .pin()
-                    .insert(dtag.clone(), vec![attach_node.clone()]);
+                    .insert(dtag.clone(), vec![attach_dir.clone()]);
                 shelf_attached = true;
             }
         }
 
-        fn recursive_attach(node: &ShelfDirRef, dtag: &TagRef) {
-            if let Some(node) = node.upgrade() {
-                for subnode in node.subdirs.pin().iter() {
-                    recursive_attach(&subnode, dtag);
+        fn recursive_attach(dir: &ShelfDirRef, dtag: &TagRef) {
+            if let Some(dir) = dir.upgrade() {
+                for subdir in dir.subdirs.pin().iter() {
+                    recursive_attach(&subdir, dtag);
                 }
 
-                node.dtags.pin().insert(dtag.clone());
+                dir.dtags.pin().insert(dtag.clone());
             }
         }
 
-        recursive_attach(attach_node, dtag);
+        recursive_attach(attach_dir, dtag);
 
         Ok((shelf_attached, dir_attached))
     }
-    pub fn detach_dtag(&self, node_id: FileId, dtag: &TagRef) -> Result<(bool, bool), UpdateErr> {
-        let bind = self.nodes.pin();
-        let Some(node_ref) = bind.get(&node_id).and_then(|p| p.upgrade()) else {
+    pub fn detach_dtag(&self, sdir_id: FileId, dtag: &TagRef) -> Result<(bool, bool), UpdateErr> {
+        let bind = self.dirs.pin();
+        let Some(dir_ref) = bind.get(&sdir_id).and_then(|p| p.upgrade()) else {
             return Err(UpdateErr::PathNotFound);
         };
 
-        let dir_detached = node_ref.dtags.pin().remove(dtag);
+        let dir_detached = dir_ref.dtags.pin().remove(dtag);
 
-        let detach_node = bind.get(&node_id).unwrap();
+        let detach_dir = bind.get(&sdir_id).unwrap();
         let mut shelf_detached = true;
-        while node_ref.parent.is_some() {
-            let Some(parent) = node_ref.parent.as_ref().unwrap().upgrade() else {
+        while dir_ref.parent.is_some() {
+            let Some(parent) = dir_ref.parent.as_ref().unwrap().upgrade() else {
                 return Err(UpdateErr::PathNotFound);
             };
-            parent.dtag_nodes.pin().update(dtag.clone(), |v| {
-                v.into_iter()
-                    .cloned()
-                    .filter(|n| n != detach_node)
-                    .collect()
+            parent.dtag_dirs.pin().update(dtag.clone(), |v| {
+                v.into_iter().cloned().filter(|n| n != detach_dir).collect()
             });
-            if let Some(vec_node) = parent.dtag_nodes.pin().get(dtag) {
-                if vec_node.is_empty() {
-                    parent.dtag_nodes.pin().remove(dtag);
+            if let Some(vec_dir) = parent.dtag_dirs.pin().get(dtag) {
+                if vec_dir.is_empty() {
+                    parent.dtag_dirs.pin().remove(dtag);
                     shelf_detached = true;
                 } else {
                     shelf_detached = false;
@@ -401,17 +398,17 @@ impl ShelfData {
             }
         }
 
-        fn recursive_detach(node: &ShelfDirRef, dtag: &TagRef) {
-            if let Some(node) = node.upgrade() {
-                for subnode in node.subdirs.pin().iter() {
-                    recursive_detach(&subnode, dtag);
+        fn recursive_detach(dir: &ShelfDirRef, dtag: &TagRef) {
+            if let Some(dir) = dir.upgrade() {
+                for subdir in dir.subdirs.pin().iter() {
+                    recursive_detach(&subdir, dtag);
                 }
 
-                node.dtags.pin().remove(dtag);
+                dir.dtags.pin().remove(dtag);
             }
         }
 
-        recursive_detach(detach_node, dtag);
+        recursive_detach(detach_dir, dtag);
 
         Ok((shelf_detached, dir_detached))
     }
