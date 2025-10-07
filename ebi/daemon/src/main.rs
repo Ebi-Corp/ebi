@@ -21,8 +21,8 @@ use anyhow::Result;
 use ebi_proto::rpc::*;
 use iroh::{Endpoint, NodeId, SecretKey};
 use paste::paste;
-use std::collections::HashMap;
-use tokio::sync::{RwLock, mpsc, watch};
+use papaya::{HashSet, HashMap};
+use tokio::sync::{mpsc, watch};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -119,10 +119,10 @@ async fn main() -> Result<()> {
 
     tracing::info!("Set up iroh endpoint with peer ID {}", ep.node_id());
 
-    let peers = Arc::new(RwLock::new(HashMap::<NodeId, Peer>::new()));
-    let clients = Arc::new(RwLock::new(Vec::<Client>::new()));
+    let peers = Arc::new(HashMap::<NodeId, Peer>::new());
+    let clients = Arc::new(HashSet::<Client>::new());
     let tasks = Arc::new(HashMap::<TaskID, JoinHandle<()>>::new());
-    let responses = Arc::new(RwLock::new(HashMap::<RequestId, Response>::new()));
+    let responses = Arc::new(HashMap::<RequestId, Response>::new());
     let id: NodeId = ep.node_id();
     let (broadcast, watcher) = watch::channel::<RequestId>(Uuid::new_v4());
 
@@ -135,7 +135,7 @@ async fn main() -> Result<()> {
     let peer_srv = PeerService {
         peers: peers.clone(),
         clients: clients.clone(),
-        responses: responses.clone(),
+        responses: responses.clone()
     };
 
     let fs_srv = FileSysService {
@@ -177,7 +177,7 @@ async fn main() -> Result<()> {
                     sender: tx.clone(),
                     watcher: watcher.clone()
                 };
-                clients.write().await.push(client);
+                clients.pin().insert(client);
                 let broadcast = broadcast.clone();
 
                 // Client handling thread
@@ -220,7 +220,7 @@ async fn main() -> Result<()> {
                 };
 
                 let peer_id = peer.id.to_string();
-                peers.write().await.insert(conn.remote_node_id().unwrap(), peer);
+                peers.pin().insert(conn.remote_node_id().unwrap(), peer);
                 let broadcast = broadcast.clone();
 
                 // Peer handling thread

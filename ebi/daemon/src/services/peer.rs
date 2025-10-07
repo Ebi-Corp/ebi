@@ -1,14 +1,16 @@
 use crate::prelude::*;
 use ebi_proto::rpc::*;
 use iroh::NodeId;
-use std::collections::HashMap;
+use papaya::HashMap;
+use papaya::HashSet;
+use std::hash::Hash;
 use std::net::SocketAddr;
 use std::{
     future::Future,
     pin::Pin,
     task::{Context, Poll},
 };
-use tokio::sync::{RwLock, mpsc::Sender, watch::Receiver};
+use tokio::sync::{mpsc::Sender, watch::Receiver};
 use tokio::time::{Duration, sleep};
 use tower::Service;
 
@@ -27,9 +29,9 @@ pub enum PeerError {
 
 #[derive(Clone, Debug)]
 pub struct PeerService {
-    pub peers: Arc<RwLock<HashMap<NodeId, Peer>>>,
-    pub clients: Arc<RwLock<Vec<Client>>>,
-    pub responses: Arc<RwLock<HashMap<RequestId, Response>>>,
+    pub peers: Arc<HashMap<NodeId, Peer>>,
+    pub clients: Arc<HashSet<Client>>,
+    pub responses: Arc<HashMap<RequestId, Response>>,
 }
 
 #[derive(Clone, Debug)]
@@ -46,6 +48,18 @@ pub struct Client {
     pub sender: Sender<(Uuid, Vec<u8>)>,
     pub watcher: Receiver<Uuid>,
 }
+impl Hash for Client {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.id.hash(state)
+    }
+}
+impl PartialEq for Client {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+impl Eq for Client {}
+
 
 async fn wait_call(mut watcher: Receiver<Uuid>, request_uuid: Uuid) {
     let mut id = Uuid::new_v4();
@@ -69,14 +83,14 @@ impl Service<(NodeId, Data)> for PeerService {
         let peers = self.peers.clone();
         let clients = self.clients.clone();
         Box::pin(async move {
+            let clients = clients.pin_owned();
             let sender = {
-                let c_lock = clients.read().await;
-                let r_client = c_lock.iter().find(|c| c.id == req.0);
-                if let Some(client) = r_client {
+                let client = clients.iter().find(|c| c.id == req.0);
+                if let Some(client) = client {
                     client.sender.clone()
                 } else {
-                    let p_lock = peers.read().await;
-                    p_lock
+                    peers
+                        .pin()
                         .get(&req.0)
                         .ok_or(PeerError::PeerNotFound)?
                         .sender
@@ -120,11 +134,10 @@ impl Service<(NodeId, Request)> for PeerService {
         let peers = self.peers.clone();
         let responses = self.responses.clone();
         Box::pin(async move {
-            let r_lock = peers.read().await;
-            let r_peer = r_lock.get(&req.0).ok_or(PeerError::PeerNotFound)?;
-            let sender = r_peer.sender.clone();
-            let watcher = r_peer.watcher.clone();
-            drop(r_lock);
+            let peers = peers.pin_owned();
+            let peer = peers.get(&req.0).ok_or(PeerError::PeerNotFound)?;
+            let sender = peer.sender.clone();
+            let watcher = peer.watcher.clone();
 
             let mut payload = Vec::new();
             let request_uuid = Uuid::new_v4();
@@ -149,8 +162,7 @@ impl Service<(NodeId, Request)> for PeerService {
                     Err(PeerError::TimedOut)
                 }
                 _ = wait_call(watcher, request_uuid) => {
-                    let responses = responses.read().await;
-                    if let Some(res) = responses.get(&request_uuid) {
+                    if let Some(res) = responses.pin().get(&request_uuid) {
                         let res = res.clone();
                         res.try_into().map_err(|_| PeerError::UnexpectedResponse)
                     } else {

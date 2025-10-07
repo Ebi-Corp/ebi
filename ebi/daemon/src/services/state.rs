@@ -25,12 +25,11 @@ use std::{
 use tokio::sync::RwLock;
 use tower::Service;
 
-type L = ();
 
 #[derive(Clone)]
 pub struct StateService {
     pub state: Arc<History<GroupState>>,
-    pub lock: Arc<RwLock<L>>,
+    pub lock: Arc<RwLock<()>>, // currently, lock does not need to hold data
 }
 
 impl StateService {
@@ -44,7 +43,6 @@ impl StateService {
     }
 }
 
-// TODO: () is a paceholder
 pub struct GroupState {
     pub workspaces: StatefulMap<WorkspaceId, Arc<StatefulRef<Workspace>>>,
     pub shelf_assignment: StatefulMap<ShelfId, Vec<Weak<StatefulRef<Workspace>>>>,

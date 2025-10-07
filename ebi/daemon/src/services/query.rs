@@ -49,6 +49,7 @@ pub struct Retriever {
     filesys: FileSysService,
     shelf_owner: ShelfOwner,
     shelf_data: ImmutRef<ShelfData>,
+    subpath: Option<FileId>,
     order: FileOrder,
 }
 
@@ -59,6 +60,7 @@ impl Retriever {
         filesys: FileSysService,
         shelf_owner: ShelfOwner,
         shelf_data: ImmutRef<ShelfData>,
+        subpath: Option<FileId>,
         order: FileOrder,
     ) -> Retriever {
         Retriever {
@@ -67,21 +69,21 @@ impl Retriever {
             filesys,
             shelf_owner,
             shelf_data,
+            subpath,
             order,
         }
     }
 
     pub async fn get(
         &mut self,
-        dir_id: Option<FileId>,
         tag_id: TagId,
     ) -> Result<HashSet<OrderedFileSummary>, ReturnCode> {
         if let Some(tag_ref) = self.workspace.tags.get(&tag_id) {
             if let Some(set) = self.cache.retrieve(tag_ref) {
                 Ok(set)
             } else {
-                let dir_id = if dir_id.is_some() {
-                    dir_id.unwrap()
+                let dir_id = if self.subpath.is_some() {
+                    self.subpath.unwrap()
                 } else {
                     self.shelf_data.root.id
                 };
@@ -140,10 +142,9 @@ impl Retriever {
 
     pub async fn get_all(
         &mut self,
-        dir_id: Option<FileId>,
     ) -> Result<HashSet<OrderedFileSummary>, ReturnCode> {
-        let dir_id = if dir_id.is_some() {
-            dir_id.unwrap()
+        let dir_id = if self.subpath.is_some() {
+            self.subpath.unwrap()
         } else {
             self.shelf_data.root.id
         };
@@ -177,8 +178,8 @@ impl Service<PeerQuery> for QueryService {
 
     fn call(&mut self, req: PeerQuery) -> Self::Future {
         let mut state_srv = self.state_srv.clone();
+        let mut filesys = self.filesys.clone();
         let node_id = self.daemon_info.id.clone();
-        let filesys = self.filesys.clone();
         let cache = self.cache.clone();
         Box::pin(async move {
             let Ok(workspace_ref) = try_get_workspace(&req.workspace_id, &mut state_srv).await
@@ -192,26 +193,47 @@ impl Service<PeerQuery> for QueryService {
                 .map_err(|_| ReturnCode::MalformedRequest)?; //[!] Decode Error 
 
             let file_order = query.order.clone();
+            let mut q_dir_id: Option<FileId> = None;
 
             let workspace = workspace_ref.load();
-            let local_shelves: HashSet<ShelfId> = workspace
-                .shelves
-                .iter()
-                .filter_map(|(_, s)| {
-                    match s.shelf_owner {
-                        ShelfOwner::Node(node_owner) => {
-                            if node_owner == *node_id {
-                                Some(s.id)
-                            } else {
-                                None
+            let mut local_shelves = HashSet::<ShelfId>::new();
+            for (s_id, shelf) in workspace.shelves.iter() {
+                match shelf.shelf_owner {
+                    ShelfOwner::Node(node_owner) if node_owner == *node_id => {
+                        if let Some(ref subpath) = query.path {
+                            let shelf_root = &shelf.info.load().root;
+                            if subpath
+                                .to_string_lossy()
+                                .starts_with(shelf_root.to_str().unwrap())
+                            {
+                                match &shelf.shelf_type {
+                                    ShelfType::Local(shelf_data) => {
+                                        q_dir_id = Some(
+                                            filesys
+                                                .get_or_init_dir(shelf_data.clone(), subpath.into())
+                                                .await?,
+                                        );
+                                        local_shelves.insert(*s_id);
+                                    }
+                                    ShelfType::Remote => {
+                                        return Err(ReturnCode::PathNotFound)
+                                    },
+                                }
+                                break;
                             }
+                        } else {
+                            local_shelves.insert(*s_id);
                         }
-                        ShelfOwner::Sync(_) => {
-                            todo!()
-                        } // [?] Should PeerQuery deal with Sync shelves ??
                     }
-                })
-                .collect();
+                    ShelfOwner::Node(_) => continue,
+                    ShelfOwner::Sync(_) => {
+                        todo!()
+                    } // [?] Should PeerQuery deal with Sync shelves ??
+                }
+            }
+            if local_shelves.is_empty() {
+                return Err(ReturnCode::PathNotFound)
+            }
 
             let mut local_futures = JoinSet::new();
             for s_id in local_shelves {
@@ -235,6 +257,7 @@ impl Service<PeerQuery> for QueryService {
                                     filesys,
                                     shelf_owner,
                                     data,
+                                    q_dir_id,
                                     file_order,
                                 );
                                 query.evaluate(retriever).await
@@ -317,7 +340,7 @@ impl Service<ClientQuery> for QueryService {
             let mut nodes = HashSet::<NodeId>::new();
             let mut local_shelves = HashSet::<ShelfId>::new();
 
-            if let Some(dir_path) = req.path {
+            if let Some(ref dir_path) = req.path {
                 for (_, shelf) in workspace_ref.load().shelves.iter() {
                     let shelf_root = &shelf.info.load().root;
                     if dir_path
@@ -346,7 +369,7 @@ impl Service<ClientQuery> for QueryService {
             }
 
             let mut query = Query::new(
-                q_dir_id,
+                req.path.map(|p| p.into()),
                 &query_str,
                 file_order.clone(),
                 req.file_ord.unwrap().ascending,
@@ -501,6 +524,7 @@ impl Service<ClientQuery> for QueryService {
                                 filesys.clone(),
                                 shelf_owner,
                                 data,
+                                q_dir_id,
                                 file_order.clone(),
                             );
                             local_futures.spawn(async move { query.evaluate(retriever).await });

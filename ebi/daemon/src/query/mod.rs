@@ -3,12 +3,12 @@ use crate::query::file_order::{FileOrder, OrderedFileSummary};
 use crate::services::query::Retriever;
 use crate::tag::TagId;
 use ebi_proto::rpc::ReturnCode;
-use file_id::FileId;
 use im::HashSet;
 use rand_chacha::ChaCha12Rng;
 use scalable_cuckoo_filter::{DefaultHasher, ScalableCuckooFilter};
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::path::PathBuf;
 
 peg::parser! {
     grammar tag_query() for str {
@@ -108,13 +108,13 @@ impl fmt::Debug for Formula {
 pub struct Query {
     formula: Formula,
     pub order: FileOrder,
-    pub sdir_id: Option<FileId>,
+    pub path: Option<PathBuf>, // subdirectory path of shelf
     pub ascending: bool,
 }
 
 impl Query {
     pub fn new(
-        sdir_id: Option<FileId>,
+        path: Option<PathBuf>,
         query: &str,
         order: FileOrder,
         ascending: bool,
@@ -122,7 +122,7 @@ impl Query {
         let formula = tag_query::expression(query).map_err(|_err| QueryErr::SyntaxError)??;
 
         let mut query = Query {
-            sdir_id,
+            path,
             formula,
             ascending,
             order,
@@ -188,7 +188,7 @@ impl Query {
             }
             Formula::UnaryExpression(UnaryOp::NOT, x) => {
                 let all = ret_srv
-                    .get_all(self.sdir_id)
+                    .get_all()
                     .await
                     .map_err(QueryErr::RuntimeError)?;
                 let subset = Box::pin(self.recursive_evaluate(x, ret_srv)).await?;
@@ -196,11 +196,11 @@ impl Query {
             }
             Formula::Constant(false) => Ok(HashSet::new()),
             Formula::Constant(true) => ret_srv
-                .get_all(self.sdir_id)
+                .get_all()
                 .await
                 .map_err(QueryErr::RuntimeError),
             Formula::Proposition(p) => ret_srv
-                .get(self.sdir_id, p.tag_id)
+                .get(p.tag_id)
                 .await
                 .map_err(QueryErr::RuntimeError),
         }
