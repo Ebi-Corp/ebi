@@ -7,7 +7,7 @@ pub mod prelude {
 }
 
 use crate::prelude::*;
-use crate::services::filesys::FileSysService;
+use crate::services::fs::FileSystem;
 use crate::sharedref::History;
 use crate::shelf::{Shelf, ShelfId, ShelfOwner};
 use crate::stateful::{StatefulMap, SwapRef};
@@ -30,11 +30,11 @@ use tower::Service;
 pub struct StateService {
     pub state: Arc<History<GroupState>>,
     pub lock: Arc<RwLock<()>>,
-    pub filesys: FileSysService,
+    pub filesys: FileSystem,
 }
 
 impl StateService {
-    pub fn new(filesys: FileSysService) -> Self {
+    pub fn new(filesys: FileSystem) -> Self {
         let lock = Arc::new(RwLock::new(()));
         let state = Arc::new(History::new(GroupState::new(), lock.clone()));
         Self {

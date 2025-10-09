@@ -15,7 +15,7 @@ use papaya::HashSet;
 use tower::Service;
 
 #[derive(Clone)]
-pub struct FileSysService {
+pub struct FileSystem {
     pub shelf_dirs: Arc<HashSet<ImmutRef<ShelfDir, FileId>>>,
 }
 struct ShelfDirKey {
@@ -31,7 +31,7 @@ impl PartialEq for ShelfDirKey {
 
 struct GetInitShelfDir(ShelfDataRef, PathBuf);
 
-impl FileSysService {
+impl FileSystem {
     pub async fn get_or_init_dir(
         &mut self,
         shelf: ShelfDataRef,
@@ -68,7 +68,7 @@ impl ClientState for DirState {
     type DirEntryState = DirState;
 }
 
-impl Service<RetrieveDirRecursive> for FileSysService {
+impl Service<RetrieveDirRecursive> for FileSystem {
     type Response = im::HashSet<OrderedFileSummary>;
     type Error = ReturnCode;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
@@ -142,7 +142,7 @@ impl Service<RetrieveDirRecursive> for FileSysService {
 
 struct GetInitShelf(PathBuf);
 
-impl Service<GetInitShelf> for FileSysService {
+impl Service<GetInitShelf> for FileSystem {
     type Response = ImmutRef<ShelfDir, FileId>;
     type Error = ReturnCode;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
@@ -198,7 +198,7 @@ impl Service<GetInitShelf> for FileSysService {
     }
 }
 
-impl Service<GetInitShelfDir> for FileSysService {
+impl Service<GetInitShelfDir> for FileSystem {
     type Response = FileId;
     type Error = ReturnCode;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
