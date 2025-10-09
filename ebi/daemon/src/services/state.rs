@@ -7,6 +7,7 @@ pub mod prelude {
 }
 
 use crate::prelude::*;
+use crate::services::filesys::FileSysService;
 use crate::sharedref::History;
 use crate::shelf::{Shelf, ShelfId, ShelfOwner};
 use crate::stateful::{StatefulMap, SwapRef};
@@ -25,20 +26,21 @@ use std::{
 use tokio::sync::RwLock;
 use tower::Service;
 
-
 #[derive(Clone)]
 pub struct StateService {
     pub state: Arc<History<GroupState>>,
-    pub lock: Arc<RwLock<()>>, // currently, lock does not need to hold data
+    pub lock: Arc<RwLock<()>>,
+    pub filesys: FileSysService,
 }
 
 impl StateService {
-    pub fn new() -> Self {
+    pub fn new(filesys: FileSysService) -> Self {
         let lock = Arc::new(RwLock::new(()));
         let state = Arc::new(History::new(GroupState::new(), lock.clone()));
         Self {
             state,
             lock: lock.clone(),
+            filesys: filesys.clone(),
         }
     }
 }
@@ -277,6 +279,7 @@ impl Service<AssignShelf> for StateService {
     fn call(&mut self, req: AssignShelf) -> Self::Future {
         let g_state = self.state.clone();
         let lock = self.lock.clone();
+        let mut fs = self.filesys.clone();
 
         Box::pin(async move {
             let state = g_state.staged.load();
@@ -324,10 +327,15 @@ impl Service<AssignShelf> for StateService {
 
             if new_shelf {
                 let path = req.path.clone();
+                let root_shelf_ref = if !req.remote {
+                    Some(fs.get_or_init_shelf(path.clone()).await?)
+                } else {
+                    None
+                };
                 let Ok(shelf) = Shelf::new(
                     lock,
-                    req.remote,
                     path,
+                    root_shelf_ref,
                     req.name.unwrap_or_else(|| {
                         req.path
                             .clone()

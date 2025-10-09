@@ -20,8 +20,8 @@ use crate::services::rpc::{DaemonInfo, RequestId, TaskID};
 use anyhow::Result;
 use ebi_proto::rpc::*;
 use iroh::{Endpoint, NodeId, SecretKey};
+use papaya::{HashMap, HashSet};
 use paste::paste;
-use papaya::{HashSet, HashMap};
 use tokio::sync::{mpsc, watch};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio::{
@@ -130,17 +130,18 @@ async fn main() -> Result<()> {
     //[/] It is then notified when a response is received so it can acquire the read lock on the Response map.
     let daemon_info = Arc::new(DaemonInfo::new(id, "".to_string()));
 
-    let state_srv = StateService::new();
+    let fs_srv = FileSysService {
+        shelf_dirs: Arc::new(papaya::HashSet::new()),
+    };
+
+    let state_srv = StateService::new(fs_srv.clone());
 
     let peer_srv = PeerService {
         peers: peers.clone(),
         clients: clients.clone(),
-        responses: responses.clone()
+        responses: responses.clone(),
     };
 
-    let fs_srv = FileSysService {
-        shelf_dirs: Arc::new(papaya::HashSet::new()),
-    };
     let query_srv = QueryService {
         peer_srv: peer_srv.clone(),
         cache: CacheService {},
