@@ -1,10 +1,7 @@
 use crate::query::file_order::{FileOrder, OrderedFileSummary};
 use crate::query::{Query, QueryErr};
-use crate::services::cache::CacheService;
-use crate::services::filesys::FileSysService;
-use crate::services::peer::PeerService;
+use crate::services::prelude::*;
 use crate::services::rpc::{DaemonInfo, parse_peer_id, try_get_workspace};
-use crate::services::state::StateService;
 use crate::sharedref::ImmutRef;
 use crate::shelf::file::FileSummary;
 use crate::shelf::{ShelfData, ShelfId, ShelfOwner, ShelfType, merge};
@@ -36,17 +33,17 @@ pub type TokenId = Uuid;
 
 #[derive(Clone)]
 pub struct QueryService {
-    pub peer_srv: PeerService,
+    pub network: Network,
     pub cache: CacheService,
     pub state_srv: StateService,
-    pub filesys: FileSysService,
+    pub filesys: FileSystem,
     pub daemon_info: Arc<DaemonInfo>,
 }
 
 pub struct Retriever {
     workspace: Guard<Arc<Workspace>>,
     cache: CacheService,
-    filesys: FileSysService,
+    filesys: FileSystem,
     shelf_owner: ShelfOwner,
     shelf_data: ImmutRef<ShelfData>,
     subpath: Option<FileId>,
@@ -57,7 +54,7 @@ impl Retriever {
     pub fn new(
         workspace: Guard<Arc<Workspace>>,
         cache: CacheService,
-        filesys: FileSysService,
+        filesys: FileSystem,
         shelf_owner: ShelfOwner,
         shelf_data: ImmutRef<ShelfData>,
         subpath: Option<FileId>,
@@ -309,7 +306,7 @@ impl Service<ClientQuery> for QueryService {
 
     fn call(&mut self, req: ClientQuery) -> Self::Future {
         let mut state_srv = self.state_srv.clone();
-        let peer_srv = self.peer_srv.clone();
+        let network = self.network.clone();
         let node_id = self.daemon_info.id.clone();
         let cache = self.cache.clone();
         let mut filesys = self.filesys.clone();
@@ -428,10 +425,10 @@ impl Service<ClientQuery> for QueryService {
             let peer_query_task = |node_id: NodeId, peer_req: Request| {
                 let mut errors = Vec::<String>::new();
                 let mut files = Vec::<OrderedFileSummary>::new();
-                let mut peer_srv = peer_srv.clone();
+                let mut network = network.clone();
 
                 async move {
-                    let ret_code = match peer_srv.call((node_id, peer_req)).await {
+                    let ret_code = match network.send_request(node_id, peer_req).await {
                         Err(err) => {
                             errors.push(format!("[{:?}] Peer error: {:?}", node_id, err));
                             ReturnCode::PeerServiceError
@@ -573,7 +570,7 @@ impl Service<ClientQuery> for QueryService {
             node_tasks.insert(id, *node_id.clone());
 
             if req.atomic {
-                let mut peer_srv = peer_srv.clone();
+                let mut network = network.clone();
                 tokio::spawn(async move {
                     let mut files = Vec::<Vec<OrderedFileSummary>>::new();
                     let mut errors = Vec::<String>::new();
@@ -597,8 +594,8 @@ impl Service<ClientQuery> for QueryService {
 
                     files.par_sort(); // if files are already sorted, very cheap to resort
 
-                    peer_srv
-                        .call((
+                    network
+                        .send_data(
                             client_node,
                             Data::ClientQueryData(ClientQueryData {
                                 //[!] ClientQueryData is the only (used) Data-type RPC
@@ -616,17 +613,17 @@ impl Service<ClientQuery> for QueryService {
                                     error_data: Some(ErrorData { error_data: errors }),
                                 }),
                             }),
-                        ))
+                        )
                         .await
                 });
             } else {
-                let mut peer_srv = peer_srv.clone();
+                let mut network = network.clone();
                 tokio::spawn(async move {
                     while let Some(result) = futures.join_next().await {
                         match result {
                             Err(thread_err) => {
-                                let _ = peer_srv
-                                    .call((
+                                let _ = network
+                                    .send_data(
                                         client_node,
                                         Data::ClientQueryData(ClientQueryData {
                                             //[!] ClientQueryData is the only (used) Data-type RPC
@@ -644,12 +641,12 @@ impl Service<ClientQuery> for QueryService {
                                                 }),
                                             }),
                                         }),
-                                    ))
+                                    )
                                     .await;
                             }
                             Ok(t_res) => {
-                                let _ = peer_srv
-                                    .call((
+                                let _ = network
+                                    .send_data(
                                         client_node,
                                         Data::ClientQueryData(ClientQueryData {
                                             //[!] ClientQueryData is the only (used) Data-type RPC
@@ -676,7 +673,7 @@ impl Service<ClientQuery> for QueryService {
                                                 request_uuid: Uuid::now_v7().into(),
                                             }),
                                         }),
-                                    ))
+                                    )
                                     .await;
                             }
                         }

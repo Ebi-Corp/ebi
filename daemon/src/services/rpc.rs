@@ -49,9 +49,9 @@ pub fn parse_peer_id(bytes: &[u8]) -> Result<NodeId, ()> {
 #[derive(Clone)]
 pub struct RpcService {
     pub daemon_info: Arc<DaemonInfo>,
-    pub peer_srv: PeerService,
+    pub network: Network,
     pub state_srv: StateService,
-    pub fs_srv: FileSysService,
+    pub filesys: FileSystem,
     pub query_srv: QueryService,
     pub tasks: Arc<HashMap<TaskID, JoinHandle<()>>>,
 
@@ -328,9 +328,9 @@ impl Service<StripTag> for RpcService {
 
     fn call(&mut self, req: StripTag) -> Self::Future {
         let metadata = req.metadata.clone().unwrap();
-        let mut peer_srv = self.peer_srv.clone();
+        let mut network = self.network.clone();
         let mut state_srv = self.state_srv.clone();
-        let mut fs_srv = self.fs_srv.clone();
+        let mut filesys = self.filesys.clone();
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
@@ -376,7 +376,7 @@ impl Service<StripTag> for RpcService {
             let return_code = match &shelf.shelf_type {
                 ShelfType::Local(shelf_data) => {
                     let path = PathBuf::from(&req.path);
-                    let sdir_id = match fs_srv
+                    let sdir_id = match filesys
                         .get_or_init_dir(shelf_data.clone(), path.clone())
                         .await
                     {
@@ -401,7 +401,7 @@ impl Service<StripTag> for RpcService {
                     //[/] Request can be relayed, it is already atomic
                     match shelf.shelf_owner {
                         ShelfOwner::Node(peer_id) => {
-                            match peer_srv.call((peer_id, Request::from(req))).await {
+                             match network.send_request(peer_id, Request::from(req)).await {
                                 Ok(res) => parse_code(res.metadata().unwrap().return_code),
                                 Err(_) => ReturnCode::PeerServiceError, //[!] Generic error, expand with PeerService errors
                             }
@@ -437,8 +437,8 @@ impl Service<DetachTag> for RpcService {
     fn call(&mut self, req: DetachTag) -> Self::Future {
         let metadata = req.metadata.clone().unwrap();
         let mut state_srv = self.state_srv.clone();
-        let mut peer_srv = self.peer_srv.clone();
-        let mut fs_srv = self.fs_srv.clone();
+        let mut network = self.network.clone();
+        let mut filesys = self.filesys.clone();
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
@@ -486,7 +486,7 @@ impl Service<DetachTag> for RpcService {
                 match &shelf.shelf_type {
                     ShelfType::Local(shelf_data) => {
                         let path = PathBuf::from(&req.path);
-                        let sdir_id = match fs_srv
+                        let sdir_id = match filesys
                             .get_or_init_dir(shelf_data.clone(), path.clone())
                             .await
                         {
@@ -526,7 +526,7 @@ impl Service<DetachTag> for RpcService {
                     ShelfType::Remote => {
                         match shelf.shelf_owner {
                             ShelfOwner::Node(peer_id) => {
-                                match peer_srv.call((peer_id, Request::from(req))).await {
+                                match network.send_request(peer_id, Request::from(req)).await {
                                     Ok(res) => parse_code(res.metadata().unwrap().return_code), // [!] Cuckoo filter should be updated with a sync mechanism
                                     Err(_) => ReturnCode::PeerServiceError, //[!] Generic error, expand with PeerService errors
                                 }
@@ -562,9 +562,9 @@ impl Service<AttachTag> for RpcService {
 
     fn call(&mut self, req: AttachTag) -> Self::Future {
         let metadata = req.metadata.clone().unwrap();
-        let mut fs_srv = self.fs_srv.clone();
+        let mut filesys = self.filesys.clone();
         let mut state_srv = self.state_srv.clone();
-        let mut peer_srv = self.peer_srv.clone();
+        let mut network = self.network.clone();
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
@@ -611,7 +611,7 @@ impl Service<AttachTag> for RpcService {
                 match &shelf.shelf_type {
                     ShelfType::Local(shelf_data) => {
                         let path = PathBuf::from(&req.path);
-                        let sdir_id = match fs_srv
+                        let sdir_id = match filesys
                             .get_or_init_dir(shelf_data.clone(), path.clone())
                             .await
                         {
@@ -657,7 +657,7 @@ impl Service<AttachTag> for RpcService {
                     ShelfType::Remote => {
                         match shelf.shelf_owner {
                             ShelfOwner::Node(peer_id) => {
-                                match peer_srv.call((peer_id, Request::from(req))).await {
+                                match network.send_request(peer_id, Request::from(req)).await {
                                     Ok(res) => parse_code(res.metadata().unwrap().return_code), // [!] Cuckoo filter should be updated with a sync mechanism
                                     Err(_) => ReturnCode::PeerServiceError, //[!] Generic error, expand with PeerService errors
                                 }
@@ -693,7 +693,7 @@ impl Service<RemoveShelf> for RpcService {
 
     fn call(&mut self, req: RemoveShelf) -> Self::Future {
         let metadata = req.metadata.clone().unwrap();
-        let mut peer_srv = self.peer_srv.clone();
+        let mut network = self.network.clone();
         let mut state_srv = self.state_srv.clone();
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
@@ -745,7 +745,7 @@ impl Service<RemoveShelf> for RpcService {
                     ShelfType::Remote => {
                         match shelf.shelf_owner {
                             ShelfOwner::Node(peer_id) => {
-                                match peer_srv.call((peer_id, Request::from(req))).await {
+                                match network.send_request(peer_id, Request::from(req)).await {
                                     Ok(res) => parse_code(res.metadata().unwrap().return_code),
                                     Err(_) => ReturnCode::PeerServiceError, //[!] Generic error, expand with PeerService errors
                                 }
@@ -782,7 +782,7 @@ impl Service<EditShelf> for RpcService {
     fn call(&mut self, req: EditShelf) -> Self::Future {
         let metadata = req.metadata.clone();
         let metadata = metadata.unwrap();
-        let mut peer_srv = self.peer_srv.clone();
+        let mut network = self.network.clone();
         let mut state_srv = self.state_srv.clone();
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
@@ -864,7 +864,7 @@ impl Service<EditShelf> for RpcService {
                     ShelfType::Remote => {
                         match shelf.shelf_owner {
                             ShelfOwner::Node(peer_id) => {
-                                match peer_srv.call((peer_id, Request::from(req))).await {
+                                match network.send_request(peer_id, Request::from(req)).await {
                                     Ok(res) => parse_code(res.metadata().unwrap().return_code),
                                     Err(_) => ReturnCode::PeerServiceError, //[!] Generic error, expand with PeerService errors
                                 }
@@ -903,7 +903,7 @@ impl Service<AddShelf> for RpcService {
         let metadata = req.metadata.clone();
         let metadata = metadata.unwrap();
         let daemon_info = self.daemon_info.clone();
-        let mut peer_srv = self.peer_srv.clone();
+        let mut network = self.network.clone();
 
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
@@ -931,7 +931,7 @@ impl Service<AddShelf> for RpcService {
             //[/] Business Logic
             let return_code = {
                 if peer_id != *daemon_info.id {
-                    match peer_srv.call((peer_id, Request::from(req))).await {
+                    match network.send_request(peer_id, Request::from(req)).await {
                         Ok(res) => parse_code(res.metadata().unwrap().return_code),
                         Err(_) => ReturnCode::PeerServiceError, //[!] Generic error, expand with PeerService errors
                     }

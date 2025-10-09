@@ -14,7 +14,7 @@ pub mod prelude {
 }
 
 use crate::prelude::*;
-use crate::services::peer::{Client, Peer};
+use crate::services::network::{Client, Peer};
 use crate::services::prelude::*;
 use crate::services::rpc::{DaemonInfo, RequestId, TaskID};
 use anyhow::Result;
@@ -130,30 +130,30 @@ async fn main() -> Result<()> {
     //[/] It is then notified when a response is received so it can acquire the read lock on the Response map.
     let daemon_info = Arc::new(DaemonInfo::new(id, "".to_string()));
 
-    let fs_srv = FileSysService {
+    let filesys = FileSystem {
         shelf_dirs: Arc::new(papaya::HashSet::new()),
     };
 
-    let state_srv = StateService::new(fs_srv.clone());
+    let state_srv = StateService::new(filesys.clone());
 
-    let peer_srv = PeerService {
+    let network = Network {
         peers: peers.clone(),
         clients: clients.clone(),
         responses: responses.clone(),
     };
 
     let query_srv = QueryService {
-        peer_srv: peer_srv.clone(),
+        network: network.clone(),
         cache: CacheService {},
-        filesys: fs_srv.clone(),
+        filesys: filesys.clone(),
         state_srv: state_srv.clone(),
         daemon_info: daemon_info.clone(),
     };
     let service = ServiceBuilder::new().service(RpcService {
         daemon_info: daemon_info.clone(),
-        peer_srv: peer_srv.clone(),
+        network: network.clone(),
         state_srv: state_srv.clone(),
-        fs_srv,
+        filesys,
         query_srv,
         responses: responses.clone(),
         tasks: tasks.clone(),

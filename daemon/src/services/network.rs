@@ -28,7 +28,7 @@ pub enum PeerError {
 }
 
 #[derive(Clone, Debug)]
-pub struct PeerService {
+pub struct Network {
     pub peers: Arc<HashMap<NodeId, Peer>>,
     pub clients: Arc<HashSet<Client>>,
     pub responses: Arc<HashMap<RequestId, Response>>,
@@ -69,7 +69,18 @@ async fn wait_call(mut watcher: Receiver<Uuid>, request_uuid: Uuid) {
     }
 }
 
-impl Service<(NodeId, Data)> for PeerService {
+impl Network {
+    pub async fn send_data(&mut self, node_id: NodeId, data: Data) -> Result<Uuid, PeerError> {
+        self.call((node_id, data)).await
+    }
+
+    pub async fn send_request(&mut self, node_id: NodeId, req: Request) -> Result<Response, PeerError> {
+        self.call((node_id, req)).await
+    }
+}
+
+
+impl Service<(NodeId, Data)> for Network {
     type Response = Uuid;
     type Error = PeerError;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
@@ -121,7 +132,7 @@ impl Service<(NodeId, Data)> for PeerService {
     }
 }
 
-impl Service<(NodeId, Request)> for PeerService {
+impl Service<(NodeId, Request)> for Network {
     type Response = Response;
     type Error = PeerError;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
