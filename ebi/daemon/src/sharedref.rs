@@ -164,10 +164,7 @@ pub struct History<T, I = Uuid> {
 
 const HIST_L: usize = 3;
 
-impl<T, I> History<T, I>
-where
-    I: Copy + Default,
-{
+impl<T> History<T> {
     pub fn new(val: T, lock: Arc<RwLock<()>>) -> Self {
         let first = StatefulRef::new_ref(val, lock);
         History {
@@ -187,7 +184,7 @@ where
         }
         History {
             staged: StatefulRef {
-                id: I::default(),
+                id: Uuid::new_v4(),
                 data: ArcSwap::new(self.staged.load_full()),
                 s_lock: self.staged.s_lock.clone(),
             },
@@ -216,19 +213,16 @@ where
     }
 }
 
-impl<T, I> StatefulRef<T, I>
-where
-    I: Copy + Default,
-{
+impl<T> StatefulRef<T, Uuid> {
     pub fn new_ref(val: T, s_lock: Arc<RwLock<()>>) -> Self {
         StatefulRef {
-            id: I::default(),
+            id: Uuid::new_v4(),
             data: ArcSwap::new(Arc::new(val)),
             s_lock,
         }
     }
 
-    pub fn new_ref_id(id: I, val: T, s_lock: Arc<RwLock<()>>) -> Self {
+    pub fn new_ref_id(id: Uuid, val: T, s_lock: Arc<RwLock<()>>) -> Self {
         StatefulRef {
             id,
             data: ArcSwap::new(Arc::new(val)),
@@ -236,13 +230,10 @@ where
         }
     }
 
-    pub fn id(&self) -> I
-    where
-        I: Copy,
-    {
+    pub fn id(&self) -> Uuid {
         self.id
     }
-    pub fn id_ref(&self) -> &I {
+    pub fn id_ref(&self) -> &Uuid {
         &self.id
     }
 

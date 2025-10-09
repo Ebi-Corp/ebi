@@ -60,7 +60,6 @@ impl PartialEq for Client {
 }
 impl Eq for Client {}
 
-
 async fn wait_call(mut watcher: Receiver<Uuid>, request_uuid: Uuid) {
     let mut id = Uuid::new_v4();
     while id != request_uuid {
@@ -116,6 +115,7 @@ impl Service<(NodeId, Data)> for PeerService {
                 .send((request_uuid, buffer))
                 .await
                 .map_err(|_| PeerError::ConnectionClosed)?;
+
             Ok(request_uuid)
         })
     }

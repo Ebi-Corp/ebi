@@ -187,22 +187,13 @@ impl Query {
                 Ok(a.symmetric_difference(b))
             }
             Formula::UnaryExpression(UnaryOp::NOT, x) => {
-                let all = ret_srv
-                    .get_all()
-                    .await
-                    .map_err(QueryErr::RuntimeError)?;
+                let all = ret_srv.get_all().await.map_err(QueryErr::RuntimeError)?;
                 let subset = Box::pin(self.recursive_evaluate(x, ret_srv)).await?;
                 Ok(all.difference(subset))
             }
             Formula::Constant(false) => Ok(HashSet::new()),
-            Formula::Constant(true) => ret_srv
-                .get_all()
-                .await
-                .map_err(QueryErr::RuntimeError),
-            Formula::Proposition(p) => ret_srv
-                .get(p.tag_id)
-                .await
-                .map_err(QueryErr::RuntimeError),
+            Formula::Constant(true) => ret_srv.get_all().await.map_err(QueryErr::RuntimeError),
+            Formula::Proposition(p) => ret_srv.get(p.tag_id).await.map_err(QueryErr::RuntimeError),
         }
     }
 

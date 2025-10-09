@@ -84,18 +84,18 @@ impl Clone for Shelf {
 impl Shelf {
     pub fn new(
         lock: Arc<RwLock<()>>,
-        remote: bool,
         path: PathBuf,
+        root_ref: Option<ImmutRef<ShelfDir, FileId>>,
         name: String,
         shelf_owner: ShelfOwner,
         config: Option<ShelfConfig>,
         description: String,
     ) -> Result<Shelf, io::Error> {
-        let shelf_type = if remote {
-            ShelfType::Remote
-        } else {
-            let shelf_data = ShelfData::new(&path)?;
+        let shelf_type = if let Some(root_ref) = root_ref {
+            let shelf_data = ShelfData::new(root_ref)?;
             ShelfType::Local(ImmutRef::new_ref(shelf_data))
+        } else {
+            ShelfType::Remote
         };
         let shelf = Shelf {
             shelf_type,
@@ -185,15 +185,18 @@ impl ShelfInfo {
 }
 
 impl ShelfData {
-    pub fn new(path: &PathBuf) -> Result<Self, io::Error> {
-        let file_id = get_file_id(&path)?;
+    pub fn new(root_ref: ImmutRef<ShelfDir, FileId>) -> Result<Self, io::Error> {
+        let path = root_ref.path.clone();
         let collector = Arc::new(Collector::new());
+        let dirs = papaya::HashSet::<ShelfDirRef>::builder()
+            .shared_collector(collector)
+            .build();
+        let downgraded_root = root_ref.downgrade();
+        dirs.pin().insert(downgraded_root);
         Ok(ShelfData {
-            root: ImmutRef::<ShelfDir, FileId>::new_ref_id(file_id, ShelfDir::new(path.clone())?),
-            dirs: papaya::HashSet::builder()
-                .shared_collector(collector)
-                .build(),
-            root_path: path.clone(),
+            root: root_ref,
+            dirs,
+            root_path: path,
         })
     }
 
@@ -236,10 +239,12 @@ impl ShelfData {
 
         if file_attached {
             // traverse up to root
-            while !ptr_eq(&dir_ref, self.root.inner_ptr()) {
+            while dir_ref.path != self.root.path {
                 dir_ref.attach(tag, &file.clone());
                 dir_ref = dir_ref
                     .parent
+                    .load()
+                    .as_ref()
                     .as_ref()
                     .and_then(|p| p.upgrade())
                     .ok_or(UpdateErr::PathNotFound)?; // this means that the dir has been moved
@@ -289,6 +294,8 @@ impl ShelfData {
                 dir_ref.detach(tag, Some(&file.clone()));
                 dir_ref = dir_ref
                     .parent
+                    .load()
+                    .as_ref()
                     .as_ref()
                     .and_then(|p| p.upgrade())
                     .ok_or(UpdateErr::PathNotFound)?; // this means that the dir has been moved
@@ -339,8 +346,8 @@ impl ShelfData {
 
         let attach_dir = bind.get(&sdir_id).unwrap();
         let mut shelf_attached = true;
-        while dir_ref.parent.is_some() {
-            let Some(parent) = dir_ref.parent.as_ref().unwrap().upgrade() else {
+        while dir_ref.parent.load().is_some() {
+            let Some(parent) = dir_ref.parent.load().as_ref().as_ref().unwrap().upgrade() else {
                 return Err(UpdateErr::PathNotFound);
             };
             if let Some(_) = parent.dtag_dirs.pin().get(dtag) {
@@ -381,8 +388,8 @@ impl ShelfData {
 
         let detach_dir = bind.get(&sdir_id).unwrap();
         let mut shelf_detached = true;
-        while dir_ref.parent.is_some() {
-            let Some(parent) = dir_ref.parent.as_ref().unwrap().upgrade() else {
+        while dir_ref.parent.load().is_some() {
+            let Some(parent) = dir_ref.parent.load().as_ref().as_ref().unwrap().upgrade() else {
                 return Err(UpdateErr::PathNotFound);
             };
             parent.dtag_dirs.pin().update(dtag.clone(), |v| {

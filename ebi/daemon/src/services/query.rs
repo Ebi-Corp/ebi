@@ -74,10 +74,7 @@ impl Retriever {
         }
     }
 
-    pub async fn get(
-        &mut self,
-        tag_id: TagId,
-    ) -> Result<HashSet<OrderedFileSummary>, ReturnCode> {
+    pub async fn get(&mut self, tag_id: TagId) -> Result<HashSet<OrderedFileSummary>, ReturnCode> {
         if let Some(tag_ref) = self.workspace.tags.get(&tag_id) {
             if let Some(set) = self.cache.retrieve(tag_ref) {
                 Ok(set)
@@ -140,9 +137,7 @@ impl Retriever {
         }
     }
 
-    pub async fn get_all(
-        &mut self,
-    ) -> Result<HashSet<OrderedFileSummary>, ReturnCode> {
+    pub async fn get_all(&mut self) -> Result<HashSet<OrderedFileSummary>, ReturnCode> {
         let dir_id = if self.subpath.is_some() {
             self.subpath.unwrap()
         } else {
@@ -215,9 +210,7 @@ impl Service<PeerQuery> for QueryService {
                                         );
                                         local_shelves.insert(*s_id);
                                     }
-                                    ShelfType::Remote => {
-                                        return Err(ReturnCode::PathNotFound)
-                                    },
+                                    ShelfType::Remote => return Err(ReturnCode::PathNotFound),
                                 }
                                 break;
                             }
@@ -232,7 +225,7 @@ impl Service<PeerQuery> for QueryService {
                 }
             }
             if local_shelves.is_empty() {
-                return Err(ReturnCode::PathNotFound)
+                return Err(ReturnCode::PathNotFound);
             }
 
             let mut local_futures = JoinSet::new();

@@ -2,6 +2,7 @@ use crate::prelude::*;
 use crate::sharedref::WeakRef;
 use crate::shelf::file::FileRef;
 use crate::tag::TagRef;
+use arc_swap::ArcSwap;
 use file_id::FileId;
 use seize::Collector;
 use std::hash::RandomState;
@@ -9,6 +10,7 @@ use std::io;
 use std::path::PathBuf;
 
 pub type ShelfDirRef = WeakRef<ShelfDir, FileId>;
+pub type ParentRef = ArcSwap<Option<ShelfDirRef>>;
 pub type HashSet<T> = papaya::HashSet<T, RandomState, Arc<Collector>>;
 pub type HashMap<K, V> = papaya::HashMap<K, V, RandomState, Arc<Collector>>;
 
@@ -34,7 +36,7 @@ pub struct ShelfDir {
     pub tags: HashMap<TagRef, HashSet<FileRef>>,
     pub dtags: HashSet<TagRef>, // dtags applied from above, to be applied down
     pub dtag_dirs: HashMap<TagRef, Vec<ShelfDirRef>>, // list of dtagged directories starting at any point below
-    pub parent: Option<ShelfDirRef>,
+    pub parent: ParentRef,
     pub subdirs: HashSet<ShelfDirRef>,
 }
 
@@ -48,7 +50,7 @@ impl ShelfDir {
             tags: hash_map!(collector),
             dtags: hash_set!(collector),
             dtag_dirs: hash_map!(collector),
-            parent: None,
+            parent: ArcSwap::new(Arc::new(None)),
             subdirs: hash_set!(collector),
         })
     }
