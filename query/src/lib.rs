@@ -1,11 +1,10 @@
-pub mod file_order;
-use crate::query::file_order::{FileOrder, OrderedFileSummary};
-use crate::services::query::Retriever;
-use crate::tag::TagId;
+pub mod service;
+use ebi_types::file::{FileOrder, OrderedFileSummary};
+use crate::service::Retriever;
+use ebi_types::tag::TagId;
 use ebi_proto::rpc::ReturnCode;
+use ebi_filesystem::shelf::TagFilter;
 use im::HashSet;
-use rand_chacha::ChaCha12Rng;
-use scalable_cuckoo_filter::{DefaultHasher, ScalableCuckooFilter};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::PathBuf;
@@ -136,7 +135,7 @@ impl Query {
     }
     pub fn may_hold(
         &mut self,
-        tags: &ScalableCuckooFilter<TagId, DefaultHasher, ChaCha12Rng>, // Tags that may be present in a shelf (can contain false positives)
+        tags: &TagFilter,
     ) -> bool {
         self.formula.may_hold(tags)
     }
@@ -423,7 +422,7 @@ impl Formula {
         }
     }
 
-    fn may_hold(&self, tags: &ScalableCuckooFilter<TagId, DefaultHasher, ChaCha12Rng>) -> bool {
+    fn may_hold(&self, tags: &TagFilter) -> bool {
         match self {
             Formula::BinaryExpression(BinaryOp::AND, x, y) => {
                 // Both tags must be present
@@ -442,7 +441,7 @@ impl Formula {
                 !matches!(**x, Formula::Constant(true))
             }
             Formula::Constant(c) => *c, // Tautologies will always hold, Contradictions never will
-            Formula::Proposition(p) => tags.contains(&p.tag_id), // The tag must be present
+            Formula::Proposition(p) => tags.0.contains(&p.tag_id), // The tag must be present
         }
     }
 }

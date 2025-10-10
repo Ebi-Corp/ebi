@@ -1,7 +1,7 @@
-use crate::query::file_order::{FileOrder, OrderedFileSummary};
-use crate::shelf::ShelfId;
-use crate::tag::{TagId, TagRef};
-use crate::workspace::WorkspaceId;
+use ebi_types::file::{FileOrder, OrderedFileSummary};
+use ebi_types::shelf::ShelfId;
+use ebi_types::tag::{TagId, TagRef};
+use ebi_types::workspace::WorkspaceId;
 use im::HashSet;
 
 #[derive(Clone, Debug)]

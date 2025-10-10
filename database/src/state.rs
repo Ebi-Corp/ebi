@@ -1,20 +1,9 @@
-pub mod prelude {
-    pub use super::AssignShelf;
-    pub use super::GetWorkspace;
-    pub use super::RemoveWorkspace;
-    pub use super::StateService;
-    pub use super::UnassignShelf;
-}
-
-use crate::prelude::*;
-use crate::services::fs::FileSystem;
-use crate::sharedref::History;
-use crate::shelf::{Shelf, ShelfId, ShelfOwner};
-use crate::stateful::{StatefulMap, SwapRef};
-use crate::tag::Tag;
-use crate::workspace::{Workspace, WorkspaceId, WorkspaceInfo};
+use ebi_filesystem::{service::FileSystem, shelf::{ShelfData, ShelfDataRef, TagFilter}};
+use ebi_types::{shelf::ShelfType, *};
+use ebi_types::shelf::{ShelfId, ShelfOwner};
+use ebi_types::{tag::Tag, NodeId};
+use ebi_types::workspace::{WorkspaceId, WorkspaceInfo};
 use ebi_proto::rpc::*;
-use iroh::NodeId;
 use std::path::PathBuf;
 use std::sync::Weak;
 use std::{
@@ -43,7 +32,18 @@ impl StateService {
             filesys: filesys.clone(),
         }
     }
+    pub async fn try_get_workspace(&mut self,
+        rawid: &[u8],
+    ) -> Result<Arc<StatefulRef<Workspace>>, ReturnCode> {
+        let id = uuid(rawid).map_err(|_| ReturnCode::ParseError)?;
+        self.call(GetWorkspace { id }).await
+    }
 }
+
+
+
+type Workspace = ebi_types::workspace::Workspace<ShelfDataRef, TagFilter>;
+type Shelf = ebi_types::shelf::Shelf<ShelfDataRef, TagFilter>;
 
 pub struct GroupState {
     pub workspaces: StatefulMap<WorkspaceId, Arc<StatefulRef<Workspace>>>,
@@ -327,15 +327,17 @@ impl Service<AssignShelf> for StateService {
 
             if new_shelf {
                 let path = req.path.clone();
-                let root_shelf_ref = if !req.remote {
-                    Some(fs.get_or_init_shelf(path.clone()).await?)
+                let shelf_type = if !req.remote {
+                    let Ok(s_data) = ShelfData::new(fs.get_or_init_shelf(path.clone()).await?) else {
+                        return Err(ReturnCode::ShelfCreationIOError);
+                    };
+                    ShelfType::Local(ImmutRef::new_ref(s_data))
                 } else {
-                    None
+                    ShelfType::Remote
                 };
                 let Ok(shelf) = Shelf::new(
                     lock,
                     path,
-                    root_shelf_ref,
                     req.name.unwrap_or_else(|| {
                         req.path
                             .clone()
@@ -345,6 +347,7 @@ impl Service<AssignShelf> for StateService {
                             .unwrap_or_default()
                             .to_string()
                     }),
+                    shelf_type,
                     ShelfOwner::Node(req.node_id),
                     None,
                     req.description.unwrap_or_default(),

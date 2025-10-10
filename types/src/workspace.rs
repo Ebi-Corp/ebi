@@ -1,16 +1,15 @@
-use crate::prelude::*;
-use crate::shelf::file::FileRef;
 use crate::shelf::{Shelf, ShelfId};
-use crate::stateful::{InfoState, StatefulField, StatefulMap};
+use crate::{InfoState, StatefulField, StatefulMap, StatefulRef, ImmutRef, SharedRef};
 use crate::tag::{Tag, TagId};
+use crate::Uuid;
 
 pub type WorkspaceId = Uuid;
 
-pub struct Workspace {
+pub struct Workspace<ShelfData: Clone, TagFilter> {
     // Workspace Info
     pub info: StatefulRef<WorkspaceInfo>,
     // Shelf Management
-    pub shelves: StatefulMap<ShelfId, ImmutRef<Shelf>>,
+    pub shelves: StatefulMap<ShelfId, ImmutRef<Shelf<ShelfData, TagFilter>>>,
     // Tag Management
     pub tags: StatefulMap<TagId, SharedRef<Tag>>,
     pub lookup: StatefulMap<String, TagId>,
@@ -58,7 +57,7 @@ pub enum WorkspaceInfoField {
     Description,
 }
 
-impl Clone for Workspace {
+impl<ShelfData: Clone, TagFilter> Clone for Workspace<ShelfData, TagFilter> {
     fn clone(&self) -> Self {
         Workspace {
             info: self.info.clone(),
@@ -67,18 +66,6 @@ impl Clone for Workspace {
             lookup: self.lookup.clone(),
         }
     }
-}
-
-impl Workspace {
-    pub async fn refresh(&mut self, _shelf: ShelfId, _change: ChangeSummary) {
-        todo!();
-    }
-}
-
-pub struct ChangeSummary {
-    pub added_files: Vec<FileRef>,
-    pub removed_files: Vec<FileRef>,
-    pub modified_files: Vec<FileRef>,
 }
 
 #[derive(Debug)]

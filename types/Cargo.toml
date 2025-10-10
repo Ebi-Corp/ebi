@@ -1,0 +1,18 @@
+[package]
+name = "ebi-types"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ebi-proto = { workspace = true }
+
+arc-swap = { workspace = true }
+chrono = { workspace = true }
+im = { workspace = true }
+uuid = { workspace = true }
+tokio = { workspace = true }
+file-id = { workspace = true }
+serde = { workspace = true }
+iroh-base = { workspace = true }
+
+papaya = { workspace = true }

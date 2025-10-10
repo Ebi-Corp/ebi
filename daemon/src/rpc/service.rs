@@ -1,22 +1,22 @@
-use crate::prelude::*;
-use crate::services::prelude::*;
-use crate::services::state::prelude::*;
-use crate::shelf::{ShelfId, ShelfInfo, ShelfOwner, ShelfType, UpdateErr};
-use crate::stateful::{InfoState, StatefulField};
-use crate::workspace::{Workspace, WorkspaceInfo};
+use ebi_types::shelf::{ShelfId, ShelfInfo, ShelfOwner, ShelfType};
+use ebi_filesystem::{service::FileSystem, shelf::UpdateErr};
+use ebi_network::service::Network;
+use ebi_query::service::QueryService;
+use ebi_types::*;
+use ebi_types::workspace::{Workspace, WorkspaceInfo};
+use ebi_database::state::StateService;
 use bincode::serde::encode_to_vec;
 use ebi_proto::rpc::*;
 use iroh::NodeId;
 use papaya::HashMap;
 use std::future::Future;
+use std::sync::Arc;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::sync::watch::{Receiver, Sender};
 use tokio::task::JoinHandle;
 use tower::Service;
-
-pub type RequestId = Uuid;
 
 //[!] Potentially, we could have a validation
 macro_rules! return_error {
@@ -33,18 +33,6 @@ macro_rules! return_error {
     };
 }
 
-pub async fn try_get_workspace(
-    rawid: &[u8],
-    srv: &mut StateService,
-) -> Result<Arc<StatefulRef<Workspace>>, ReturnCode> {
-    let id = uuid(rawid).map_err(|_| ReturnCode::ParseError)?;
-    srv.call(GetWorkspace { id }).await
-}
-
-pub fn parse_peer_id(bytes: &[u8]) -> Result<NodeId, ()> {
-    let bytes: &[u8; 32] = bytes.try_into().map_err(|_| ())?;
-    NodeId::from_bytes(bytes).map_err(|_| ())
-}
 
 #[derive(Clone)]
 pub struct RpcService {
@@ -94,20 +82,6 @@ impl DaemonInfo {
                 field
             },
         }
-    }
-}
-
-#[derive(Debug)]
-pub enum UuidErr {
-    SizeMismatch,
-}
-
-pub fn uuid(bytes: &[u8]) -> Result<Uuid, UuidErr> {
-    let bytes: Result<[u8; 16], _> = bytes.to_owned().try_into();
-    if let Ok(bytes) = bytes {
-        Ok(Uuid::from_bytes(bytes))
-    } else {
-        Err(UuidErr::SizeMismatch)
     }
 }
 
@@ -239,7 +213,7 @@ impl Service<DeleteTag> for RpcService {
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
-            let Ok(workspace_ref) = try_get_workspace(&req.workspace_id, &mut state_srv).await
+            let Ok(workspace_ref) = state_srv.try_get_workspace(&req.workspace_id).await
             else {
                 return_error!(
                     ReturnCode::WorkspaceNotFound,
@@ -334,7 +308,7 @@ impl Service<StripTag> for RpcService {
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
-            let Ok(workspace_ref) = try_get_workspace(&req.workspace_id, &mut state_srv).await
+            let Ok(workspace_ref) = state_srv.try_get_workspace(&req.workspace_id).await
             else {
                 return_error!(
                     ReturnCode::WorkspaceNotFound,
@@ -442,7 +416,7 @@ impl Service<DetachTag> for RpcService {
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
-            let Ok(workspace_ref) = try_get_workspace(&req.workspace_id, &mut state_srv).await
+            let Ok(workspace_ref) = state_srv.try_get_workspace(&req.workspace_id).await
             else {
                 return_error!(
                     ReturnCode::WorkspaceNotFound,
@@ -512,7 +486,7 @@ impl Service<DetachTag> for RpcService {
                         match result {
                             Ok((true, true)) => {
                                 let mut up_filter = (**shelf.filter_tags.load()).clone();
-                                up_filter.remove(&tag_id);
+                                up_filter.0.remove(&tag_id);
                                 shelf.filter_tags.store(Arc::new(up_filter));
                                 ReturnCode::Success
                             }
@@ -568,7 +542,7 @@ impl Service<AttachTag> for RpcService {
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
-            let Ok(workspace_ref) = try_get_workspace(&req.workspace_id, &mut state_srv).await
+            let Ok(workspace_ref) = state_srv.try_get_workspace(&req.workspace_id).await
             else {
                 return_error!(
                     ReturnCode::WorkspaceNotFound,
@@ -643,7 +617,7 @@ impl Service<AttachTag> for RpcService {
                         match result {
                             Ok((true, true)) => {
                                 let mut up_filter = (**shelf.filter_tags.load()).clone();
-                                up_filter.insert(&tag_id);
+                                up_filter.0.insert(&tag_id);
                                 shelf.filter_tags.store(Arc::new(up_filter));
                                 ReturnCode::Success
                             } // Success
@@ -698,7 +672,7 @@ impl Service<RemoveShelf> for RpcService {
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
-            let Ok(workspace_ref) = try_get_workspace(&req.workspace_id, &mut state_srv).await
+            let Ok(workspace_ref) = state_srv.try_get_workspace(&req.workspace_id).await
             else {
                 return_error!(
                     ReturnCode::WorkspaceNotFound,
@@ -732,7 +706,7 @@ impl Service<RemoveShelf> for RpcService {
                 match &shelf.shelf_type {
                     ShelfType::Local(_) => {
                         let _result = state_srv
-                            .call(UnassignShelf {
+                            .call(ebi_database::state::UnassignShelf {
                                 shelf_id,
                                 workspace_id: workspace_ref.id,
                             })
@@ -787,7 +761,7 @@ impl Service<EditShelf> for RpcService {
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
-            let Ok(workspace_ref) = try_get_workspace(&req.workspace_id, &mut state_srv).await
+            let Ok(workspace_ref) = state_srv.try_get_workspace(&req.workspace_id).await
             else {
                 return_error!(
                     ReturnCode::WorkspaceNotFound,
@@ -937,7 +911,7 @@ impl Service<AddShelf> for RpcService {
                     }
                 } else {
                     match state_srv
-                        .call(AssignShelf {
+                        .call(ebi_database::state::AssignShelf {
                             path: req.path.into(),
                             node_id: peer_id,
                             remote: false,
@@ -995,7 +969,7 @@ impl Service<DeleteWorkspace> for RpcService {
                 );
             };
 
-            let Ok(()) = state_srv.call(RemoveWorkspace { workspace_id }).await else {
+            let Ok(()) = state_srv.call(ebi_database::state::RemoveWorkspace { workspace_id }).await else {
                 return_error!(
                     ReturnCode::WorkspaceNotFound,
                     DeleteWorkspaceResponse,
@@ -1031,7 +1005,7 @@ impl Service<EditTag> for RpcService {
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
-            let Ok(workspace_ref) = try_get_workspace(&req.workspace_id, &mut state_srv).await
+            let Ok(workspace_ref) = state_srv.try_get_workspace(&req.workspace_id).await
             else {
                 return_error!(
                     ReturnCode::WorkspaceNotFound,
@@ -1133,7 +1107,7 @@ impl Service<EditWorkspace> for RpcService {
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
-            let Ok(workspace) = try_get_workspace(&req.workspace_id, &mut state_srv).await else {
+            let Ok(workspace) = state_srv.try_get_workspace(&req.workspace_id).await else {
                 return_error!(
                     ReturnCode::WorkspaceNotFound,
                     EditWorkspaceResponse,
@@ -1207,7 +1181,7 @@ impl Service<GetShelves> for RpcService {
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
-            let Ok(workspace) = try_get_workspace(&req.workspace_id, &mut state_srv).await else {
+            let Ok(workspace) = state_srv.try_get_workspace(&req.workspace_id).await else {
                 return_error!(
                     ReturnCode::WorkspaceNotFound,
                     GetShelvesResponse,
@@ -1264,7 +1238,7 @@ impl Service<GetWorkspaces> for RpcService {
         let metadata = req.metadata.unwrap();
         Box::pin(async move {
             let workspace_ls = state_srv
-                .call(crate::services::state::GetWorkspaces {})
+                .call(ebi_database::state::GetWorkspaces {})
                 .await
                 .unwrap();
 
@@ -1295,7 +1269,7 @@ impl Service<CreateWorkspace> for RpcService {
         let metadata = req.metadata.clone().unwrap();
         Box::pin(async move {
             let id = state_srv
-                .call(crate::services::state::CreateWorkspace {
+                .call(ebi_database::state::CreateWorkspace {
                     name: req.name,
                     description: req.description,
                 })
@@ -1330,7 +1304,7 @@ impl Service<CreateTag> for RpcService {
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
-            let Ok(workspace_ref) = try_get_workspace(&req.workspace_id, &mut state_srv).await
+            let Ok(workspace_ref) = state_srv.try_get_workspace(&req.workspace_id).await
             else {
                 return_error!(
                     ReturnCode::WorkspaceNotFound,
@@ -1378,7 +1352,7 @@ impl Service<CreateTag> for RpcService {
             };
 
             let c_tag = state_srv
-                .call(crate::services::state::CreateTag {
+                .call(ebi_database::state::CreateTag {
                     priority: req.priority,
                     parent,
                     name: req.name.clone(),

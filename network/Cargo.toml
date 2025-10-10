@@ -1,0 +1,13 @@
+[package]
+name = "ebi-network"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ebi-proto = { workspace = true }
+iroh-base = { workspace = true }
+ebi-types = { workspace = true }
+
+tokio = { workspace = true }
+papaya = { workspace = true }
+tower = { workspace = true }

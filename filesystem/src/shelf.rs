@@ -1,25 +1,17 @@
-pub mod dir;
-pub mod file;
-use crate::prelude::*;
-use crate::sharedref::ptr_eq;
-use crate::shelf::dir::{HashSet, ShelfDir, ShelfDirRef};
-use crate::shelf::file::File;
-use crate::stateful::{InfoState, StatefulField};
-use crate::tag::{Tag, TagId};
-use arc_swap::ArcSwap;
-use chrono::Duration;
-use file::FileRef;
+use ebi_types::sharedref::ptr_eq;
+use crate::dir::{HashSet, ShelfDir, ShelfDirRef};
+use crate::file::{File, FileRef};
+use ebi_types::{SharedRef, ImmutRef, Ref};
+use uuid::Uuid;
+use ebi_types::tag::{Tag, TagId};
 use file_id::{FileId, get_file_id};
-use iroh::NodeId;
 use rand_chacha::{ChaCha12Rng, rand_core::SeedableRng};
 use scalable_cuckoo_filter::{ScalableCuckooFilter, ScalableCuckooFilterBuilder};
 use seize::Collector;
-use serde::{Deserialize, Serialize};
-use std::ffi::OsStr;
 use std::io;
 use std::path::PathBuf;
 use std::result::Result;
-use tokio::sync::RwLock;
+use std::sync::Arc;
 
 pub type ShelfId = Uuid;
 pub type TagRef = SharedRef<Tag>;
@@ -27,92 +19,16 @@ pub type TagRef = SharedRef<Tag>;
 const SEED: u64 = 0; // [TODO] Move seed to proper initialization
 
 pub type ShelfDataRef = ImmutRef<ShelfData>;
-pub type TagFilter =
-    ScalableCuckooFilter<TagId, scalable_cuckoo_filter::DefaultHasher, ChaCha12Rng>;
+#[derive(Debug, Clone)]
+pub struct TagFilter(pub ScalableCuckooFilter<TagId, scalable_cuckoo_filter::DefaultHasher, ChaCha12Rng>);
 
-#[derive(Clone)]
-pub enum ShelfType {
-    Local(ShelfDataRef),
-    Remote,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Ord, PartialOrd, Serialize, Deserialize, Hash)]
-pub enum ShelfOwner {
-    Node(NodeId),
-    Sync(SyncId),
-}
-
-//[#] Sync
-
-pub type SyncId = Uuid;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SyncConfig {
-    //[!] Placeholder for sync configuration
-    pub interval: Option<Duration>, // Auto-Sync Interval
-    pub auto_sync: bool,            // Auto-Sync on changes
-}
-
-//[#] Sync
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ShelfConfig {
-    //[TODO] Define a configuration for the shelf
-    pub sync_config: Option<SyncConfig>,
-}
-
-pub struct Shelf {
-    pub shelf_type: ShelfType,
-    pub shelf_owner: ShelfOwner,
-    pub config: ShelfConfig,
-    pub filter_tags: ArcSwap<TagFilter>,
-    pub info: StatefulRef<ShelfInfo>,
-}
-
-impl Clone for Shelf {
-    fn clone(&self) -> Self {
-        Shelf {
-            shelf_type: self.shelf_type.clone(),
-            shelf_owner: self.shelf_owner.clone(),
-            config: self.config.clone(),
-            filter_tags: ArcSwap::new(self.filter_tags.load_full()),
-            info: self.info.clone(),
-        }
+impl Default for TagFilter {
+    fn default() -> Self {
+        let builder = ScalableCuckooFilterBuilder::new();
+        let rng = ChaCha12Rng::seed_from_u64(SEED);
+        let builder = builder.rng(rng);
+        TagFilter(builder.finish::<TagId>())
     }
-}
-
-impl Shelf {
-    pub fn new(
-        lock: Arc<RwLock<()>>,
-        path: PathBuf,
-        root_ref: Option<ImmutRef<ShelfDir, FileId>>,
-        name: String,
-        shelf_owner: ShelfOwner,
-        config: Option<ShelfConfig>,
-        description: String,
-    ) -> Result<Shelf, io::Error> {
-        let shelf_type = if let Some(root_ref) = root_ref {
-            let shelf_data = ShelfData::new(root_ref)?;
-            ShelfType::Local(ImmutRef::new_ref(shelf_data))
-        } else {
-            ShelfType::Remote
-        };
-        let shelf = Shelf {
-            shelf_type,
-            shelf_owner,
-            config: config.unwrap_or_default(),
-            filter_tags: generate_tag_filter(), // [TODO] Filter parameters (size, ...) should be configurable
-            info: StatefulRef::new_ref(ShelfInfo::new(Some(name), Some(description), path), lock),
-        };
-        Ok(shelf)
-    }
-}
-
-pub fn generate_tag_filter() -> ArcSwap<TagFilter> {
-    let builder = ScalableCuckooFilterBuilder::new();
-    let rng = ChaCha12Rng::seed_from_u64(SEED);
-    let builder = builder.rng(rng);
-    ArcSwap::new(Arc::new(builder.finish::<TagId>()))
 }
 
 pub struct ShelfData {
@@ -127,62 +43,7 @@ impl PartialEq for ShelfData {
     }
 }
 
-#[derive(Clone, Hash, Eq, PartialEq, Debug)]
-pub enum ShelfInfoField {
-    Name,
-    Description,
-    Root,
-}
 
-#[derive(Debug)]
-pub struct ShelfInfo {
-    pub name: StatefulField<ShelfInfoField, String>,
-    pub description: StatefulField<ShelfInfoField, String>,
-    pub root: StatefulField<ShelfInfoField, PathBuf>,
-}
-
-impl ShelfInfo {
-    pub fn new(name: Option<String>, description: Option<String>, root_path: PathBuf) -> Self {
-        let default_name = root_path
-            .file_name()
-            .unwrap_or_else(|| OsStr::new("Unnamed"))
-            .to_string_lossy()
-            .to_string();
-        let default_description = "".to_string();
-        let name = name.unwrap_or(default_name);
-        let description = description.unwrap_or(default_description);
-        let info_state: InfoState<ShelfInfoField> = InfoState::new();
-        ShelfInfo {
-            name: {
-                let field = StatefulField::<ShelfInfoField, String>::new(
-                    ShelfInfoField::Name,
-                    info_state.clone(),
-                );
-                let (field, updater) = field.set(&name);
-                drop(updater); // No State Update required for Info Creation
-                field
-            },
-            description: {
-                let field = StatefulField::<ShelfInfoField, String>::new(
-                    ShelfInfoField::Description,
-                    info_state.clone(),
-                );
-                let (field, updater) = field.set(&description);
-                drop(updater); // No State Update required for Info Creation
-                field
-            },
-            root: {
-                let field = StatefulField::<ShelfInfoField, PathBuf>::new(
-                    ShelfInfoField::Root,
-                    info_state.clone(),
-                );
-                let (field, updater) = field.set(&root_path);
-                drop(updater); // No State Update required for Info Creation
-                field
-            },
-        }
-    }
-}
 
 impl ShelfData {
     pub fn new(root_ref: ImmutRef<ShelfDir, FileId>) -> Result<Self, io::Error> {

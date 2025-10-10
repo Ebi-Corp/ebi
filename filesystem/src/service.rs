@@ -2,17 +2,17 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use crate::prelude::*;
-use crate::query::file_order::{FileOrder, OrderedFileSummary};
+use ebi_types::file::{FileSummary, FileOrder, OrderedFileSummary};
+use ebi_types::tag::TagData;
+use ebi_types::{Ref, ImmutRef};
 use crate::shelf::ShelfDataRef;
-use crate::shelf::dir::ShelfDir;
-use crate::shelf::file::FileSummary;
-use crate::tag::TagData;
+use crate::dir::ShelfDir;
 use ebi_proto::rpc::ReturnCode;
 use file_id::{FileId, get_file_id};
 use jwalk::{ClientState, WalkDirGeneric};
 use papaya::HashSet;
 use tower::Service;
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct FileSystem {
@@ -100,7 +100,7 @@ impl Service<RetrieveDirRecursive> for FileSystem {
                             .pin()
                             .iter()
                             .map(|f| OrderedFileSummary {
-                                file_summary: FileSummary::from(f, None),
+                                file_summary: crate::file::gen_summary(f, None),
                                 order: order_c.clone(),
                             })
                             .collect();

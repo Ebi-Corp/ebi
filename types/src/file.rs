@@ -1,37 +1,19 @@
 use crate::shelf::ShelfOwner;
-use crate::tag::Tag;
-use crate::{prelude::*, tag::TagData};
+use crate::tag::TagData;
 use chrono::{DateTime, Utc};
-use file_id::FileId;
+use crate::FileId;
 use serde::{Deserialize, Serialize};
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 #[cfg(windows)]
 use std::os::windows::fs::MetadataExt;
 use std::path::PathBuf;
-pub type FileRef = ImmutRef<File, FileId>;
-pub type TagRef = SharedRef<Tag>;
 use im::HashSet;
-
-#[derive(Debug)]
-pub struct File {
-    pub path: PathBuf,
-    pub tags: crate::shelf::HashSet<TagRef>,
-}
-
-impl File {
-    pub fn new(path: PathBuf, tags: crate::shelf::HashSet<TagRef>) -> Self {
-        File { path, tags }
-    }
-
-    pub fn attach(&self, tag: &TagRef) -> bool {
-        self.tags.pin().insert(tag.clone())
-    }
-
-    pub fn detach(&self, tag: &TagRef) -> bool {
-        self.tags.pin().remove(tag)
-    }
-}
+use ebi_proto::rpc::{OrderBy, ReturnCode};
+use std::{
+    borrow::Borrow,
+    hash::{Hash, Hasher},
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileSummary {
@@ -59,6 +41,7 @@ impl FileSummary {
             metadata,
         }
     }
+    /*
     pub fn from(file: &FileRef, shelf: Option<ShelfOwner>) -> Self {
         FileSummary::new(
             file.id,
@@ -67,10 +50,11 @@ impl FileSummary {
             file.tags
                 .pin()
                 .iter()
-                .map(|t| crate::tag::TagData::from(&*t.load_full()))
+                .map(|t| ebi_types::tag::TagData::from(&*t.load_full()))
                 .collect(),
         )
     }
+    */
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -167,6 +151,115 @@ impl From<FileMetadata> for ebi_proto::rpc::FileMetadata {
             accessed: encode_timestamp(f_meta.accessed),
             created: encode_timestamp(f_meta.created),
             os_metadata: Some(os_metadata),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrderedFileSummary {
+    pub file_summary: FileSummary,
+    pub order: FileOrder,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum FileOrder {
+    Name,
+    Size,
+    Created,
+    Modified,
+    Accessed,
+    Unordered,
+}
+
+impl Borrow<FileId> for OrderedFileSummary {
+    fn borrow(&self) -> &FileId {
+        &self.file_summary.id
+    }
+}
+
+impl Hash for OrderedFileSummary {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.file_summary.path.hash(state);
+        self.file_summary.owner.hash(state);
+    }
+}
+
+impl PartialEq for OrderedFileSummary {
+    fn eq(&self, other: &Self) -> bool {
+        self.file_summary.id == other.file_summary.id
+    }
+}
+
+impl Eq for OrderedFileSummary {}
+
+impl PartialOrd for OrderedFileSummary {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for OrderedFileSummary {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match self.order {
+            FileOrder::Name => self
+                .file_summary
+                .path
+                .file_name()
+                .unwrap()
+                .cmp(other.file_summary.path.file_name().unwrap()),
+            FileOrder::Created => self
+                .file_summary
+                .metadata
+                .created
+                .cmp(&other.file_summary.metadata.created),
+            FileOrder::Modified => self
+                .file_summary
+                .metadata
+                .modified
+                .cmp(&other.file_summary.metadata.modified),
+            FileOrder::Accessed => self
+                .file_summary
+                .metadata
+                .accessed
+                .cmp(&other.file_summary.metadata.accessed),
+            FileOrder::Size => self
+                .file_summary
+                .metadata
+                .size
+                .cmp(&other.file_summary.metadata.size),
+
+            FileOrder::Unordered => {
+                todo!();
+            }
+        }
+    }
+}
+
+impl From<OrderBy> for FileOrder {
+    fn from(proto_order: OrderBy) -> Self {
+        match proto_order {
+            OrderBy::Name => FileOrder::Name,
+            OrderBy::Size => FileOrder::Size,
+            OrderBy::Modified => FileOrder::Modified,
+            OrderBy::Accessed => FileOrder::Accessed,
+            OrderBy::Created => FileOrder::Created,
+            OrderBy::Unordered => FileOrder::Unordered,
+        }
+    }
+}
+
+impl TryFrom<i32> for FileOrder {
+    type Error = ReturnCode;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(FileOrder::Name),
+            1 => Ok(FileOrder::Size),
+            2 => Ok(FileOrder::Modified),
+            3 => Ok(FileOrder::Accessed),
+            4 => Ok(FileOrder::Created),
+            5 => Ok(FileOrder::Unordered),
+            _ => Err(ReturnCode::ParseError),
         }
     }
 }
