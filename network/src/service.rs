@@ -1,9 +1,10 @@
-use crate::prelude::*;
 use ebi_proto::rpc::*;
-use iroh::NodeId;
+use ebi_types::{RequestId, Uuid};
+use iroh_base::NodeId;
 use papaya::HashMap;
 use papaya::HashSet;
 use std::hash::Hash;
+use std::sync::Arc;
 use std::net::SocketAddr;
 use std::{
     future::Future,
@@ -13,8 +14,6 @@ use std::{
 use tokio::sync::{mpsc::Sender, watch::Receiver};
 use tokio::time::{Duration, sleep};
 use tower::Service;
-
-use crate::services::rpc::RequestId;
 
 const HEADER_SIZE: usize = 10; //[!] Move to Constant file 
 

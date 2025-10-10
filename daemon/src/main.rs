@@ -1,22 +1,12 @@
 #![allow(dead_code)]
-mod query;
-mod services;
-mod sharedref;
-mod shelf;
-mod stateful;
-mod tag;
-mod workspace;
+mod rpc;
 
-pub mod prelude {
-    pub use crate::sharedref::{ImmutRef, Ref, SharedRef, StatefulRef};
-    pub use std::sync::Arc;
-    pub use uuid::Uuid;
-}
-
-use crate::prelude::*;
-use crate::services::network::{Client, Peer};
-use crate::services::prelude::*;
-use crate::services::rpc::{DaemonInfo, RequestId, TaskID};
+use ebi_network::service::{Network, Client, Peer};
+use ebi_filesystem::service::FileSystem;
+use ebi_query::service::QueryService;
+use ebi_database::{cache::CacheService, state::StateService};
+use crate::rpc::service::{DaemonInfo, TaskID, RpcService};
+use ebi_types::{Uuid, RequestId};
 use anyhow::Result;
 use ebi_proto::rpc::*;
 use iroh::{Endpoint, NodeId, SecretKey};
@@ -32,6 +22,7 @@ use tower::{Service, ServiceBuilder};
 use tracing::{Level, span};
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{EnvFilter, fmt};
+use std::sync::Arc;
 
 const HEADER_SIZE: usize = 10; //[!] Move to Constant file 
 const ALPN: &[u8] = b"ebi";
@@ -147,7 +138,7 @@ async fn main() -> Result<()> {
         cache: CacheService {},
         filesys: filesys.clone(),
         state_srv: state_srv.clone(),
-        daemon_info: daemon_info.clone(),
+        daemon_id: daemon_info.id.clone(),
     };
     let service = ServiceBuilder::new().service(RpcService {
         daemon_info: daemon_info.clone(),

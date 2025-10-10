@@ -1,7 +1,4 @@
-use crate::shelf::dir::ShelfDir;
-use crate::shelf::file::File;
 use arc_swap::{ArcSwap, AsRaw, Guard};
-use file_id::FileId;
 use std::borrow::Borrow;
 use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
@@ -9,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::Weak;
 use std::{future::Future, ops::Deref, pin::Pin, ptr, sync::Arc};
 use tokio::sync::RwLock;
+use file_id::FileId;
 use uuid::Uuid;
 
 pub type WeakRef<T, I = Uuid> = Inner<Weak<T>, I>;
@@ -56,39 +54,6 @@ impl<T> Ref<T, Uuid> for SharedRef<T, Uuid> {
     }
 }
 
-impl Ref<File, FileId> for ImmutRef<File, FileId> {
-    fn new_ref(_data: File) -> Self {
-        unimplemented!("Use new_ref_id instead");
-    }
-
-    fn new_ref_id(id: FileId, data: File) -> Self {
-        Inner {
-            id,
-            data: Arc::new(data),
-        }
-    }
-    fn inner_ptr(&self) -> *const File {
-        Arc::as_ptr(&self.data)
-    }
-}
-
-impl Ref<ShelfDir, FileId> for ImmutRef<ShelfDir, FileId> {
-    fn new_ref(_data: ShelfDir) -> Self {
-        unimplemented!("Use new_ref_id instead");
-    }
-
-    fn new_ref_id(id: FileId, data: ShelfDir) -> Self {
-        Inner {
-            id,
-            data: Arc::new(data),
-        }
-    }
-
-    fn inner_ptr(&self) -> *const ShelfDir {
-        Arc::as_ptr(&self.data)
-    }
-}
-
 impl<T, I: Copy> ImmutRef<T, I> {
     pub fn downgrade(&self) -> WeakRef<T, I> {
         Inner {
@@ -104,17 +69,19 @@ pub struct Inner<T, I> {
     data: T,
 }
 
-impl Borrow<PathBuf> for ImmutRef<ShelfDir, FileId> {
-    fn borrow(&self) -> &PathBuf {
-        &self.data.path
+impl<T, I> Inner<T, I> {
+    pub fn new(id: I, data: T) -> Self {
+        Inner {
+            id,
+            data
+        }
+    }
+    pub fn data_ref(&self) -> &T {
+        &self.data
     }
 }
 
-impl Borrow<PathBuf> for ImmutRef<File, FileId> {
-    fn borrow(&self) -> &PathBuf {
-        &self.data.path
-    }
-}
+
 
 impl<T, I> Borrow<I> for ImmutRef<T, I> {
     fn borrow(&self) -> &I {
@@ -124,6 +91,17 @@ impl<T, I> Borrow<I> for ImmutRef<T, I> {
 impl<T, I> Borrow<I> for WeakRef<T, I> {
     fn borrow(&self) -> &I {
         &self.id
+    }
+}
+
+pub trait WithPath {
+    fn path(&self) -> &PathBuf;
+}
+
+impl<T> Borrow<PathBuf> for ImmutRef<T, FileId> where
+T: WithPath {
+    fn borrow(&self) -> &PathBuf {
+        self.path()
     }
 }
 
@@ -176,7 +154,7 @@ impl<T> History<T> {
 
     pub fn next(&self) -> Self {
         let mut hist = self.hist.clone();
-        if hist.len() == 3 {
+        if hist.len() == HIST_L {
             hist.pop_back();
         }
         if let Some(synced) = &self.synced {

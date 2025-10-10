@@ -1,0 +1,23 @@
+[package]
+name = "ebi-query"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ebi-proto = { workspace = true }
+ebi-types = { workspace = true }
+ebi-filesystem = { workspace = true }
+ebi-network = { workspace = true }
+ebi-database = { workspace = true }
+
+im = { workspace = true }
+peg = { workspace = true }
+serde = { workspace = true }
+arc-swap = { workspace = true }
+bincode = { workspace = true }
+iroh-base = { workspace = true }
+file-id = { workspace = true }
+tokio = { workspace = true }
+tower = { workspace = true }
+uuid = { workspace = true }
+rayon = { workspace = true }

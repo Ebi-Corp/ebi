@@ -1,21 +1,20 @@
-use crate::query::file_order::{FileOrder, OrderedFileSummary};
-use crate::query::{Query, QueryErr};
-use crate::services::prelude::*;
-use crate::services::rpc::{DaemonInfo, parse_peer_id, try_get_workspace};
-use crate::sharedref::ImmutRef;
-use crate::shelf::file::FileSummary;
-use crate::shelf::{ShelfData, ShelfId, ShelfOwner, ShelfType, merge};
-use crate::tag::TagId;
-use crate::workspace::Workspace;
+use ebi_database::state::GetWorkspace;
+use ebi_filesystem::shelf::{ShelfDataRef, TagFilter};
+use ebi_database::{state::StateService, cache::CacheService};
+use ebi_types::file::{FileOrder, OrderedFileSummary};
+use ebi_types::{shelf::{ShelfId, ShelfOwner, ShelfType}, tag::TagId, workspace::Workspace};
+use ebi_types::{Uuid, FileId, NodeId, ImmutRef, parse_peer_id, StatefulRef, uuid};
+use ebi_filesystem::{service::FileSystem, file::gen_summary, shelf::ShelfData, shelf::merge};
+use ebi_network::service::Network;
+use crate::{Query, QueryErr};
+
 use arc_swap::Guard;
 use bincode::{serde::borrow_decode_from_slice, serde::encode_to_vec};
 use ebi_proto::rpc::{
     ClientQuery, ClientQueryData, Data, ErrorData, File, PeerQuery, Request, RequestMetadata,
     Response, ResponseMetadata, ReturnCode, parse_code,
 };
-use file_id::FileId;
 use im::{HashMap, HashSet};
-use iroh::NodeId;
 use rayon::prelude::*;
 use std::{
     future::Future,
@@ -26,10 +25,17 @@ use std::{
 };
 use tokio::task::JoinSet;
 use tower::Service;
-use uuid::Uuid;
 
 type TaskID = u64;
 pub type TokenId = Uuid;
+
+pub async fn try_get_workspace(
+    rawid: &[u8],
+    srv: &mut StateService,
+) -> Result<Arc<StatefulRef<Workspace<ShelfDataRef, TagFilter>>>, ReturnCode> {
+    let id = uuid(rawid).map_err(|_| ReturnCode::ParseError)?;
+    srv.call(GetWorkspace { id }).await
+}
 
 #[derive(Clone)]
 pub struct QueryService {
@@ -37,11 +43,11 @@ pub struct QueryService {
     pub cache: CacheService,
     pub state_srv: StateService,
     pub filesys: FileSystem,
-    pub daemon_info: Arc<DaemonInfo>,
+    pub daemon_id: Arc<NodeId>,
 }
 
 pub struct Retriever {
-    workspace: Guard<Arc<Workspace>>,
+    workspace: Guard<Arc<Workspace<ShelfDataRef, TagFilter>>>,
     cache: CacheService,
     filesys: FileSystem,
     shelf_owner: ShelfOwner,
@@ -52,7 +58,7 @@ pub struct Retriever {
 
 impl Retriever {
     pub fn new(
-        workspace: Guard<Arc<Workspace>>,
+        workspace: Guard<Arc<Workspace<ShelfDataRef, TagFilter>>>,
         cache: CacheService,
         filesys: FileSystem,
         shelf_owner: ShelfOwner,
@@ -106,7 +112,7 @@ impl Retriever {
                             .pin()
                             .iter()
                             .map(|f| OrderedFileSummary {
-                                file_summary: FileSummary::from(&f, Some(self.shelf_owner.clone())),
+                                file_summary: gen_summary(&f, Some(self.shelf_owner.clone())),
                                 order: self.order.clone(),
                             })
                             .collect::<im::HashSet<OrderedFileSummary>>(),
@@ -171,7 +177,7 @@ impl Service<PeerQuery> for QueryService {
     fn call(&mut self, req: PeerQuery) -> Self::Future {
         let mut state_srv = self.state_srv.clone();
         let mut filesys = self.filesys.clone();
-        let node_id = self.daemon_info.id.clone();
+        let node_id = self.daemon_id.clone();
         let cache = self.cache.clone();
         Box::pin(async move {
             let Ok(workspace_ref) = try_get_workspace(&req.workspace_id, &mut state_srv).await
@@ -307,7 +313,7 @@ impl Service<ClientQuery> for QueryService {
     fn call(&mut self, req: ClientQuery) -> Self::Future {
         let mut state_srv = self.state_srv.clone();
         let network = self.network.clone();
-        let node_id = self.daemon_info.id.clone();
+        let node_id = self.daemon_id.clone();
         let cache = self.cache.clone();
         let mut filesys = self.filesys.clone();
         Box::pin(async move {

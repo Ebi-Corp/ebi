@@ -1,18 +1,18 @@
-use crate::prelude::*;
-use crate::sharedref::WeakRef;
-use crate::shelf::file::FileRef;
-use crate::tag::TagRef;
+use ebi_types::{WeakRef, WithPath};
+use crate::file::FileRef;
+use ebi_types::tag::TagRef;
 use arc_swap::ArcSwap;
 use file_id::FileId;
 use seize::Collector;
 use std::hash::RandomState;
 use std::io;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 pub type ShelfDirRef = WeakRef<ShelfDir, FileId>;
 pub type ParentRef = ArcSwap<Option<ShelfDirRef>>;
-pub type HashSet<T> = papaya::HashSet<T, RandomState, Arc<Collector>>;
-pub type HashMap<K, V> = papaya::HashMap<K, V, RandomState, Arc<Collector>>;
+pub(crate) type HashSet<T> = papaya::HashSet<T, RandomState, Arc<Collector>>;
+pub(crate) type HashMap<K, V> = papaya::HashMap<K, V, RandomState, Arc<Collector>>;
 
 macro_rules! hash_set {
     ($collector:expr) => {
@@ -38,6 +38,12 @@ pub struct ShelfDir {
     pub dtag_dirs: HashMap<TagRef, Vec<ShelfDirRef>>, // list of dtagged directories starting at any point below
     pub parent: ParentRef,
     pub subdirs: HashSet<ShelfDirRef>,
+}
+
+impl WithPath for ShelfDir {
+    fn path(&self) -> &PathBuf {
+        &self.path
+    }
 }
 
 impl ShelfDir {

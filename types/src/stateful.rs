@@ -46,10 +46,6 @@ where
 
 type TimedFieldValue = (Arc<dyn GenericValue>, DateTime<Utc>);
 
-enum InfoError {
-    FieldMissing, // Should never occur
-}
-
 #[derive(Debug, Clone)]
 pub struct InfoState<K>
 where
