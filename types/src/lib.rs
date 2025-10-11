@@ -1,14 +1,14 @@
+pub mod file;
 pub mod sharedref;
+pub mod shelf;
 pub mod stateful;
 pub mod tag;
 pub mod workspace;
-pub mod shelf;
-pub mod file;
 
 pub use crate::sharedref::*;
 pub use crate::stateful::*;
-pub use uuid::Uuid;
 pub use iroh_base::NodeId;
+pub use uuid::Uuid;
 pub type RequestId = Uuid;
 pub use file_id::FileId;
 

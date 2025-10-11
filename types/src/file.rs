@@ -1,15 +1,15 @@
+use crate::FileId;
 use crate::shelf::ShelfOwner;
 use crate::tag::TagData;
 use chrono::{DateTime, Utc};
-use crate::FileId;
+use ebi_proto::rpc::{OrderBy, ReturnCode};
+use im::HashSet;
 use serde::{Deserialize, Serialize};
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 #[cfg(windows)]
 use std::os::windows::fs::MetadataExt;
 use std::path::PathBuf;
-use im::HashSet;
-use ebi_proto::rpc::{OrderBy, ReturnCode};
 use std::{
     borrow::Borrow,
     hash::{Hash, Hasher},

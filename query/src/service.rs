@@ -1,12 +1,17 @@
-use ebi_database::state::GetWorkspace;
-use ebi_filesystem::shelf::{ShelfDataRef, TagFilter};
-use ebi_database::{state::StateService, cache::CacheService};
-use ebi_types::file::{FileOrder, OrderedFileSummary};
-use ebi_types::{shelf::{ShelfId, ShelfOwner, ShelfType}, tag::TagId, workspace::Workspace};
-use ebi_types::{Uuid, FileId, NodeId, ImmutRef, parse_peer_id, StatefulRef, uuid};
-use ebi_filesystem::{service::FileSystem, file::gen_summary, shelf::ShelfData, shelf::merge};
-use ebi_network::service::Network;
 use crate::{Query, QueryErr};
+use ebi_database::{cache::CacheService, state::StateService};
+use ebi_filesystem::service::ShelfDirKey;
+use ebi_filesystem::shelf::TagFilter;
+use ebi_filesystem::{file::gen_summary, service::FileSystem, shelf::ShelfData, shelf::merge};
+use ebi_network::service::Network;
+use ebi_types::file::{FileOrder, OrderedFileSummary};
+use ebi_types::shelf::Shelf;
+use ebi_types::{FileId, ImmutRef, NodeId, Uuid, parse_peer_id};
+use ebi_types::{
+    shelf::{ShelfOwner, ShelfType},
+    tag::TagId,
+    workspace::Workspace,
+};
 
 use arc_swap::Guard;
 use bincode::{serde::borrow_decode_from_slice, serde::encode_to_vec};
@@ -26,16 +31,7 @@ use std::{
 use tokio::task::JoinSet;
 use tower::Service;
 
-type TaskID = u64;
 pub type TokenId = Uuid;
-
-pub async fn try_get_workspace(
-    rawid: &[u8],
-    srv: &mut StateService,
-) -> Result<Arc<StatefulRef<Workspace<ShelfDataRef, TagFilter>>>, ReturnCode> {
-    let id = uuid(rawid).map_err(|_| ReturnCode::ParseError)?;
-    srv.call(GetWorkspace { id }).await
-}
 
 #[derive(Clone)]
 pub struct QueryService {
@@ -47,22 +43,22 @@ pub struct QueryService {
 }
 
 pub struct Retriever {
-    workspace: Guard<Arc<Workspace<ShelfDataRef, TagFilter>>>,
+    workspace: Guard<Arc<Workspace<TagFilter>>>,
     cache: CacheService,
     filesys: FileSystem,
     shelf_owner: ShelfOwner,
-    shelf_data: ImmutRef<ShelfData>,
+    shelf_data: ImmutRef<ShelfData, FileId>,
     subpath: Option<FileId>,
     order: FileOrder,
 }
 
 impl Retriever {
     pub fn new(
-        workspace: Guard<Arc<Workspace<ShelfDataRef, TagFilter>>>,
+        workspace: Guard<Arc<Workspace<TagFilter>>>,
         cache: CacheService,
         filesys: FileSystem,
         shelf_owner: ShelfOwner,
-        shelf_data: ImmutRef<ShelfData>,
+        shelf_data: ImmutRef<ShelfData, FileId>,
         subpath: Option<FileId>,
         order: FileOrder,
     ) -> Retriever {
@@ -180,8 +176,7 @@ impl Service<PeerQuery> for QueryService {
         let node_id = self.daemon_id.clone();
         let cache = self.cache.clone();
         Box::pin(async move {
-            let Ok(workspace_ref) = try_get_workspace(&req.workspace_id, &mut state_srv).await
-            else {
+            let Ok(workspace_ref) = state_srv.get_workspace(&req.workspace_id).await else {
                 return Err(ReturnCode::WorkspaceNotFound);
             };
 
@@ -194,8 +189,8 @@ impl Service<PeerQuery> for QueryService {
             let mut q_dir_id: Option<FileId> = None;
 
             let workspace = workspace_ref.load();
-            let mut local_shelves = HashSet::<ShelfId>::new();
-            for (s_id, shelf) in workspace.shelves.iter() {
+            let mut local_shelves = HashSet::<ImmutRef<Shelf<TagFilter>>>::new();
+            for (_, shelf) in workspace.shelves.iter() {
                 match shelf.shelf_owner {
                     ShelfOwner::Node(node_owner) if node_owner == *node_id => {
                         if let Some(ref subpath) = query.path {
@@ -205,20 +200,23 @@ impl Service<PeerQuery> for QueryService {
                                 .starts_with(shelf_root.to_str().unwrap())
                             {
                                 match &shelf.shelf_type {
-                                    ShelfType::Local(shelf_data) => {
+                                    ShelfType::Local => {
                                         q_dir_id = Some(
                                             filesys
-                                                .get_or_init_dir(shelf_data.clone(), subpath.into())
+                                                .get_or_init_dir(
+                                                    ShelfDirKey::Path(shelf_root.to_path_buf()),
+                                                    subpath.into(),
+                                                )
                                                 .await?,
                                         );
-                                        local_shelves.insert(*s_id);
+                                        local_shelves.insert(shelf.clone());
                                     }
                                     ShelfType::Remote => return Err(ReturnCode::PathNotFound),
                                 }
                                 break;
                             }
                         } else {
-                            local_shelves.insert(*s_id);
+                            local_shelves.insert(shelf.clone());
                         }
                     }
                     ShelfOwner::Node(_) => continue,
@@ -232,33 +230,35 @@ impl Service<PeerQuery> for QueryService {
             }
 
             let mut local_futures = JoinSet::new();
-            for s_id in local_shelves {
-                if let Some(shelf) = workspace.shelves.get(&s_id) {
-                    let shelf_owner = shelf.shelf_owner.clone();
-                    let cache = cache.clone();
-                    let file_order = file_order.clone();
-                    let filesys = filesys.clone();
-                    let mut query = query.clone();
-                    match &shelf.shelf_type {
-                        ShelfType::Remote => {
-                            continue;
-                        }
-                        ShelfType::Local(data) => {
-                            let workspace = workspace_ref.load();
-                            let data = data.clone();
-                            local_futures.spawn(async move {
-                                let retriever = Retriever::new(
-                                    workspace,
-                                    cache,
-                                    filesys,
-                                    shelf_owner,
-                                    data,
-                                    q_dir_id,
-                                    file_order,
-                                );
-                                query.evaluate(retriever).await
-                            });
-                        }
+            for shelf in local_shelves {
+                let shelf_owner = shelf.shelf_owner.clone();
+                let cache = cache.clone();
+                let file_order = file_order.clone();
+                let mut filesys = filesys.clone();
+                let mut query = query.clone();
+                match &shelf.shelf_type {
+                    ShelfType::Remote => {
+                        continue;
+                    }
+                    ShelfType::Local => {
+                        let workspace = workspace_ref.load();
+                        let data = filesys
+                            .get_or_init_shelf(ShelfDirKey::Path(
+                                shelf.info.load().root.to_path_buf(),
+                            ))
+                            .await?;
+                        local_futures.spawn(async move {
+                            let retriever = Retriever::new(
+                                workspace,
+                                cache,
+                                filesys,
+                                shelf_owner,
+                                data.clone(),
+                                q_dir_id,
+                                file_order,
+                            );
+                            query.evaluate(retriever).await
+                        });
                     }
                 }
             }
@@ -319,8 +319,7 @@ impl Service<ClientQuery> for QueryService {
         Box::pin(async move {
             let query_str = req.query;
 
-            let Ok(workspace_ref) = try_get_workspace(&req.workspace_id, &mut state_srv).await
-            else {
+            let Ok(workspace_ref) = state_srv.get_workspace(&req.workspace_id).await else {
                 return Err(ReturnCode::WorkspaceNotFound);
             };
 
@@ -334,7 +333,7 @@ impl Service<ClientQuery> for QueryService {
             let mut q_dir_id: Option<FileId> = None;
             let mut to_query: Option<NodeId> = None;
             let mut nodes = HashSet::<NodeId>::new();
-            let mut local_shelves = HashSet::<ShelfId>::new();
+            let mut local_shelves = HashSet::<ImmutRef<Shelf<TagFilter>>>::new();
 
             if let Some(ref dir_path) = req.path {
                 for (_, shelf) in workspace_ref.load().shelves.iter() {
@@ -344,10 +343,13 @@ impl Service<ClientQuery> for QueryService {
                         .starts_with(shelf_root.to_str().unwrap())
                     {
                         match &shelf.shelf_type {
-                            ShelfType::Local(shelf_data) => {
+                            ShelfType::Local => {
                                 q_dir_id = Some(
                                     filesys
-                                        .get_or_init_dir(shelf_data.clone(), dir_path.into())
+                                        .get_or_init_dir(
+                                            ShelfDirKey::Path(shelf_root.to_path_buf()),
+                                            dir_path.into(),
+                                        )
                                         .await?,
                                 );
                             }
@@ -374,7 +376,7 @@ impl Service<ClientQuery> for QueryService {
 
             let workspace = workspace_ref.load();
             if to_query.is_none() {
-                for (shelf_id, shelf) in workspace.shelves.iter() {
+                for (_, shelf) in workspace.shelves.iter() {
                     let filter = shelf.filter_tags.load();
                     match shelf.shelf_owner {
                         ShelfOwner::Node(node_owner) => {
@@ -382,7 +384,7 @@ impl Service<ClientQuery> for QueryService {
                                 if node_owner != *node_id {
                                     nodes.insert(node_owner);
                                 } else {
-                                    local_shelves.insert(*shelf_id);
+                                    local_shelves.insert(shelf.clone());
                                 }
                             }
                         }
@@ -502,29 +504,31 @@ impl Service<ClientQuery> for QueryService {
             // Prepare a thread for retriever for each local shelf
             // [TODO] thread / retriever heuristics
             let mut local_futures = JoinSet::new();
-            for s_id in local_shelves {
-                if let Some(shelf) = workspace.shelves.get(&s_id) {
-                    let shelf_owner = shelf.shelf_owner.clone();
-                    let mut query = query.clone();
-                    let workspace_ref = workspace_ref.clone();
-                    match &shelf.shelf_type {
-                        ShelfType::Remote => {
-                            continue;
-                        }
-                        ShelfType::Local(data) => {
-                            let workspace = workspace_ref.load();
-                            let data = data.clone();
-                            let retriever = Retriever::new(
-                                workspace,
-                                cache.clone(),
-                                filesys.clone(),
-                                shelf_owner,
-                                data,
-                                q_dir_id,
-                                file_order.clone(),
-                            );
-                            local_futures.spawn(async move { query.evaluate(retriever).await });
-                        }
+            for shelf in local_shelves {
+                let shelf_owner = shelf.shelf_owner.clone();
+                let mut query = query.clone();
+                let workspace_ref = workspace_ref.clone();
+                match &shelf.shelf_type {
+                    ShelfType::Remote => {
+                        continue;
+                    }
+                    ShelfType::Local => {
+                        let workspace = workspace_ref.load();
+                        let data = filesys
+                            .get_or_init_shelf(ShelfDirKey::Path(
+                                shelf.info.load().root.to_path_buf(),
+                            ))
+                            .await?;
+                        let retriever = Retriever::new(
+                            workspace,
+                            cache.clone(),
+                            filesys.clone(),
+                            shelf_owner,
+                            data,
+                            q_dir_id,
+                            file_order.clone(),
+                        );
+                        local_futures.spawn(async move { query.evaluate(retriever).await });
                     }
                 }
             }

@@ -4,8 +4,8 @@ use iroh_base::NodeId;
 use papaya::HashMap;
 use papaya::HashSet;
 use std::hash::Hash;
-use std::sync::Arc;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::{
     future::Future,
     pin::Pin,
@@ -73,11 +73,14 @@ impl Network {
         self.call((node_id, data)).await
     }
 
-    pub async fn send_request(&mut self, node_id: NodeId, req: Request) -> Result<Response, PeerError> {
+    pub async fn send_request(
+        &mut self,
+        node_id: NodeId,
+        req: Request,
+    ) -> Result<Response, PeerError> {
         self.call((node_id, req)).await
     }
 }
-
 
 impl Service<(NodeId, Data)> for Network {
     type Response = Uuid;

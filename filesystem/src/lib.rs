@@ -1,13 +1,13 @@
 pub mod dir;
-pub mod shelf;
-pub mod service;
 pub mod file;
-pub use file_id::FileId;
-use crate::file::File;
+pub mod service;
+pub mod shelf;
 use crate::dir::ShelfDir;
+use crate::file::File;
+use crate::shelf::ShelfData;
+use ebi_types::{ImmutRef, Inner, Ref};
+pub use file_id::FileId;
 use std::sync::Arc;
-use ebi_types::{ImmutRef, Ref, Inner};
-
 
 impl Ref<File, FileId> for ImmutRef<File, FileId> {
     fn new_ref(_data: File) -> Self {
@@ -32,6 +32,20 @@ impl Ref<ShelfDir, FileId> for ImmutRef<ShelfDir, FileId> {
     }
 
     fn inner_ptr(&self) -> *const ShelfDir {
+        Arc::as_ptr(self.data_ref())
+    }
+}
+
+impl Ref<ShelfData, FileId> for ImmutRef<ShelfData, FileId> {
+    fn new_ref(data: ShelfData) -> Self {
+        Inner::new(data.root.id, Arc::new(data))
+    }
+
+    fn new_ref_id(id: FileId, data: ShelfData) -> Self {
+        Inner::new(id, Arc::new(data))
+    }
+
+    fn inner_ptr(&self) -> *const ShelfData {
         Arc::as_ptr(self.data_ref())
     }
 }
