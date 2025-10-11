@@ -2,42 +2,38 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use ebi_types::file::{FileSummary, FileOrder, OrderedFileSummary};
-use ebi_types::tag::TagData;
-use ebi_types::{Ref, ImmutRef};
-use crate::shelf::ShelfDataRef;
 use crate::dir::ShelfDir;
+use crate::shelf::ShelfData;
 use ebi_proto::rpc::ReturnCode;
+use ebi_types::file::{FileOrder, FileSummary, OrderedFileSummary};
+use ebi_types::tag::TagData;
+use ebi_types::{ImmutRef, Ref};
 use file_id::{FileId, get_file_id};
 use jwalk::{ClientState, WalkDirGeneric};
 use papaya::HashSet;
-use tower::Service;
 use std::sync::Arc;
+use tower::Service;
 
 #[derive(Clone)]
 pub struct FileSystem {
+    pub local_shelves: Arc<HashSet<ImmutRef<ShelfData, FileId>>>,
     pub shelf_dirs: Arc<HashSet<ImmutRef<ShelfDir, FileId>>>,
 }
-struct ShelfDirKey {
-    id: FileId,
-    path: PathBuf,
+
+pub enum ShelfDirKey {
+    Id(FileId),
+    Path(PathBuf),
 }
 
-impl PartialEq for ShelfDirKey {
-    fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
-    }
-}
-
-struct GetInitShelfDir(ShelfDataRef, PathBuf);
+struct GetInitShelfDir(ShelfDirKey, PathBuf);
 
 impl FileSystem {
     pub async fn get_or_init_dir(
         &mut self,
-        shelf: ShelfDataRef,
-        path: PathBuf,
+        shelf: ShelfDirKey,
+        subpath: PathBuf,
     ) -> Result<FileId, ReturnCode> {
-        self.call(GetInitShelfDir(shelf, path)).await
+        self.call(GetInitShelfDir(shelf, subpath)).await
     }
 
     pub async fn retrieve_dir_recursive(
@@ -50,9 +46,9 @@ impl FileSystem {
 
     pub async fn get_or_init_shelf(
         &mut self,
-        path: PathBuf,
-    ) -> Result<ImmutRef<ShelfDir, FileId>, ReturnCode> {
-        self.call(GetInitShelf(path)).await
+        shelf: ShelfDirKey,
+    ) -> Result<ImmutRef<ShelfData, FileId>, ReturnCode> {
+        self.call(GetInitShelf(shelf)).await
     }
 }
 
@@ -140,10 +136,10 @@ impl Service<RetrieveDirRecursive> for FileSystem {
     }
 }
 
-struct GetInitShelf(PathBuf);
+struct GetInitShelf(ShelfDirKey);
 
 impl Service<GetInitShelf> for FileSystem {
-    type Response = ImmutRef<ShelfDir, FileId>;
+    type Response = ImmutRef<ShelfData, FileId>;
     type Error = ReturnCode;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
@@ -153,15 +149,29 @@ impl Service<GetInitShelf> for FileSystem {
 
     fn call(&mut self, req: GetInitShelf) -> Self::Future {
         let shelf_dirs = self.shelf_dirs.clone();
+        let local_shelves = self.local_shelves.clone();
         Box::pin(async move {
-            let r_path = req.0;
-            let path = if !r_path.is_dir() {
-                let Some(path) = r_path.parent() else {
-                    return Err(ReturnCode::PathNotFound);
-                };
-                path.to_owned()
-            } else {
-                r_path
+            let shelf_key = req.0;
+            let local_shelves = local_shelves.pin();
+            let path = match shelf_key {
+                ShelfDirKey::Id(id) => {
+                    let Some(shelf) = local_shelves.get(&id) else {
+                        return Err(ReturnCode::ShelfNotFound);
+                    };
+                    return Ok(shelf.clone());
+                }
+                ShelfDirKey::Path(path) => {
+                    if let Some(shelf) = local_shelves.get(&path) {
+                        return Ok(shelf.clone());
+                    };
+                    if path.is_dir() {
+                        path
+                    } else if let Some(parent) = path.parent() {
+                        parent.to_owned()
+                    } else {
+                        return Err(ReturnCode::PathNotFound);
+                    }
+                }
             };
             let mut new_subdir: Option<ImmutRef<ShelfDir, FileId>> = None;
             let mut trav_path = path.clone();
@@ -170,7 +180,9 @@ impl Service<GetInitShelf> for FileSystem {
                     return Err(ReturnCode::InternalStateError);
                 };
                 let sdir = {
-                    if let Some(sdir) = shelf_dirs.pin().get(&file_id) {
+                    if let Some(s_data) = local_shelves.get(&file_id) {
+                        return Ok(s_data.clone());
+                    } else if let Some(sdir) = shelf_dirs.pin().get(&file_id) {
                         sdir.clone()
                     } else {
                         let Ok(sdir) = ShelfDir::new(path.clone()) else {
@@ -190,7 +202,12 @@ impl Service<GetInitShelf> for FileSystem {
                 new_subdir = Some(sdir.clone());
 
                 if sdir.path == path {
-                    break Ok(sdir);
+                    let Ok(s_data) = ShelfData::new(sdir) else {
+                        return Err(ReturnCode::ShelfCreationIOError);
+                    };
+                    let s_data_ref: ImmutRef<ShelfData, FileId> = ImmutRef::new_ref(s_data);
+                    local_shelves.insert(s_data_ref.clone());
+                    return Ok(s_data_ref);
                 }
                 trav_path = trav_path.parent().unwrap().to_path_buf();
             }
@@ -209,9 +226,18 @@ impl Service<GetInitShelfDir> for FileSystem {
 
     fn call(&mut self, req: GetInitShelfDir) -> Self::Future {
         let shelf_dirs = self.shelf_dirs.clone();
+        let local_shelves = self.local_shelves.clone();
         Box::pin(async move {
-            let shelf = req.0;
+            let shelf_key = req.0;
             let r_path = req.1;
+            let local_shelves = local_shelves.pin_owned();
+            let Some(shelf) = (match shelf_key {
+                ShelfDirKey::Id(id) => local_shelves.get(&id),
+                ShelfDirKey::Path(path) => local_shelves.get(&path),
+            }) else {
+                return Err(ReturnCode::ShelfNotFound);
+            };
+
             if !r_path.starts_with(&shelf.root_path) {
                 return Err(ReturnCode::PathNotFound);
             }

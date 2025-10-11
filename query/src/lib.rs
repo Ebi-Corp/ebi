@@ -1,9 +1,9 @@
 pub mod service;
-use ebi_types::file::{FileOrder, OrderedFileSummary};
 use crate::service::Retriever;
-use ebi_types::tag::TagId;
-use ebi_proto::rpc::ReturnCode;
 use ebi_filesystem::shelf::TagFilter;
+use ebi_proto::rpc::ReturnCode;
+use ebi_types::file::{FileOrder, OrderedFileSummary};
+use ebi_types::tag::TagId;
 use im::HashSet;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -133,10 +133,7 @@ impl Query {
     pub fn get_tags(&self) -> HashSet<TagId> {
         self.formula.get_tags()
     }
-    pub fn may_hold(
-        &mut self,
-        tags: &TagFilter,
-    ) -> bool {
+    pub fn may_hold(&mut self, tags: &TagFilter) -> bool {
         self.formula.may_hold(tags)
     }
 

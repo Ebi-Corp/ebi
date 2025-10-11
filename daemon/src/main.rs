@@ -1,17 +1,18 @@
 #![allow(dead_code)]
 mod rpc;
 
-use ebi_network::service::{Network, Client, Peer};
-use ebi_filesystem::service::FileSystem;
-use ebi_query::service::QueryService;
-use ebi_database::{cache::CacheService, state::StateService};
-use crate::rpc::service::{DaemonInfo, TaskID, RpcService};
-use ebi_types::{Uuid, RequestId};
+use crate::rpc::service::{DaemonInfo, RpcService, TaskID};
 use anyhow::Result;
+use ebi_database::{cache::CacheService, state::StateService};
+use ebi_filesystem::service::FileSystem;
+use ebi_network::service::{Client, Network, Peer};
 use ebi_proto::rpc::*;
+use ebi_query::service::QueryService;
+use ebi_types::{RequestId, Uuid};
 use iroh::{Endpoint, NodeId, SecretKey};
 use papaya::{HashMap, HashSet};
 use paste::paste;
+use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio::{
@@ -22,7 +23,6 @@ use tower::{Service, ServiceBuilder};
 use tracing::{Level, span};
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{EnvFilter, fmt};
-use std::sync::Arc;
 
 const HEADER_SIZE: usize = 10; //[!] Move to Constant file 
 const ALPN: &[u8] = b"ebi";
@@ -123,9 +123,10 @@ async fn main() -> Result<()> {
 
     let filesys = FileSystem {
         shelf_dirs: Arc::new(papaya::HashSet::new()),
+        local_shelves: Arc::new(papaya::HashSet::new()),
     };
 
-    let state_srv = StateService::new(filesys.clone());
+    let state_srv = StateService::new();
 
     let network = Network {
         peers: peers.clone(),

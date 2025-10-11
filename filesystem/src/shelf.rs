@@ -1,9 +1,8 @@
-use ebi_types::sharedref::ptr_eq;
 use crate::dir::{HashSet, ShelfDir, ShelfDirRef};
 use crate::file::{File, FileRef};
-use ebi_types::{SharedRef, ImmutRef, Ref};
-use uuid::Uuid;
+use ebi_types::sharedref::ptr_eq;
 use ebi_types::tag::{Tag, TagId};
+use ebi_types::{ImmutRef, Ref, SharedRef, WithPath};
 use file_id::{FileId, get_file_id};
 use rand_chacha::{ChaCha12Rng, rand_core::SeedableRng};
 use scalable_cuckoo_filter::{ScalableCuckooFilter, ScalableCuckooFilterBuilder};
@@ -12,6 +11,7 @@ use std::io;
 use std::path::PathBuf;
 use std::result::Result;
 use std::sync::Arc;
+use uuid::Uuid;
 
 pub type ShelfId = Uuid;
 pub type TagRef = SharedRef<Tag>;
@@ -20,7 +20,9 @@ const SEED: u64 = 0; // [TODO] Move seed to proper initialization
 
 pub type ShelfDataRef = ImmutRef<ShelfData>;
 #[derive(Debug, Clone)]
-pub struct TagFilter(pub ScalableCuckooFilter<TagId, scalable_cuckoo_filter::DefaultHasher, ChaCha12Rng>);
+pub struct TagFilter(
+    pub ScalableCuckooFilter<TagId, scalable_cuckoo_filter::DefaultHasher, ChaCha12Rng>,
+);
 
 impl Default for TagFilter {
     fn default() -> Self {
@@ -43,7 +45,11 @@ impl PartialEq for ShelfData {
     }
 }
 
-
+impl WithPath for ShelfData {
+    fn path(&self) -> &PathBuf {
+        &self.root_path
+    }
+}
 
 impl ShelfData {
     pub fn new(root_ref: ImmutRef<ShelfDir, FileId>) -> Result<Self, io::Error> {

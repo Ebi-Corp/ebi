@@ -1,4 +1,5 @@
 use arc_swap::{ArcSwap, AsRaw, Guard};
+use file_id::FileId;
 use std::borrow::Borrow;
 use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
@@ -6,7 +7,6 @@ use std::path::PathBuf;
 use std::sync::Weak;
 use std::{future::Future, ops::Deref, pin::Pin, ptr, sync::Arc};
 use tokio::sync::RwLock;
-use file_id::FileId;
 use uuid::Uuid;
 
 pub type WeakRef<T, I = Uuid> = Inner<Weak<T>, I>;
@@ -71,17 +71,12 @@ pub struct Inner<T, I> {
 
 impl<T, I> Inner<T, I> {
     pub fn new(id: I, data: T) -> Self {
-        Inner {
-            id,
-            data
-        }
+        Inner { id, data }
     }
     pub fn data_ref(&self) -> &T {
         &self.data
     }
 }
-
-
 
 impl<T, I> Borrow<I> for ImmutRef<T, I> {
     fn borrow(&self) -> &I {
@@ -98,8 +93,10 @@ pub trait WithPath {
     fn path(&self) -> &PathBuf;
 }
 
-impl<T> Borrow<PathBuf> for ImmutRef<T, FileId> where
-T: WithPath {
+impl<T> Borrow<PathBuf> for ImmutRef<T, FileId>
+where
+    T: WithPath,
+{
     fn borrow(&self) -> &PathBuf {
         self.path()
     }

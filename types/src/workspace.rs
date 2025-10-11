@@ -1,15 +1,15 @@
-use crate::shelf::{Shelf, ShelfId};
-use crate::{InfoState, StatefulField, StatefulMap, StatefulRef, ImmutRef, SharedRef};
-use crate::tag::{Tag, TagId};
 use crate::Uuid;
+use crate::shelf::{Shelf, ShelfId};
+use crate::tag::{Tag, TagId};
+use crate::{ImmutRef, InfoState, SharedRef, StatefulField, StatefulMap, StatefulRef};
 
 pub type WorkspaceId = Uuid;
 
-pub struct Workspace<ShelfData: Clone, TagFilter> {
+pub struct Workspace<TagFilter> {
     // Workspace Info
     pub info: StatefulRef<WorkspaceInfo>,
     // Shelf Management
-    pub shelves: StatefulMap<ShelfId, ImmutRef<Shelf<ShelfData, TagFilter>>>,
+    pub shelves: StatefulMap<ShelfId, ImmutRef<Shelf<TagFilter>>>,
     // Tag Management
     pub tags: StatefulMap<TagId, SharedRef<Tag>>,
     pub lookup: StatefulMap<String, TagId>,
@@ -57,7 +57,7 @@ pub enum WorkspaceInfoField {
     Description,
 }
 
-impl<ShelfData: Clone, TagFilter> Clone for Workspace<ShelfData, TagFilter> {
+impl<TagFilter> Clone for Workspace<TagFilter> {
     fn clone(&self) -> Self {
         Workspace {
             info: self.info.clone(),

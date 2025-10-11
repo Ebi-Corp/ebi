@@ -3,21 +3,21 @@ use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::NodeId;
+use crate::tag::Tag;
+use crate::{InfoState, SharedRef, StatefulField, StatefulRef};
 use arc_swap::ArcSwap;
 use chrono::Duration;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use uuid::Uuid;
-use crate::{InfoState, SharedRef, StatefulField, StatefulRef};
-use crate::tag::Tag;
-use crate::NodeId;
 
 pub type ShelfId = Uuid;
 pub type TagRef = SharedRef<Tag>;
 
 #[derive(Clone)]
-pub enum ShelfType<ShelfData: Clone> {
-    Local(ShelfData),
+pub enum ShelfType {
+    Local,
     Remote,
 }
 
@@ -46,15 +46,15 @@ pub struct ShelfConfig {
     pub sync_config: Option<SyncConfig>,
 }
 
-pub struct Shelf<ShelfData: Clone, TagFilter> {
-    pub shelf_type: ShelfType<ShelfData>,
+pub struct Shelf<TagFilter> {
+    pub shelf_type: ShelfType,
     pub shelf_owner: ShelfOwner,
     pub config: ShelfConfig,
     pub filter_tags: ArcSwap<TagFilter>,
     pub info: StatefulRef<ShelfInfo>,
 }
 
-impl<ShelfData: Clone, TagFilter> Clone for Shelf<ShelfData, TagFilter> {
+impl<TagFilter> Clone for Shelf<TagFilter> {
     fn clone(&self) -> Self {
         Shelf {
             shelf_type: self.shelf_type.clone(),
@@ -66,17 +66,16 @@ impl<ShelfData: Clone, TagFilter> Clone for Shelf<ShelfData, TagFilter> {
     }
 }
 
-impl<ShelfData: Clone, TagFilter: Default> Shelf<ShelfData, TagFilter> {
+impl<TagFilter: Default> Shelf<TagFilter> {
     pub fn new(
         lock: Arc<RwLock<()>>,
         path: PathBuf,
         name: String,
-        shelf_type: ShelfType<ShelfData>,
+        shelf_type: ShelfType,
         shelf_owner: ShelfOwner,
         config: Option<ShelfConfig>,
         description: String,
     ) -> Result<Self, io::Error> {
-
         let shelf = Shelf {
             shelf_type,
             shelf_owner,

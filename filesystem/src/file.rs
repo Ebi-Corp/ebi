@@ -1,8 +1,8 @@
-use std::path::PathBuf;
-use ebi_types::{file::FileSummary, shelf::ShelfOwner, tag::Tag, tag::TagData, ImmutRef, SharedRef, WithPath};
+use ebi_types::{
+    ImmutRef, SharedRef, WithPath, file::FileSummary, shelf::ShelfOwner, tag::Tag, tag::TagData,
+};
 use file_id::FileId;
-
-
+use std::path::PathBuf;
 
 pub type FileRef = ImmutRef<File, FileId>;
 pub type TagRef = SharedRef<Tag>;
@@ -20,16 +20,17 @@ impl WithPath for File {
 }
 
 pub fn gen_summary(file_ref: &FileRef, owner: Option<ShelfOwner>) -> FileSummary {
-        FileSummary::new(
-            file_ref.id,
-            file_ref.path.clone(),
-            owner,
-            file_ref.tags
-                .pin()
-                .iter()
-                .map(|t| TagData::from(&*t.load_full()))
-                .collect(),
-        )
+    FileSummary::new(
+        file_ref.id,
+        file_ref.path.clone(),
+        owner,
+        file_ref
+            .tags
+            .pin()
+            .iter()
+            .map(|t| TagData::from(&*t.load_full()))
+            .collect(),
+    )
 }
 
 impl File {

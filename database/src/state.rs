@@ -1,9 +1,9 @@
-use ebi_filesystem::{service::FileSystem, shelf::{ShelfData, ShelfDataRef, TagFilter}};
-use ebi_types::{shelf::ShelfType, *};
+use ebi_filesystem::shelf::TagFilter;
+use ebi_proto::rpc::ReturnCode;
 use ebi_types::shelf::{ShelfId, ShelfOwner};
-use ebi_types::{tag::Tag, NodeId};
 use ebi_types::workspace::{WorkspaceId, WorkspaceInfo};
-use ebi_proto::rpc::*;
+use ebi_types::{NodeId, tag::Tag};
+use ebi_types::{shelf::ShelfType, *};
 use std::path::PathBuf;
 use std::sync::Weak;
 use std::{
@@ -19,31 +19,90 @@ use tower::Service;
 pub struct StateService {
     pub state: Arc<History<GroupState>>,
     pub lock: Arc<RwLock<()>>,
-    pub filesys: FileSystem,
 }
 
 impl StateService {
-    pub fn new(filesys: FileSystem) -> Self {
+    pub fn new() -> Self {
         let lock = Arc::new(RwLock::new(()));
         let state = Arc::new(History::new(GroupState::new(), lock.clone()));
         Self {
             state,
             lock: lock.clone(),
-            filesys: filesys.clone(),
         }
     }
-    pub async fn try_get_workspace(&mut self,
+    pub async fn get_workspace(
+        &mut self,
         rawid: &[u8],
     ) -> Result<Arc<StatefulRef<Workspace>>, ReturnCode> {
         let id = uuid(rawid).map_err(|_| ReturnCode::ParseError)?;
         self.call(GetWorkspace { id }).await
     }
+
+    pub async fn create_workspace(
+        &mut self,
+        name: String,
+        description: String,
+    ) -> Result<WorkspaceId, ReturnCode> {
+        self.call(CreateWorkspace { name, description }).await
+    }
+
+    pub async fn create_tag(
+        &mut self,
+        priority: u64,
+        name: String,
+        parent: Option<SharedRef<Tag>>,
+    ) -> Result<SharedRef<Tag>, ReturnCode> {
+        self.call(CreateTag {
+            priority,
+            name,
+            parent,
+        })
+        .await
+    }
+
+    pub async fn get_workspaces(&mut self) -> Result<Vec<ebi_proto::rpc::Workspace>, ReturnCode> {
+        self.call(GetWorkspaces {}).await
+    }
+
+    pub async fn unassign_shelf(
+        &mut self,
+        shelf_id: ShelfId,
+        workspace_id: WorkspaceId,
+    ) -> Result<(), ReturnCode> {
+        self.call(UnassignShelf {
+            shelf_id,
+            workspace_id,
+        })
+        .await
+    }
+
+    pub async fn assign_shelf(
+        &mut self,
+        path: PathBuf,
+        node_id: NodeId,
+        remote: bool,
+        description: Option<String>,
+        name: Option<String>,
+        workspace_id: WorkspaceId,
+    ) -> Result<ShelfId, ReturnCode> {
+        self.call(AssignShelf {
+            path,
+            node_id,
+            remote,
+            description,
+            name,
+            workspace_id,
+        })
+        .await
+    }
+
+    pub async fn remove_workspace(&mut self, workspace_id: WorkspaceId) -> Result<(), ReturnCode> {
+        self.call(RemoveWorkspace { workspace_id }).await
+    }
 }
 
-
-
-type Workspace = ebi_types::workspace::Workspace<ShelfDataRef, TagFilter>;
-type Shelf = ebi_types::shelf::Shelf<ShelfDataRef, TagFilter>;
+type Workspace = ebi_types::workspace::Workspace<TagFilter>;
+type Shelf = ebi_types::shelf::Shelf<TagFilter>;
 
 pub struct GroupState {
     pub workspaces: StatefulMap<WorkspaceId, Arc<StatefulRef<Workspace>>>,
@@ -58,11 +117,7 @@ impl GroupState {
     }
 }
 
-enum Operations {
-    GetWorkspace(WorkspaceId),
-}
-
-pub struct GetWorkspace {
+struct GetWorkspace {
     pub id: WorkspaceId,
 }
 
@@ -87,7 +142,7 @@ impl Service<GetWorkspace> for StateService {
     }
 }
 
-pub struct CreateWorkspace {
+struct CreateWorkspace {
     pub name: String,
     pub description: String,
 }
@@ -135,7 +190,7 @@ impl Service<CreateWorkspace> for StateService {
     }
 }
 
-pub struct CreateTag {
+struct CreateTag {
     pub priority: u64,
     pub name: String,
     pub parent: Option<SharedRef<Tag>>,
@@ -166,7 +221,7 @@ impl Service<CreateTag> for StateService {
     }
 }
 
-pub struct GetWorkspaces {}
+struct GetWorkspaces {}
 
 impl Service<GetWorkspaces> for StateService {
     type Response = Vec<ebi_proto::rpc::Workspace>;
@@ -215,7 +270,7 @@ impl Service<GetWorkspaces> for StateService {
     }
 }
 
-pub struct UnassignShelf {
+struct UnassignShelf {
     pub shelf_id: ShelfId,
     pub workspace_id: WorkspaceId,
 }
@@ -257,7 +312,7 @@ impl Service<UnassignShelf> for StateService {
     }
 }
 
-pub struct AssignShelf {
+struct AssignShelf {
     pub path: PathBuf,
     pub node_id: NodeId,
     pub remote: bool,
@@ -279,7 +334,6 @@ impl Service<AssignShelf> for StateService {
     fn call(&mut self, req: AssignShelf) -> Self::Future {
         let g_state = self.state.clone();
         let lock = self.lock.clone();
-        let mut fs = self.filesys.clone();
 
         Box::pin(async move {
             let state = g_state.staged.load();
@@ -328,10 +382,7 @@ impl Service<AssignShelf> for StateService {
             if new_shelf {
                 let path = req.path.clone();
                 let shelf_type = if !req.remote {
-                    let Ok(s_data) = ShelfData::new(fs.get_or_init_shelf(path.clone()).await?) else {
-                        return Err(ReturnCode::ShelfCreationIOError);
-                    };
-                    ShelfType::Local(ImmutRef::new_ref(s_data))
+                    ShelfType::Local
                 } else {
                     ShelfType::Remote
                 };
@@ -412,7 +463,7 @@ impl Service<AssignShelf> for StateService {
     }
 }
 
-pub struct RemoveWorkspace {
+struct RemoveWorkspace {
     pub workspace_id: WorkspaceId,
 }
 
