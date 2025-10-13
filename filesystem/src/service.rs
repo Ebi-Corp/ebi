@@ -119,7 +119,7 @@ impl Service<RetrieveDirRecursive> for FileSystem {
                             if let Ok(metadata) = entry.metadata() {
                                 #[cfg(unix)]
                                 {
-                                let id = FileId::new_inode(metadata.dev(), metadata.ino());
+                                let file_id = FileId::new_inode(metadata.dev(), metadata.ino());
                                 let ordered_file =
                                     if let Some(file) = entry.client_state.files.get(&file_id) {
                                         file.clone()
