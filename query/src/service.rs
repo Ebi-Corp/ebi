@@ -603,27 +603,23 @@ impl Service<ClientQuery> for QueryService {
                         files.into_par_iter().flat_map(|v| v).collect();
 
                     files.par_sort(); // if files are already sorted, very cheap to resort
-
+                    let data = ClientQueryData {
+                        token: ser_token,
+                        files: files
+                            .into_par_iter()
+                            .map(|f| File {
+                                path: f.file_summary.path.to_string_lossy().into_owned(),
+                                metadata: Some(f.file_summary.metadata.into()),
+                            })
+                            .collect(),
+                        metadata: Some(ResponseMetadata {
+                            request_uuid: Uuid::now_v7().into(),
+                            return_code: ReturnCode::Success as u32, // [?] Should this always be success ??
+                            error_data: Some(ErrorData { error_data: errors }),
+                        }),
+                    };
                     network
-                        .send_data(
-                            client_node,
-                            Data::ClientQueryData(ClientQueryData {
-                                //[!] ClientQueryData is the only (used) Data-type RPC
-                                token: ser_token,
-                                files: files
-                                    .into_iter()
-                                    .map(|f| File {
-                                        path: f.file_summary.path.to_string_lossy().to_string(),
-                                        metadata: Some(f.file_summary.metadata.into()),
-                                    })
-                                    .collect(),
-                                metadata: Some(ResponseMetadata {
-                                    request_uuid: Uuid::now_v7().into(),
-                                    return_code: ReturnCode::Success as u32, // [?] Should this always be success ??
-                                    error_data: Some(ErrorData { error_data: errors }),
-                                }),
-                            }),
-                        )
+                        .send_data(client_node, Data::ClientQueryData(data))
                         .await
                 });
             } else {

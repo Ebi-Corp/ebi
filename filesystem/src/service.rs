@@ -1,3 +1,4 @@
+use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -12,6 +13,7 @@ use file_id::{FileId, get_file_id};
 use jwalk::{ClientState, WalkDirGeneric};
 use papaya::HashSet;
 use std::sync::Arc;
+use std::sync::RwLock;
 use tower::Service;
 
 #[derive(Clone)]
@@ -77,7 +79,7 @@ impl Service<RetrieveDirRecursive> for FileSystem {
         Box::pin(async move {
             let root = req.0;
             let order = req.1;
-            let files = Arc::new(HashSet::<OrderedFileSummary>::new());
+            let files = Arc::new(RwLock::new(im::HashSet::<OrderedFileSummary>::new()));
             let shelf_dirs_c = shelf_dirs.clone();
             let order_c = order.clone();
             WalkDirGeneric::<DirState>::new(root)
@@ -105,33 +107,42 @@ impl Service<RetrieveDirRecursive> for FileSystem {
                     // file_order
                 })
                 .follow_links(false)
-                .skip_hidden(false)
+                .skip_hidden(true) // must be configurable
                 .sort(false) // [TODO] presorting here is probably beneficial with process_read_dir
                 .into_iter()
                 .for_each(|entry_res| {
-                    let entry = entry_res.unwrap(); // [TODO] properly handle errors
-                    if entry.file_type().is_file() {
-                        if let Ok(file_id) = get_file_id(entry.path()) {
-                            let ordered_file =
-                                if let Some(file) = entry.client_state.files.get(&file_id) {
-                                    file.clone()
-                                } else {
-                                    let tags = entry.client_state.dtags.clone();
-                                    OrderedFileSummary {
-                                        file_summary: FileSummary::new(
-                                            file_id,
-                                            entry.path(),
-                                            None,
-                                            tags,
-                                        ),
-                                        order: order.clone(),
-                                    }
-                                };
-                            files.pin().insert(ordered_file);
+                    if let Ok(entry) = entry_res {
+                        // [TODO] properly handle errors
+                        if entry.file_type().is_file() {
+                            if let Ok(metadata) = entry.metadata() {
+                                let file_id = FileId::new_inode(metadata.dev(), metadata.ino());
+                                let ordered_file =
+                                    if let Some(file) = entry.client_state.files.get(&file_id) {
+                                        file.clone()
+                                    } else {
+                                        let tags = entry.client_state.dtags.clone();
+                                        OrderedFileSummary {
+                                            file_summary: FileSummary {
+                                                id: file_id,
+                                                path: entry.path(),
+                                                owner: None,
+                                                tags,
+                                                metadata: metadata.into(),
+                                            },
+                                            order: order.clone(),
+                                        }
+                                    };
+                                files.write().unwrap().insert(ordered_file);
+                            }
                         }
                     }
                 });
-            Ok(files.pin().iter().cloned().collect())
+
+            let files = Arc::try_unwrap(files)
+                .ok()
+                .and_then(|lock| lock.into_inner().ok())
+                .unwrap();
+            Ok(files)
         })
     }
 }

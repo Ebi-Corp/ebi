@@ -5,6 +5,7 @@ use chrono::{DateTime, Utc};
 use ebi_proto::rpc::{OrderBy, ReturnCode};
 use im::HashSet;
 use serde::{Deserialize, Serialize};
+use std::fs::Metadata;
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 #[cfg(windows)]
@@ -97,6 +98,33 @@ impl FileMetadata {
             }
         };
 
+        FileMetadata {
+            size: meta.len(),
+            readonly: meta.permissions().readonly(),
+            modified: meta.modified().ok().map(DateTime::<Utc>::from),
+            accessed: meta.accessed().ok().map(DateTime::<Utc>::from),
+            created: meta.created().ok().map(DateTime::<Utc>::from),
+
+            #[cfg(unix)]
+            unix: Some(UnixMetadata {
+                permissions: meta.mode(),
+                uid: meta.uid(),
+                gid: meta.gid(),
+            }),
+            #[cfg(windows)]
+            unix: None,
+
+            #[cfg(windows)]
+            windows: Some(WindowsMetadata {
+                attributes: meta.file_attributes(),
+            }),
+            #[cfg(unix)]
+            windows: None,
+        }
+    }
+}
+impl From<Metadata> for FileMetadata {
+    fn from(meta: Metadata) -> Self {
         FileMetadata {
             size: meta.len(),
             readonly: meta.permissions().readonly(),
