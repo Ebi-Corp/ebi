@@ -205,7 +205,7 @@ impl ShelfData {
 
     pub fn attach_dtag(&self, sdir_id: FileId, dtag: &TagRef) -> Result<(bool, bool), UpdateErr> {
         let bind = self.dirs.pin();
-        let Some(dir_ref) = bind.get(&sdir_id).and_then(|p| p.upgrade()) else {
+        let Some(mut dir_ref) = bind.get(&sdir_id).and_then(|p| p.upgrade()) else {
             return Err(UpdateErr::PathNotFound);
         };
 
@@ -229,6 +229,7 @@ impl ShelfData {
                     .insert(dtag.clone(), vec![attach_dir.clone()]);
                 shelf_attached = true;
             }
+            dir_ref = parent;
         }
 
         fn recursive_attach(dir: &ShelfDirRef, dtag: &TagRef) {
@@ -247,7 +248,7 @@ impl ShelfData {
     }
     pub fn detach_dtag(&self, sdir_id: FileId, dtag: &TagRef) -> Result<(bool, bool), UpdateErr> {
         let bind = self.dirs.pin();
-        let Some(dir_ref) = bind.get(&sdir_id).and_then(|p| p.upgrade()) else {
+        let Some(mut dir_ref) = bind.get(&sdir_id).and_then(|p| p.upgrade()) else {
             return Err(UpdateErr::PathNotFound);
         };
 
@@ -270,6 +271,7 @@ impl ShelfData {
                     shelf_detached = false;
                 }
             }
+            dir_ref = parent;
         }
 
         fn recursive_detach(dir: &ShelfDirRef, dtag: &TagRef) {

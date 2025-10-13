@@ -603,6 +603,7 @@ impl Service<AttachTag> for RpcService {
                             ))
                             .await
                             .unwrap();
+
                         let path = PathBuf::from(&req.path);
                         let sdir_id = match filesys
                             .get_or_init_dir(ShelfDirKey::Id(shelf_data.id), path.clone())
