@@ -279,6 +279,7 @@ impl ShelfData {
             if let Some(dir) = dir.upgrade() {
                 for subdir in dir.subdirs.pin().iter() {
                     recursive_detach(&subdir, dtag);
+
                 }
 
                 dir.dtags.pin().remove(dtag);
@@ -323,14 +324,12 @@ pub fn merge<T: Clone + std::cmp::Eq + std::hash::Hash>(files: Vec<im::HashSet<T
     final_res
 }
 
-#[cfg(test)]
+#[cfg(test)] //[!] Check 
 mod tests {
-    use crate::{
-        sharedref::{ImmutRef, Inner, SharedRef},
-        shelf::file::{File, FileMetadata, FileRef},
-        tag::Tag,
-    };
+    use ebi_types::tag::Tag;
+    use crate::file::File;
     use jwalk::WalkDir;
+    use seize::Collector;
     use papaya::HashSet;
     use rayon::prelude::*;
     use std::fs::{self, File as FileIO};
@@ -344,11 +343,9 @@ mod tests {
             .filter_map(|entry_res| {
                 let entry = entry_res.unwrap();
                 if entry.file_type().is_file() {
-                    Some(SharedRef::new_ref(File::new(
+                    Some(FileRef::new_ref(File::new(
                         entry.path().clone(),
-                        HashSet::new(),
-                        HashSet::new(),
-                        FileMetadata::new(&entry.path()),
+                        papaya::HashSet::builder().shared_collector(Arc::new(Collector::new())).build(),
                     )))
                 } else {
                     None
@@ -359,6 +356,8 @@ mod tests {
 
     #[test]
     fn attach() {
+        todo!();
+        /* 
         let dir_path = PathBuf::from("target/test");
         fs::create_dir_all(&dir_path).unwrap();
         let file_path0 = dir_path.join("file.jpg");
@@ -401,5 +400,6 @@ mod tests {
         fs::remove_file(&file_path0).unwrap();
         fs::remove_file(&file_path1).unwrap();
         fs::remove_dir(&dir_path).unwrap();
+        */
     }
 }

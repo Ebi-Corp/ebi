@@ -1,4 +1,6 @@
+#[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
+
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -98,7 +100,7 @@ impl Service<RetrieveDirRecursive> for FileSystem {
                             .pin()
                             .iter()
                             .map(|f| OrderedFileSummary {
-                                file_summary: crate::file::gen_summary(f, None),
+                                file_summary: crate::file::gen_summary(f, None, state.dtags.clone()),
                                 order: order_c.clone(),
                             })
                             .collect();
@@ -115,6 +117,9 @@ impl Service<RetrieveDirRecursive> for FileSystem {
                         // [TODO] properly handle errors
                         if entry.file_type().is_file() {
                             if let Ok(metadata) = entry.metadata() {
+                                #[cfg(unix)]
+                                //[!] Write Windows version 
+                                {
                                 let file_id = FileId::new_inode(metadata.dev(), metadata.ino());
                                 let ordered_file =
                                     if let Some(file) = entry.client_state.files.get(&file_id) {
@@ -133,6 +138,9 @@ impl Service<RetrieveDirRecursive> for FileSystem {
                                         }
                                     };
                                 files.write().unwrap().insert(ordered_file);
+                                }
+                                #[cfg(windows)]
+                                todo!();
                             }
                         }
                     }
