@@ -7,7 +7,7 @@ use crate::shelf::ShelfData;
 use ebi_proto::rpc::ReturnCode;
 use ebi_types::file::{FileOrder, FileSummary, OrderedFileSummary};
 use ebi_types::tag::TagData;
-use ebi_types::{ImmutRef, Ref};
+use ebi_types::{ImmutRef, Ref, WithPath};
 use file_id::{FileId, get_file_id};
 use jwalk::{ClientState, WalkDirGeneric};
 use papaya::HashSet;
@@ -161,7 +161,8 @@ impl Service<GetInitShelf> for FileSystem {
                     return Ok(shelf.clone());
                 }
                 ShelfDirKey::Path(path) => {
-                    if let Some(shelf) = local_shelves.get(&path) {
+                    // might or might not be worth adding a lookup / par iter
+                    if let Some(shelf) = local_shelves.iter().find(|s| *s.path() == path) {
                         return Ok(shelf.clone());
                     };
                     if path.is_dir() {
@@ -230,10 +231,11 @@ impl Service<GetInitShelfDir> for FileSystem {
         Box::pin(async move {
             let shelf_key = req.0;
             let r_path = req.1;
-            let local_shelves = local_shelves.pin_owned();
+            let local_shelves = local_shelves.pin();
+
             let Some(shelf) = (match shelf_key {
                 ShelfDirKey::Id(id) => local_shelves.get(&id),
-                ShelfDirKey::Path(path) => local_shelves.get(&path),
+                ShelfDirKey::Path(path) => local_shelves.iter().find(|s| *s.path() == path),
             }) else {
                 return Err(ReturnCode::ShelfNotFound);
             };
@@ -280,10 +282,12 @@ impl Service<GetInitShelfDir> for FileSystem {
 
                 new_subdir = Some(sdir.clone());
 
-                // if the dir already existed in the shelf, we are done
-                if !shelf.dirs.pin().insert(sdir_wref.clone()) {
-                    break Ok(nfile_id);
+                shelf.dirs.pin().insert(sdir_wref.clone());
+
+                if sdir.path == shelf.root_path {
+                    return Ok(nfile_id);
                 }
+
                 trav_path = trav_path.parent().unwrap().to_path_buf();
             }
         })

@@ -29,6 +29,7 @@ macro_rules! hash_map {
     };
 }
 
+#[derive(Debug)]
 pub struct ShelfDir {
     pub path: PathBuf,
     pub files: HashSet<FileRef>,

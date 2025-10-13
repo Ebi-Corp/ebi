@@ -33,6 +33,7 @@ impl Default for TagFilter {
     }
 }
 
+#[derive(Debug)]
 pub struct ShelfData {
     pub root: ImmutRef<ShelfDir, FileId>,
     pub dirs: HashSet<ShelfDirRef>,
@@ -86,7 +87,7 @@ impl ShelfData {
             return Err(UpdateErr::PathNotFound);
         };
 
-        let file = match dir_ref.files.pin().get(&path) {
+        let file = match dir_ref.files.pin().iter().find(|s| *s.path() == path) {
             Some(file) => file.clone(),
             None => {
                 let file_id = get_file_id(&path).map_err(|_| UpdateErr::FileNotFound)?;
@@ -138,7 +139,7 @@ impl ShelfData {
             return Err(UpdateErr::PathNotFound);
         };
 
-        let file = match dir_ref.files.pin().get(&path) {
+        let file = match dir_ref.files.pin().iter().find(|s| *s.path() == path) {
             Some(file) => file.clone(),
             None => {
                 let file_id = get_file_id(&path).map_err(|_| UpdateErr::FileNotFound)?;

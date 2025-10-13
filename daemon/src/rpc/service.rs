@@ -358,7 +358,14 @@ impl Service<StripTag> for RpcService {
                         .get_or_init_shelf(ShelfDirKey::Path(shelf.info.load().root.to_path_buf()))
                         .await
                         .unwrap();
-                    let path = PathBuf::from(&req.path);
+                    let Ok(path) = PathBuf::from(&req.path).canonicalize() else {
+                        return_error!(
+                            ReturnCode::PathNotFound,
+                            StripTagResponse,
+                            metadata.request_uuid,
+                            error_data
+                        );
+                    };
                     let sdir_id = match filesys
                         .get_or_init_dir(ShelfDirKey::Id(shelf_data.id), path.clone())
                         .await
@@ -473,7 +480,14 @@ impl Service<DetachTag> for RpcService {
                             ))
                             .await
                             .unwrap();
-                        let path = PathBuf::from(&req.path);
+                        let Ok(path) = PathBuf::from(&req.path).canonicalize() else {
+                            return_error!(
+                                ReturnCode::PathNotFound,
+                                DetachTagResponse,
+                                metadata.request_uuid,
+                                error_data
+                            );
+                        };
                         let sdir_id = match filesys
                             .get_or_init_dir(ShelfDirKey::Id(shelf_data.id), path.clone())
                             .await
@@ -604,7 +618,15 @@ impl Service<AttachTag> for RpcService {
                             .await
                             .unwrap();
 
-                        let path = PathBuf::from(&req.path);
+                        let Ok(path) = PathBuf::from(&req.path).canonicalize() else {
+                            return_error!(
+                                ReturnCode::PathNotFound,
+                                AttachTagResponse,
+                                metadata.request_uuid,
+                                error_data
+                            );
+                        };
+
                         let sdir_id = match filesys
                             .get_or_init_dir(ShelfDirKey::Id(shelf_data.id), path.clone())
                             .await
@@ -915,6 +937,15 @@ impl Service<AddShelf> for RpcService {
                 );
             };
 
+            let Ok(path) = PathBuf::from(&req.path).canonicalize() else {
+                return_error!(
+                    ReturnCode::PathNotFound,
+                    AddShelfResponse,
+                    metadata.request_uuid,
+                    error_data
+                );
+            };
+
             //[/] Business Logic
             let return_code = {
                 if peer_id != *daemon_info.id {
@@ -925,7 +956,7 @@ impl Service<AddShelf> for RpcService {
                 } else {
                     match state_srv
                         .assign_shelf(
-                            req.path.into(),
+                            path,
                             peer_id,
                             false,
                             req.description,

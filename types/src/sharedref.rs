@@ -93,15 +93,6 @@ pub trait WithPath {
     fn path(&self) -> &PathBuf;
 }
 
-impl<T> Borrow<PathBuf> for ImmutRef<T, FileId>
-where
-    T: WithPath,
-{
-    fn borrow(&self) -> &PathBuf {
-        self.path()
-    }
-}
-
 impl<T, I> PartialEq for Inner<T, I>
 where
     I: PartialEq,
