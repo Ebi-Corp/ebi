@@ -118,9 +118,8 @@ impl Service<RetrieveDirRecursive> for FileSystem {
                         if entry.file_type().is_file() {
                             if let Ok(metadata) = entry.metadata() {
                                 #[cfg(unix)]
-                                //[!] Write Windows version 
                                 {
-                                let file_id = FileId::new_inode(metadata.dev(), metadata.ino());
+                                let id = FileId::new_inode(metadata.dev(), metadata.ino());
                                 let ordered_file =
                                     if let Some(file) = entry.client_state.files.get(&file_id) {
                                         file.clone()
@@ -133,14 +132,36 @@ impl Service<RetrieveDirRecursive> for FileSystem {
                                                 owner: None,
                                                 tags,
                                                 metadata: metadata.into(),
-                                            },
-                                            order: order.clone(),
-                                        }
-                                    };
-                                files.write().unwrap().insert(ordered_file);
+                                                },
+                                                order: order.clone(),
+                                            }
+                                        };
+                                    files.write().unwrap().insert(ordered_file);
                                 }
                                 #[cfg(windows)]
-                                todo!();
+                                {
+                                    if let Ok(file_id) = get_file_id(entry.path()) { 
+                                        let ordered_file =
+                                            if let Some(file) = entry.client_state.files.get(&file_id) {
+                                                file.clone()
+                                            } else {
+                                                let tags = entry.client_state.dtags.clone();
+                                                OrderedFileSummary {
+                                                    file_summary: FileSummary {
+                                                        id: file_id,
+                                                        path: entry.path(),
+                                                        owner: None,
+                                                        tags,
+                                                        metadata: metadata.into(),
+                                                        },
+                                                        order: order.clone(),
+                                                    }
+                                                };
+                                            files.write().unwrap().insert(ordered_file);
+                                    } else {
+                                        todo!(); //[!] Handle Error 
+                                    }
+                                }
                             }
                         }
                     }
