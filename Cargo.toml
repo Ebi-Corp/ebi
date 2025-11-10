@@ -37,3 +37,4 @@ arc-swap = { version = "1.7.1", features = ["weak", "serde"] }
 papaya = { git = "https://github.com/yamabiiko/papaya" }
 im = { version = "15.1.0", features = ["serde"] }
 file-id = { version = "0.2.3", features = ["serde"] }
+redb = { version = "3.1.0" }

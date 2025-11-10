@@ -8,8 +8,6 @@ use std::sync::Weak;
 use std::{future::Future, ops::Deref, pin::Pin, ptr, sync::Arc};
 use tokio::sync::RwLock;
 
-//[!] Add wrapped Uuid
-
 pub type WeakRef<T, I = Uuid> = Inner<Weak<T>, I>;
 pub type ImmutRef<T, I = Uuid> = Inner<Arc<T>, I>;
 pub type SharedRef<T, I = Uuid> = Inner<Arc<ArcSwap<T>>, I>;

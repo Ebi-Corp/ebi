@@ -1,35 +1,223 @@
 use ebi_filesystem::shelf::TagFilter;
-use ebi_proto::rpc::ReturnCode;
+use ebi_proto::rpc::{ReturnCode};
+use serde::{Serialize, Deserialize};
 use ebi_types::shelf::{ShelfId, ShelfOwner};
 use ebi_types::workspace::{WorkspaceId, WorkspaceInfo};
 use ebi_types::{NodeId, tag::Tag};
 use ebi_types::{shelf::ShelfType, *};
+use ebi_types::Uuid;
 use std::path::PathBuf;
+use std::str::Bytes;
 use std::sync::Weak;
 use std::{
     future::Future,
     pin::Pin,
     sync::Arc,
-    task::{Context, Poll},
+    task::{Context, Poll}, 
 };
 use tokio::sync::RwLock;
 use tower::Service;
+use redb::{self, Database, Key, ReadableDatabase, ReadableTable, TableDefinition, TypeName, Value };
 
+// (UUID, StateID)
+const WKSPC_TABLE: TableDefinition<(UuidWrapper, u8), WorkspaceWrapper> = TableDefinition::new("workspace_state");
+const ASSGN_TABLE: TableDefinition<(UuidWrapper, u8), UuidWrapper> = TableDefinition::new("shelf_assignment");
+const SHELF_TABLE: TableDefinition<(UuidWrapper, u8), ShelfWrapper> = TableDefinition::new("shelf_state");
+const TAG_TABLE: TableDefinition<(UuidWrapper, u8), TagWrapper> = TableDefinition::new("tag_state");
+const STATE_TABLE: TableDefinition<u8, GroupStateWrapper> = TableDefinition::new("group_state");
 #[derive(Clone)]
 pub struct StateService {
     pub state: Arc<History<GroupState>>,
     pub lock: Arc<RwLock<()>>,
+    pub db: Arc<Database>
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct UuidWrapper{
+    uuid: Uuid,
+}
+
+impl Key for UuidWrapper {
+    fn compare(data1: &[u8], data2: &[u8]) -> std::cmp::Ordering {
+        data1.cmp(data2)
+    }
+}
+
+impl Value for UuidWrapper {
+    type SelfType<'a> = Self;
+    type AsBytes<'a> = [u8; std::mem::size_of::<Self>()] where Self: 'a;
+
+    fn fixed_width() -> Option<usize> {
+        Some(std::mem::size_of::<Self>())
+    }
+
+    fn from_bytes<'a>(data: &'a [u8]) -> Self
+    where
+        Self: 'a,
+    {
+        Self {
+            uuid: Uuid::from_bytes(data.try_into().unwrap()),
+        }
+    }
+
+    fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'b>) -> [u8; std::mem::size_of::<Self>()]
+    where
+        Self: 'a,
+        Self: 'b,
+    {
+        value.uuid.as_bytes().clone()
+    }
+
+    fn type_name() -> TypeName {
+        TypeName::new(stringify!(Uuid))
+    }
+}
+
+#[derive(Clone, Debug)]
+struct WorkspaceWrapper {
+    wkspc: Workspace,
+}
+
+impl Value for WorkspaceWrapper {
+    type SelfType<'a> = Self;
+    type AsBytes<'a> = [u8; std::mem::size_of::<Self>()] where Self: 'a;
+
+    fn fixed_width() -> Option<usize> {
+        Some(std::mem::size_of::<Self>())
+    }
+
+    fn from_bytes<'a>(data: &'a [u8]) -> Self
+    where
+        Self: 'a,
+    {
+        todo!(); // [TODO] implement deserialization 
+    }
+
+    fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'b>) -> [u8; std::mem::size_of::<Self>()]
+    where
+        Self: 'a,
+        Self: 'b,
+    {
+        todo!(); // [TODO] implement serialization 
+    }
+
+    fn type_name() -> TypeName {
+        TypeName::new(stringify!(Uuid))
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ShelfWrapper {
+    wkspc: Workspace,
+}
+
+impl Value for ShelfWrapper {
+    type SelfType<'a> = Self;
+    type AsBytes<'a> = [u8; std::mem::size_of::<Self>()] where Self: 'a;
+
+    fn fixed_width() -> Option<usize> {
+        Some(std::mem::size_of::<Self>())
+    }
+
+    fn from_bytes<'a>(data: &'a [u8]) -> Self
+    where
+        Self: 'a,
+    {
+        todo!(); // [TODO] implement deserialization 
+    }
+
+    fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'b>) -> [u8; std::mem::size_of::<Self>()]
+    where
+        Self: 'a,
+        Self: 'b,
+    {
+        todo!(); // [TODO] implement serialization 
+    }
+
+    fn type_name() -> TypeName {
+        TypeName::new(stringify!(Uuid))
+    }
+}
+
+#[derive(Clone, Debug)]
+struct TagWrapper {
+    wkspc: Workspace,
+}
+
+impl Value for TagWrapper {
+    type SelfType<'a> = Self;
+    type AsBytes<'a> = [u8; std::mem::size_of::<Self>()] where Self: 'a;
+
+    fn fixed_width() -> Option<usize> {
+        Some(std::mem::size_of::<Self>())
+    }
+
+    fn from_bytes<'a>(data: &'a [u8]) -> Self
+    where
+        Self: 'a,
+    {
+        todo!(); // [TODO] implement deserialization 
+    }
+
+    fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'b>) -> [u8; std::mem::size_of::<Self>()]
+    where
+        Self: 'a,
+        Self: 'b,
+    {
+        todo!(); // [TODO] implement serialization 
+    }
+
+    fn type_name() -> TypeName {
+        TypeName::new(stringify!(Uuid))
+    }
 }
 
 impl StateService {
-    pub fn new() -> Self {
+    pub fn new(path: PathBuf) -> Result<Self, redb::Error> {
         let lock = Arc::new(RwLock::new(()));
-        let state = Arc::new(History::new(GroupState::new(), lock.clone()));
-        Self {
+        let db;
+        let state;
+
+        if let Ok(database) = Database::open(path) {
+            state = Arc::new(History::from(database));
+            db = Arc::new(database);
+            if let Ok(read_txn) = db.begin_read(){
+                let mut wkspc_table = read_txn.open_table(WKSPC_TABLE)?;
+                let mut shelf_table = read_txn.open_table(SHELF_TABLE)?;
+            }
+
+            //for id, wksp in wkspc_table.iter() {
+                todo!();
+            //}
+        } else if let Ok(database) = Database::create(path) {
+            db = Arc::new(database);
+            state = Arc::new(History::new());
+        } else {
+            panic!() //[!]
+        }
+        Ok(Self {
             state,
             lock: lock.clone(),
-        }
+            db
+        })
     }
+
+    pub async fn save(&mut self) -> Result<(), redb::Error> {
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut wkspc_table = write_txn.open_table(WKSPC_TABLE)?;
+            for id, wkspc in self.state.staged.wkscp_iter() {
+                wkspc_table.insert(id, wkspc);
+            }
+            let mut shelf_table = write_txn.open_table(SHELF_TABLE)?;
+            for id, wkspc in self.state.staged.shelf_iter() {
+                shelf_table.insert(id, wkspc);
+            }
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
     pub async fn get_workspace(
         &mut self,
         rawid: &[u8],
