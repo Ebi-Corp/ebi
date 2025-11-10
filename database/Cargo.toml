@@ -11,3 +11,6 @@ ebi-types = { workspace = true }
 tokio = { workspace = true }
 tower = { workspace = true }
 im = { workspace = true }
+
+serde = { workspace = true }
+redb = { workspace = true }

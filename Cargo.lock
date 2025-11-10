@@ -733,6 +733,8 @@ dependencies = [
  "ebi-proto",
  "ebi-types",
  "im",
+ "redb",
+ "serde",
  "tokio",
  "tower",
 ]
