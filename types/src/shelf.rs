@@ -10,12 +10,12 @@ use arc_swap::ArcSwap;
 use chrono::Duration;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
-use uuid::Uuid;
+use crate::Uuid;
 
 pub type ShelfId = Uuid;
 pub type TagRef = SharedRef<Tag>;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum ShelfType {
     Local,
     Remote,
@@ -46,6 +46,7 @@ pub struct ShelfConfig {
     pub sync_config: Option<SyncConfig>,
 }
 
+#[derive(Debug)]
 pub struct Shelf<TagFilter> {
     pub shelf_type: ShelfType,
     pub shelf_owner: ShelfOwner,
