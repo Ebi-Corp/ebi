@@ -169,7 +169,7 @@ impl Service<PeerQuery> for RpcService {
                         Ok(PeerQueryResponse {
                             files,
                             metadata: Some(ResponseMetadata {
-                                request_uuid: Uuid::new_v4().into(),
+                                request_uuid: Into::<Vec<u8>>::into(Uuid::new_v4()),
                                 return_code: ReturnCode::Success as u32, // [?] Should this always be success ??
                                 error_data: Some(ErrorData { error_data: errors }),
                             }),
@@ -178,7 +178,7 @@ impl Service<PeerQuery> for RpcService {
                         Ok(PeerQueryResponse {
                             files: Vec::<u8>::new(),
                             metadata: Some(ResponseMetadata {
-                                request_uuid: Uuid::new_v4().into(),
+                                request_uuid: Into::<Vec<u8>>::into(Uuid::new_v4()),
                                 return_code: ReturnCode::PeerServiceError as u32, // [!] Encode Error
                                 error_data: Some(ErrorData { error_data: errors }),
                             }),
@@ -188,7 +188,7 @@ impl Service<PeerQuery> for RpcService {
                 Err(ret_code) => Ok(PeerQueryResponse {
                     files: Vec::<u8>::new(),
                     metadata: Some(ResponseMetadata {
-                        request_uuid: Uuid::new_v4().into(),
+                        request_uuid: Into::<Vec<u8>>::into(Uuid::new_v4()),
                         return_code: ret_code as u32,
                         error_data: None,
                     }),

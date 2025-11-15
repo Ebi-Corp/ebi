@@ -2,7 +2,7 @@ use crate::SharedRef;
 use serde::{Deserialize, Serialize, Serializer, ser::SerializeStruct};
 use std::hash::Hash;
 
-pub type TagId = uuid::Uuid;
+pub type TagId = crate::Uuid;
 pub type TagRef = SharedRef<Tag>;
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]

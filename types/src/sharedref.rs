@@ -7,7 +7,9 @@ use std::path::PathBuf;
 use std::sync::Weak;
 use std::{future::Future, ops::Deref, pin::Pin, ptr, sync::Arc};
 use tokio::sync::RwLock;
-use uuid::Uuid;
+use crate::Uuid;
+
+//[!] Add wrapped Uuid 
 
 pub type WeakRef<T, I = Uuid> = Inner<Weak<T>, I>;
 pub type ImmutRef<T, I = Uuid> = Inner<Arc<T>, I>;
@@ -123,9 +125,9 @@ impl<T, I> Deref for Inner<T, I> {
 
 #[derive(Debug)]
 pub struct History<T, I = Uuid> {
-    pub staged: StatefulRef<T, I>,
-    pub synced: Option<StatefulRef<T, I>>,
-    pub hist: VecDeque<StatefulRef<T, I>>,
+    pub staged: StatefulRef<T, I>, // Locally modified - Not yet committed
+    pub synced: Option<StatefulRef<T, I>>, // Committed (Broadcasted) but not yet Approved by OpChain
+    pub hist: VecDeque<StatefulRef<T, I>>, // Approved by OpChain, not seen by all - Clears once every Daemon views the changes 
 }
 
 const HIST_L: usize = 3;
@@ -155,6 +157,14 @@ impl<T> History<T> {
                 s_lock: self.staged.s_lock.clone(),
             },
             synced: Some(self.staged.clone()),
+            hist,
+        }
+    }
+
+    pub fn from(staged: StatefulRef<T>, synced: Option<StatefulRef<T>>, hist: VecDeque<StatefulRef<T>>) -> Self {
+        History {
+            staged,
+            synced,
             hist,
         }
     }

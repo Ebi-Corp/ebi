@@ -16,3 +16,6 @@ serde = { workspace = true }
 iroh-base = { workspace = true }
 
 papaya = { workspace = true }
+
+[features]
+redb = []

@@ -417,7 +417,7 @@ impl Service<ClientQuery> for QueryService {
             };
 
             let token = Uuid::now_v7();
-            let ser_token: Vec<u8> = token.into();
+            let ser_token: Vec<u8> = Into::<Vec<u8>>::into(token);
 
             //[/] Return ClientQueryResponse in RpcService before asynchronously calling QueryService
 
@@ -613,7 +613,7 @@ impl Service<ClientQuery> for QueryService {
                             })
                             .collect(),
                         metadata: Some(ResponseMetadata {
-                            request_uuid: Uuid::now_v7().into(),
+                            request_uuid: Into::<Vec<u8>>::into(Uuid::now_v7()),
                             return_code: ReturnCode::Success as u32, // [?] Should this always be success ??
                             error_data: Some(ErrorData { error_data: errors }),
                         }),
@@ -636,7 +636,7 @@ impl Service<ClientQuery> for QueryService {
                                             token: ser_token.clone(),
                                             files: Vec::new(),
                                             metadata: Some(ResponseMetadata {
-                                                request_uuid: Uuid::now_v7().into(),
+                                                request_uuid: Into::<Vec<u8>>::into(Uuid::now_v7()),
                                                 return_code: ReturnCode::PeerServiceError as u32,
                                                 error_data: Some(ErrorData {
                                                     error_data: vec![format!(
@@ -676,7 +676,7 @@ impl Service<ClientQuery> for QueryService {
                                                 error_data: Some(ErrorData {
                                                     error_data: t_res.errors,
                                                 }),
-                                                request_uuid: Uuid::now_v7().into(),
+                                                request_uuid: Into::<Vec<u8>>::into(Uuid::now_v7()),
                                             }),
                                         }),
                                     )
