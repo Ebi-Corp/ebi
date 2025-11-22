@@ -1,7 +1,6 @@
 use ebi_types::{
-    ImmutRef, SharedRef, WithPath, file::FileSummary, shelf::ShelfOwner, tag::Tag, tag::TagData,
+    ImmutRef, SharedRef, WithPath, file::FileSummary, shelf::ShelfOwner, tag::Tag, tag::TagData, FileId
 };
-use file_id::FileId;
 use im::HashSet;
 use std::path::PathBuf;
 

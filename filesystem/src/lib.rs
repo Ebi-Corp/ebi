@@ -2,11 +2,11 @@ pub mod dir;
 pub mod file;
 pub mod service;
 pub mod shelf;
+pub mod redb;
 use crate::dir::ShelfDir;
 use crate::file::File;
 use crate::shelf::ShelfData;
-use ebi_types::{ImmutRef, Inner, Ref};
-pub use file_id::FileId;
+use ebi_types::{ImmutRef, Inner, Ref, FileId};
 use std::sync::Arc;
 
 impl Ref<File, FileId> for ImmutRef<File, FileId> {

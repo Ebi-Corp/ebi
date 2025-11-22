@@ -9,6 +9,7 @@ seize = "0.5.0"
 ebi-types = { workspace = true }
 ebi-proto = { workspace = true }
 
+bincode = { workspace = true }
 tower = { workspace = true }
 jwalk = { workspace = true }
 uuid = { workspace = true }
@@ -16,10 +17,10 @@ scalable_cuckoo_filter = { workspace = true }
 papaya = { workspace = true }
 rand_chacha = { workspace = true }
 iroh = { workspace = true }
-file-id = { workspace = true }
 tokio = { workspace = true }
 chrono = { workspace = true }
 arc-swap = { workspace = true }
 im = { workspace = true }
 serde = { workspace = true }
+redb = { workspace = true }
 rayon = { workspace = true }
