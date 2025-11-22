@@ -1,10 +1,12 @@
+use bincode::serde::Compat;
 use bincode::{Encode, Decode};
 pub use iroh_base::NodeId;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use bincode::{decode_from_slice, encode_to_vec};
 use redb::{Value, Key};
 use std::fmt::Debug;
-use crate::{FileId, ImmutRef, Uuid};
+use crate::{FileId, Uuid};
 use crate::tag::Tag;
 
 impl Key for Uuid {
@@ -87,20 +89,42 @@ impl Value for FileId {
     }
 }
 
-pub trait Storable<'a>: Sized {
-    type Storable: Serialize + Deserialize<'a> + Debug;
+pub trait Storable: Sized {
+    type Storable: Serialize + DeserializeOwned + Debug + 'static;
 
-    fn to_storable(&self) -> Self::Storable;
+    fn to_storable(&self) -> Bincode<Self>;
+}
+#[derive(Debug)]
+pub struct Bincode<T: Storable>(pub T::Storable);
+
+impl<T> bincode::Encode for Bincode<T>
+where
+    T: Storable,
+{
+    fn encode<E: bincode::enc::Encoder>(&self, encoder: &mut E) -> Result<(), bincode::error::EncodeError> {
+        Compat(&self.0).encode(encoder)?;
+        Ok(())
+    }
 }
 
-impl<T, I> Value for ImmutRef<T, I>
+impl<T> bincode::Decode<()> for Bincode<T>
 where
-    T: for<'a> Storable<'a> + std::fmt::Debug,
-    for<'a> <T as Storable<'a>>::Storable: Decode<()> + Encode,
-    I: std::fmt::Debug
+    T: Storable,
+{
+    fn decode<D: bincode::de::Decoder<Context = ()>>(
+        decoder: &mut D,
+    ) -> Result<Self, bincode::error::DecodeError> {
+        let res = Compat::<T::Storable>::decode(decoder)?.0;
+        Ok(Bincode(res))
+    }
+}
+
+impl<T> Value for Bincode<T>
+where
+    T: Storable + std::fmt::Debug
 {
     type SelfType<'a>
-        = <T as Storable<'a>>::Storable
+        = Bincode<T>
     where
         Self: 'a;
 
@@ -137,17 +161,6 @@ where
     }
 }
 
-impl<T, I> Key for ImmutRef<T, I>
-where
-    T: for<'a> Storable<'a> + std::fmt::Debug, 
-    for<'a> <T as Storable<'a>>::Storable: Decode<()> + Encode,
-    I: std::fmt::Debug
-
-{
-    fn compare(data1: &[u8], data2: &[u8]) -> std::cmp::Ordering {
-        data1.cmp(data2)
-    }
-}
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct TagStorable {
@@ -156,31 +169,14 @@ pub struct TagStorable {
     pub parent: Option<Uuid>
 }
 
-impl bincode::Encode for TagStorable {
-    fn encode<E: bincode::enc::Encoder>(&self, encoder: &mut E) -> Result<(), bincode::error::EncodeError> {
-        bincode::serde::Compat(&self).encode(encoder)?;
-        Ok(())
-    }
-}
-
-impl bincode::Decode<()> for TagStorable {
-    fn decode<D: bincode::de::Decoder>(
-        decoder: &mut D,
-    ) -> Result<Self, bincode::error::DecodeError> {
-        let res = bincode::serde::Compat::<TagStorable>::decode(decoder)?.0;
-        Ok(res)
-    }
-}
-
-#[cfg(feature = "redb")]
-impl<'a> Storable<'a> for Tag {
+impl Storable for Tag {
     type Storable = TagStorable;
 
-    fn to_storable(&self) -> Self::Storable {
-        TagStorable {
+    fn to_storable(&self) -> Bincode<Self> {
+        Bincode(Self::Storable {
             name: self.name.clone(),
             priority: self.priority,
             parent: self.parent.clone().and_then(|f| Some(f.id))
-        }
+        })
     }
 }
