@@ -2,16 +2,14 @@ use crate::dir::{HashSet, ShelfDir, ShelfDirRef};
 use crate::file::{File, FileRef};
 use ebi_types::sharedref::ptr_eq;
 use ebi_types::tag::{Tag, TagId};
-use ebi_types::{ImmutRef, Ref, SharedRef, WithPath};
-use file_id::{FileId, get_file_id};
+use ebi_types::{Uuid, ImmutRef, Ref, SharedRef, WithPath, FileId, get_file_id};
 use rand_chacha::{ChaCha12Rng, rand_core::SeedableRng};
 use scalable_cuckoo_filter::{ScalableCuckooFilter, ScalableCuckooFilterBuilder};
 use seize::Collector;
 use std::io;
-use std::path::PathBuf;
 use std::result::Result;
+use std::path::PathBuf;
 use std::sync::Arc;
-use uuid::Uuid;
 
 pub type ShelfId = Uuid;
 pub type TagRef = SharedRef<Tag>;

@@ -1,5 +1,4 @@
 use arc_swap::{ArcSwap, AsRaw, Guard};
-use file_id::FileId;
 use std::borrow::Borrow;
 use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
@@ -7,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::Weak;
 use std::{future::Future, ops::Deref, pin::Pin, ptr, sync::Arc};
 use tokio::sync::RwLock;
-use crate::Uuid;
+use crate::{Uuid, FileId};
 
 //[!] Add wrapped Uuid 
 

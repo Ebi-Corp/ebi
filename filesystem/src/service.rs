@@ -7,21 +7,25 @@ use std::task::{Context, Poll};
 
 use crate::dir::ShelfDir;
 use crate::shelf::ShelfData;
-use ebi_proto::rpc::ReturnCode;
+use crate::redb::{T_SHELF_DATA, T_SHELF_DIR, T_FILE, T_TAG};
+use ebi_proto::rpc::{Data, ReturnCode};
 use ebi_types::file::{FileOrder, FileSummary, OrderedFileSummary};
 use ebi_types::tag::TagData;
-use ebi_types::{ImmutRef, Ref, WithPath};
-use file_id::{FileId, get_file_id};
+use ebi_types::{ImmutRef, Ref, FileId, WithPath, get_file_id};
 use jwalk::{ClientState, WalkDirGeneric};
 use papaya::HashSet;
 use std::sync::Arc;
 use std::sync::RwLock;
 use tower::Service;
+use redb::{Database, Error, ReadableDatabase, ReadableTable, TableDefinition};
+
+
 
 #[derive(Clone)]
 pub struct FileSystem {
     pub local_shelves: Arc<HashSet<ImmutRef<ShelfData, FileId>>>,
     pub shelf_dirs: Arc<HashSet<ImmutRef<ShelfDir, FileId>>>,
+    pub db: Arc<Database>,
 }
 
 pub enum ShelfDirKey {
@@ -190,6 +194,7 @@ impl Service<GetInitShelf> for FileSystem {
     fn call(&mut self, req: GetInitShelf) -> Self::Future {
         let shelf_dirs = self.shelf_dirs.clone();
         let local_shelves = self.local_shelves.clone();
+        let db = self.db.clone();
         Box::pin(async move {
             let shelf_key = req.0;
             let local_shelves = local_shelves.pin();
@@ -231,6 +236,10 @@ impl Service<GetInitShelf> for FileSystem {
                         };
                         let sdir_ref = ImmutRef::<ShelfDir, FileId>::new_ref_id(file_id, sdir);
                         shelf_dirs.pin().insert(sdir_ref.clone());
+                        // [TODO] handle db errors properly
+                        let write_txn = db.begin_write().map_err(|_| ReturnCode::InternalStateError)?;
+                        let mut table = write_txn.open_table(T_SHELF_DIR).map_err(|_| ReturnCode::InternalStateError)?;
+                        table.insert(file_id, sdir_ref);
                         sdir_ref
                     }
                 };

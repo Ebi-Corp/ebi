@@ -1,8 +1,7 @@
 use crate::file::FileRef;
 use arc_swap::ArcSwap;
 use ebi_types::tag::TagRef;
-use ebi_types::{WeakRef, WithPath};
-use file_id::FileId;
+use ebi_types::{WeakRef, WithPath, FileId};
 use seize::Collector;
 use std::hash::RandomState;
 use std::io;
