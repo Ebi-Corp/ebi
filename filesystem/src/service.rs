@@ -10,6 +10,7 @@ use crate::shelf::ShelfData;
 use crate::redb::{T_SHELF_DATA, T_SHELF_DIR, T_FILE, T_TAG};
 use ebi_proto::rpc::{Data, ReturnCode};
 use ebi_types::file::{FileOrder, FileSummary, OrderedFileSummary};
+use ebi_types::redb::Storable;
 use ebi_types::tag::TagData;
 use ebi_types::{ImmutRef, Ref, FileId, WithPath, get_file_id};
 use jwalk::{ClientState, WalkDirGeneric};
@@ -239,7 +240,7 @@ impl Service<GetInitShelf> for FileSystem {
                         // [TODO] handle db errors properly
                         let write_txn = db.begin_write().map_err(|_| ReturnCode::InternalStateError)?;
                         let mut table = write_txn.open_table(T_SHELF_DIR).map_err(|_| ReturnCode::InternalStateError)?;
-                        table.insert(file_id, sdir_ref);
+                        table.insert(file_id, sdir_ref.to_storable());
                         sdir_ref
                     }
                 };
