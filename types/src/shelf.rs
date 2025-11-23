@@ -4,13 +4,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::NodeId;
+use crate::Uuid;
 use crate::tag::Tag;
 use crate::{InfoState, SharedRef, StatefulField, StatefulRef};
 use arc_swap::ArcSwap;
 use chrono::Duration;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
-use crate::Uuid;
 
 pub type ShelfId = Uuid;
 pub type TagRef = SharedRef<Tag>;

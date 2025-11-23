@@ -1,4 +1,6 @@
+use crate::{FileId, Uuid};
 use arc_swap::{ArcSwap, AsRaw, Guard};
+use papaya::Equivalent;
 use std::borrow::Borrow;
 use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
@@ -6,13 +8,12 @@ use std::path::PathBuf;
 use std::sync::Weak;
 use std::{future::Future, ops::Deref, pin::Pin, ptr, sync::Arc};
 use tokio::sync::RwLock;
-use crate::{Uuid, FileId};
 
-//[!] Add wrapped Uuid 
+//[!] Add wrapped Uuid
 
 pub type WeakRef<T, I = Uuid> = Inner<Weak<T>, I>;
 pub type ImmutRef<T, I = Uuid> = Inner<Arc<T>, I>;
-pub type SharedRef<T, I = Uuid> = Arc<Inner<ArcSwap<T>, I>>;
+pub type SharedRef<T, I = Uuid> = Inner<Arc<ArcSwap<T>>, I>;
 
 pub trait Ref<T, I> {
     fn new_ref(data: T) -> Self;
@@ -44,11 +45,17 @@ impl<T> Ref<T, Uuid> for SharedRef<T, Uuid> {
     fn new_ref(data: T) -> Self {
         let id = Uuid::new_v4();
         let data = ArcSwap::new(Arc::new(data));
-        Arc::new(Inner { id, data })
+        Inner {
+            id,
+            data: Arc::new(data),
+        }
     }
     fn new_ref_id(id: Uuid, data: T) -> Self {
         let data = ArcSwap::new(Arc::new(data));
-        Arc::new(Inner { id, data })
+        Inner {
+            id,
+            data: Arc::new(data),
+        }
     }
     fn inner_ptr(&self) -> *const T {
         Arc::as_ptr(&self.data.load())
@@ -84,6 +91,7 @@ impl<T, I> Borrow<I> for ImmutRef<T, I> {
         &self.id
     }
 }
+
 impl<T, I> Borrow<I> for WeakRef<T, I> {
     fn borrow(&self) -> &I {
         &self.id
@@ -126,7 +134,7 @@ impl<T, I> Deref for Inner<T, I> {
 pub struct History<T, I = Uuid> {
     pub staged: StatefulRef<T, I>, // Locally modified - Not yet committed
     pub synced: Option<StatefulRef<T, I>>, // Committed (Broadcasted) but not yet Approved by OpChain
-    pub hist: VecDeque<StatefulRef<T, I>>, // Approved by OpChain, not seen by all - Clears once every Daemon views the changes 
+    pub hist: VecDeque<StatefulRef<T, I>>, // Approved by OpChain, not seen by all - Clears once every Daemon views the changes
 }
 
 const HIST_L: usize = 3;
@@ -160,7 +168,11 @@ impl<T> History<T> {
         }
     }
 
-    pub fn from(staged: StatefulRef<T>, synced: Option<StatefulRef<T>>, hist: VecDeque<StatefulRef<T>>) -> Self {
+    pub fn from(
+        staged: StatefulRef<T>,
+        synced: Option<StatefulRef<T>>,
+        hist: VecDeque<StatefulRef<T>>,
+    ) -> Self {
         History {
             staged,
             synced,

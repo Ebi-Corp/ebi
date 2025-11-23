@@ -1,13 +1,13 @@
+use crate::tag::Tag;
+use crate::{FileId, Uuid};
 use bincode::serde::Compat;
-use bincode::{Encode, Decode};
+use bincode::{Decode, Encode};
+use bincode::{decode_from_slice, encode_to_vec};
 pub use iroh_base::NodeId;
+use redb::{Key, Value};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use bincode::{decode_from_slice, encode_to_vec};
-use redb::{Value, Key};
 use std::fmt::Debug;
-use crate::{FileId, Uuid};
-use crate::tag::Tag;
 
 impl Key for Uuid {
     fn compare(data1: &[u8], data2: &[u8]) -> std::cmp::Ordering {
@@ -101,7 +101,10 @@ impl<T> bincode::Encode for Bincode<T>
 where
     T: Storable,
 {
-    fn encode<E: bincode::enc::Encoder>(&self, encoder: &mut E) -> Result<(), bincode::error::EncodeError> {
+    fn encode<E: bincode::enc::Encoder>(
+        &self,
+        encoder: &mut E,
+    ) -> Result<(), bincode::error::EncodeError> {
         Compat(&self.0).encode(encoder)?;
         Ok(())
     }
@@ -121,7 +124,7 @@ where
 
 impl<T> Value for Bincode<T>
 where
-    T: Storable + std::fmt::Debug
+    T: Storable + std::fmt::Debug,
 {
     type SelfType<'a>
         = Bincode<T>
@@ -161,12 +164,11 @@ where
     }
 }
 
-
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct TagStorable {
     pub name: String,
     pub priority: u64,
-    pub parent: Option<Uuid>
+    pub parent: Option<Uuid>,
 }
 
 impl Storable for Tag {
@@ -176,7 +178,7 @@ impl Storable for Tag {
         Bincode(Self::Storable {
             name: self.name.clone(),
             priority: self.priority,
-            parent: self.parent.clone().and_then(|f| Some(f.id))
+            parent: self.parent.clone().and_then(|f| Some(f.id)),
         })
     }
 }

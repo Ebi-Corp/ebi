@@ -1,12 +1,27 @@
+macro_rules! hash_set {
+    ($collector:expr) => {
+        papaya::HashSet::builder()
+            .shared_collector($collector.clone())
+            .build()
+    };
+}
+macro_rules! hash_map {
+    ($collector:expr) => {
+        papaya::HashMap::builder()
+            .shared_collector($collector.clone())
+            .build()
+    };
+}
+
 pub mod dir;
 pub mod file;
+pub mod redb;
 pub mod service;
 pub mod shelf;
-pub mod redb;
 use crate::dir::ShelfDir;
 use crate::file::File;
 use crate::shelf::ShelfData;
-use ebi_types::{ImmutRef, Inner, Ref, FileId};
+use ebi_types::{FileId, ImmutRef, Inner, Ref};
 use std::sync::Arc;
 
 impl Ref<File, FileId> for ImmutRef<File, FileId> {

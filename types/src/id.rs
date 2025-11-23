@@ -1,10 +1,10 @@
+use bincode::serde::Compat;
+pub use iroh_base::NodeId;
+use serde::{Deserialize, Serialize};
+use std::fmt::Debug;
 use std::fmt::Display;
 use std::ops::Deref;
 use std::str::FromStr;
-use std::fmt::Debug;
-use bincode::serde::Compat;
-use serde::{Deserialize, Serialize};
-pub use iroh_base::NodeId;
 pub use uuid::Uuid as RawUuid;
 pub type RequestId = Uuid;
 pub use file_id::FileId as RawFileId;
@@ -82,7 +82,7 @@ impl Serialize for Uuid {
     }
 }
 
-impl<'de> Deserialize<'de> for Uuid{
+impl<'de> Deserialize<'de> for Uuid {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -91,7 +91,6 @@ impl<'de> Deserialize<'de> for Uuid{
         Ok(Uuid(raw_uuid))
     }
 }
-
 
 pub fn parse_peer_id(bytes: &[u8]) -> Result<NodeId, ()> {
     let bytes: &[u8; 32] = bytes.try_into().map_err(|_| ())?;
@@ -116,14 +115,19 @@ pub fn uuid(bytes: &[u8]) -> Result<Uuid, UuidErr> {
 pub struct FileId(pub RawFileId);
 
 impl bincode::Decode<()> for FileId {
-    fn decode<D: bincode::de::Decoder>(decoder: &mut D) -> Result<Self, bincode::error::DecodeError> {
+    fn decode<D: bincode::de::Decoder>(
+        decoder: &mut D,
+    ) -> Result<Self, bincode::error::DecodeError> {
         let res = Compat::<FileId>::decode(decoder)?.0;
         Ok(res)
     }
 }
 
 impl bincode::Encode for FileId {
-    fn encode<E: bincode::enc::Encoder>(&self, encoder: &mut E) -> Result<(), bincode::error::EncodeError> {
+    fn encode<E: bincode::enc::Encoder>(
+        &self,
+        encoder: &mut E,
+    ) -> Result<(), bincode::error::EncodeError> {
         Compat(&self).encode(encoder)?;
         Ok(())
     }
@@ -146,7 +150,7 @@ impl Serialize for FileId {
     }
 }
 
-impl<'de> Deserialize<'de> for FileId{
+impl<'de> Deserialize<'de> for FileId {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -160,19 +164,19 @@ pub fn get_file_id(path: impl AsRef<std::path::Path>) -> std::io::Result<FileId>
     Ok(FileId(file_id::get_file_id(path)?))
 }
 impl FileId {
-   pub fn new_inode(device_id: u64, inode_number: u64) -> Self {
-       FileId(file_id::FileId::Inode {
-           device_id,
-           inode_number,
-       })
-   }
+    pub fn new_inode(device_id: u64, inode_number: u64) -> Self {
+        FileId(file_id::FileId::Inode {
+            device_id,
+            inode_number,
+        })
+    }
 
-   pub fn new_low_res(volume_serial_number: u32, file_index: u64) -> Self {
-       FileId(file_id::FileId::LowRes {
-           volume_serial_number,
-           file_index,
-       })
-   }
+    pub fn new_low_res(volume_serial_number: u32, file_index: u64) -> Self {
+        FileId(file_id::FileId::LowRes {
+            volume_serial_number,
+            file_index,
+        })
+    }
 
     pub fn new_high_res(volume_serial_number: u64, file_id: u128) -> Self {
         FileId(file_id::FileId::HighRes {
