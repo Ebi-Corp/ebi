@@ -1,7 +1,7 @@
 use crate::file::FileRef;
 use arc_swap::ArcSwap;
 use ebi_types::tag::TagRef;
-use ebi_types::{WeakRef, WithPath, FileId};
+use ebi_types::{FileId, WeakRef, WithPath};
 use seize::Collector;
 use std::hash::RandomState;
 use std::io;
@@ -12,21 +12,6 @@ pub type ShelfDirRef = WeakRef<ShelfDir, FileId>;
 pub type ParentRef = ArcSwap<Option<ShelfDirRef>>;
 pub(crate) type HashSet<T> = papaya::HashSet<T, RandomState, Arc<Collector>>;
 pub(crate) type HashMap<K, V> = papaya::HashMap<K, V, RandomState, Arc<Collector>>;
-
-macro_rules! hash_set {
-    ($collector:expr) => {
-        papaya::HashSet::builder()
-            .shared_collector($collector.clone())
-            .build()
-    };
-}
-macro_rules! hash_map {
-    ($collector:expr) => {
-        papaya::HashMap::builder()
-            .shared_collector($collector.clone())
-            .build()
-    };
-}
 
 #[derive(Debug)]
 pub struct ShelfDir {

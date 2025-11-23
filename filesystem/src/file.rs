@@ -1,5 +1,6 @@
 use ebi_types::{
-    ImmutRef, SharedRef, WithPath, file::FileSummary, shelf::ShelfOwner, tag::Tag, tag::TagData, FileId
+    FileId, ImmutRef, SharedRef, WithPath, file::FileSummary, shelf::ShelfOwner, tag::Tag,
+    tag::TagData,
 };
 use im::HashSet;
 use std::path::PathBuf;
@@ -19,20 +20,19 @@ impl WithPath for File {
     }
 }
 
-pub fn gen_summary(file_ref: &FileRef, owner: Option<ShelfOwner>, dtags: HashSet<TagData>) -> FileSummary {
+pub fn gen_summary(
+    file_ref: &FileRef,
+    owner: Option<ShelfOwner>,
+    dtags: HashSet<TagData>,
+) -> FileSummary {
     let mut tags: HashSet<TagData> = file_ref
-            .tags
-            .pin()
-            .iter()
-            .map(|t| TagData::from(&*t.load_full()))
-            .collect();
+        .tags
+        .pin()
+        .iter()
+        .map(|t| TagData::from(&*t.load_full()))
+        .collect();
     tags = tags.union(dtags);
-    FileSummary::new(
-        file_ref.id,
-        file_ref.path.clone(),
-        owner,
-        tags
-    )
+    FileSummary::new(file_ref.id, file_ref.path.clone(), owner, tags)
 }
 
 impl File {

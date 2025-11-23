@@ -73,7 +73,8 @@ impl Retriever {
         }
     }
 
-    pub async fn get(&mut self, tag_id: TagId) -> Result<HashSet<OrderedFileSummary>, ReturnCode> { //[!] Check 
+    pub async fn get(&mut self, tag_id: TagId) -> Result<HashSet<OrderedFileSummary>, ReturnCode> {
+        //[!] Check
         if let Some(tag_ref) = self.workspace.tags.get(&tag_id) {
             if let Some(set) = self.cache.retrieve(tag_ref) {
                 Ok(set)
@@ -108,7 +109,11 @@ impl Retriever {
                             .pin()
                             .iter()
                             .map(|f| OrderedFileSummary {
-                                file_summary: gen_summary(&f, Some(self.shelf_owner.clone()), HashSet::new()),
+                                file_summary: gen_summary(
+                                    &f,
+                                    Some(self.shelf_owner.clone()),
+                                    HashSet::new(),
+                                ),
                                 order: self.order.clone(),
                             })
                             .collect::<im::HashSet<OrderedFileSummary>>(),

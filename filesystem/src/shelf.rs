@@ -2,13 +2,13 @@ use crate::dir::{HashSet, ShelfDir, ShelfDirRef};
 use crate::file::{File, FileRef};
 use ebi_types::sharedref::ptr_eq;
 use ebi_types::tag::{Tag, TagId};
-use ebi_types::{Uuid, ImmutRef, Ref, SharedRef, WithPath, FileId, get_file_id};
+use ebi_types::{FileId, ImmutRef, Ref, SharedRef, Uuid, WithPath, get_file_id};
 use rand_chacha::{ChaCha12Rng, rand_core::SeedableRng};
 use scalable_cuckoo_filter::{ScalableCuckooFilter, ScalableCuckooFilterBuilder};
 use seize::Collector;
 use std::io;
-use std::result::Result;
 use std::path::PathBuf;
+use std::result::Result;
 use std::sync::Arc;
 
 pub type ShelfId = Uuid;
@@ -277,7 +277,6 @@ impl ShelfData {
             if let Some(dir) = dir.upgrade() {
                 for subdir in dir.subdirs.pin().iter() {
                     recursive_detach(&subdir, dtag);
-
                 }
 
                 dir.dtags.pin().remove(dtag);
@@ -324,12 +323,12 @@ pub fn merge<T: Clone + std::cmp::Eq + std::hash::Hash>(files: Vec<im::HashSet<T
 
 #[cfg(test)] //[!] Check 
 mod tests {
-    use ebi_types::tag::Tag;
     use crate::file::File;
+    use ebi_types::tag::Tag;
     use jwalk::WalkDir;
-    use seize::Collector;
     use papaya::HashSet;
     use rayon::prelude::*;
+    use seize::Collector;
     use std::fs::{self, File as FileIO};
     use std::path::PathBuf;
     use std::sync::Arc;
@@ -343,7 +342,9 @@ mod tests {
                 if entry.file_type().is_file() {
                     Some(FileRef::new_ref(File::new(
                         entry.path().clone(),
-                        papaya::HashSet::builder().shared_collector(Arc::new(Collector::new())).build(),
+                        papaya::HashSet::builder()
+                            .shared_collector(Arc::new(Collector::new()))
+                            .build(),
                     )))
                 } else {
                     None
@@ -355,7 +356,7 @@ mod tests {
     #[test]
     fn attach() {
         todo!();
-        /* 
+        /*
         let dir_path = PathBuf::from("target/test");
         fs::create_dir_all(&dir_path).unwrap();
         let file_path0 = dir_path.join("file.jpg");
