@@ -246,14 +246,8 @@ impl Service<DeleteTag> for RpcService {
             for (_id, shelf) in workspace.shelves.iter() {
                 match &shelf.shelf_type {
                     ShelfType::Local => {
-                        let shelf_data = filesys
-                            .get_or_init_shelf(ShelfDirKey::Path(
-                                shelf.info.load().root.to_path_buf(),
-                            ))
-                            .await
-                            .unwrap();
-                        let sdir_id = shelf_data.root.id;
-                        let _ = shelf_data.strip(sdir_id, tag_ref);
+                        let shelf_key = ShelfDirKey::Path(shelf.info.load().root.to_path_buf());
+                        let _ = filesys.strip_tag(shelf_key, None, tag_ref.clone());
 
                         //[?] Are (remote) Sync'd shelves also in shelves ??
                         if let ShelfOwner::Sync(_sync_id) = shelf.shelf_owner {
@@ -375,16 +369,16 @@ impl Service<StripTag> for RpcService {
                             return_error!(res, StripTagResponse, metadata.request_uuid, error_data);
                         }
                     };
-                    let result = shelf_data.strip(sdir_id, tag);
+                    let result = filesys
+                        .strip_tag(ShelfDirKey::Id(shelf_data.id), Some(sdir_id), tag.clone())
+                        .await;
 
                     if let ShelfOwner::Sync(_sync_id) = shelf.shelf_owner {
                         //[TODO] Sync Notification
                     }
                     match result {
                         Ok(_) => ReturnCode::Success,
-                        Err(UpdateErr::PathNotDir) => ReturnCode::PathNotDir, // Path not a Directory
-                        Err(UpdateErr::PathNotFound) => ReturnCode::PathNotFound, // Path not Found
-                        Err(UpdateErr::FileNotFound) => ReturnCode::FileNotFound, // "Nothing ever happens" -Chudda
+                        Err(e) => e,
                     }
                 }
                 ShelfType::Remote => {
@@ -474,12 +468,8 @@ impl Service<DetachTag> for RpcService {
             let return_code = {
                 match &shelf.shelf_type {
                     ShelfType::Local => {
-                        let shelf_data = filesys
-                            .get_or_init_shelf(ShelfDirKey::Path(
-                                shelf.info.load().root.to_path_buf(),
-                            ))
-                            .await
-                            .unwrap();
+                        let shelf_key = ShelfDirKey::Path(shelf.info.load().root.to_path_buf());
+
                         let Ok(path) = PathBuf::from(&req.path).canonicalize() else {
                             return_error!(
                                 ReturnCode::PathNotFound,
@@ -488,24 +478,11 @@ impl Service<DetachTag> for RpcService {
                                 error_data
                             );
                         };
-                        let sdir_id = match filesys
-                            .get_or_init_dir(ShelfDirKey::Id(shelf_data.id), path.clone())
-                            .await
-                        {
-                            Ok(sdir_id) => sdir_id,
-                            Err(res) => {
-                                return_error!(
-                                    res,
-                                    DetachTagResponse,
-                                    metadata.request_uuid,
-                                    error_data
-                                );
-                            }
-                        };
+
                         let result = if path.is_file() {
-                            shelf_data.detach(sdir_id, path, tag)
+                            filesys.detach_tag(shelf_key, path, tag.clone()).await
                         } else {
-                            shelf_data.detach_dtag(sdir_id, tag)
+                            filesys.detach_dtag(shelf_key, path, tag.clone()).await
                         };
 
                         if let ShelfOwner::Sync(_sync_id) = shelf.shelf_owner {
@@ -520,9 +497,7 @@ impl Service<DetachTag> for RpcService {
                             }
                             Ok((false, true)) => ReturnCode::Success,
                             Ok((_, false)) => ReturnCode::NotTagged, // File not tagged
-                            Err(UpdateErr::PathNotFound) => ReturnCode::PathNotFound, // Path not found
-                            Err(UpdateErr::FileNotFound) => ReturnCode::FileNotFound, // File not found
-                            Err(UpdateErr::PathNotDir) => ReturnCode::PathNotDir, // "Nothing ever happens" -Chudda
+                            Err(e) => e,
                         }
                     }
                     ShelfType::Remote => {
@@ -627,24 +602,22 @@ impl Service<AttachTag> for RpcService {
                             );
                         };
 
-                        let sdir_id = match filesys
-                            .get_or_init_dir(ShelfDirKey::Id(shelf_data.id), path.clone())
-                            .await
-                        {
-                            Ok(sdir_id) => sdir_id,
-                            Err(res) => {
-                                return_error!(
-                                    res,
-                                    AttachTagResponse,
-                                    metadata.request_uuid,
-                                    error_data
-                                );
-                            }
-                        };
                         let result = if path.is_file() {
-                            shelf_data.attach(sdir_id, path, tag)
+                            filesys
+                                .attach_tag(
+                                    ShelfDirKey::Id(shelf_data.id.clone()),
+                                    path,
+                                    tag.clone(),
+                                )
+                                .await
                         } else if path.is_dir() {
-                            shelf_data.attach_dtag(sdir_id, tag)
+                            filesys
+                                .attach_dtag(
+                                    ShelfDirKey::Id(shelf_data.id.clone()),
+                                    path,
+                                    tag.clone(),
+                                )
+                                .await
                         } else {
                             return_error!(
                                 ReturnCode::PathNotDir, // [TODO] should be invalid path (e.g symlink)
@@ -665,9 +638,7 @@ impl Service<AttachTag> for RpcService {
                             } // Success
                             Ok((false, true)) => ReturnCode::Success, // File not tagged
                             Ok((_, false)) => ReturnCode::TagAlreadyAttached,
-                            Err(UpdateErr::PathNotFound) => ReturnCode::PathNotFound, // Path not found
-                            Err(UpdateErr::FileNotFound) => ReturnCode::FileNotFound, // File not found
-                            Err(UpdateErr::PathNotDir) => ReturnCode::PathNotDir, // "Nothing ever happens" -Chudda
+                            Err(e) => e,
                         }
                     }
                     ShelfType::Remote => {

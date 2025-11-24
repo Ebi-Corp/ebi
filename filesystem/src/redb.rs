@@ -1,9 +1,9 @@
 use crate::{dir::ShelfDir, file::File, shelf::ShelfData};
 use ebi_types::redb::*;
 use ebi_types::{FileId, Uuid, tag::Tag};
-use im::HashMap;
 use redb::TableDefinition;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 pub const T_SHELF_DATA: TableDefinition<FileId, Bincode<ShelfData>> =

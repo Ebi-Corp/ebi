@@ -10,19 +10,21 @@ use crate::dir::{ShelfDir, ShelfDirRef};
 use crate::file::{File, FileRef};
 use crate::redb::{T_FILE, T_SHELF_DATA, T_SHELF_DIR, T_TAG};
 use crate::shelf::ShelfData;
+use bincode::Encode;
 use ebi_proto::rpc::{Data, ReturnCode};
 use ebi_types::file::{FileOrder, FileSummary, OrderedFileSummary};
 use ebi_types::redb::{Storable, TagStorable};
 use ebi_types::shelf::TagRef;
-use ebi_types::tag::{Tag, TagData};
+use ebi_types::tag::{Tag, TagData, TagId};
 use ebi_types::{FileId, ImmutRef, Ref, SharedRef, Uuid, WithPath, get_file_id};
+use im::iter;
 use jwalk::{ClientState, WalkDirGeneric};
 use papaya::HashMap;
 use papaya::HashSet;
 use redb::{Database, Error, ReadableDatabase, ReadableTable, TableDefinition};
 use seize::Collector;
-use std::sync::Arc;
 use std::sync::RwLock;
+use std::sync::{Arc, Mutex};
 use tower::Service;
 
 #[derive(Clone)]
@@ -32,6 +34,7 @@ pub struct FileSystem {
     pub db: Arc<Database>,
 }
 
+#[derive(Clone)]
 pub enum ShelfDirKey {
     Id(FileId),
     Path(PathBuf),
@@ -279,9 +282,555 @@ impl FileSystem {
     ) -> Result<ImmutRef<ShelfData, FileId>, ReturnCode> {
         self.call(GetInitShelf(shelf)).await
     }
+
+    pub async fn attach_tag(
+        &mut self,
+        shelf: ShelfDirKey,
+        path: PathBuf,
+        tag: TagRef,
+    ) -> Result<(bool, bool), ReturnCode> {
+        self.call(AttachTag(shelf, path, tag)).await
+    }
+
+    pub async fn detach_tag(
+        &mut self,
+        shelf: ShelfDirKey,
+        path: PathBuf,
+        tag: TagRef,
+    ) -> Result<(bool, bool), ReturnCode> {
+        self.call(DetachTag(shelf, path, tag)).await
+    }
+    pub async fn detach_dtag(
+        &mut self,
+        shelf: ShelfDirKey,
+        path: PathBuf,
+        tag: TagRef,
+    ) -> Result<(bool, bool), ReturnCode> {
+        self.call(DetachDTag(shelf, path, tag)).await
+    }
+    pub async fn attach_dtag(
+        &mut self,
+        shelf: ShelfDirKey,
+        path: PathBuf,
+        tag: TagRef,
+    ) -> Result<(bool, bool), ReturnCode> {
+        self.call(AttachDTag(shelf, path, tag)).await
+    }
+
+    pub async fn strip_tag(
+        &mut self,
+        shelf: ShelfDirKey,
+        s_id: Option<FileId>,
+        tag: TagRef,
+    ) -> Result<(), ReturnCode> {
+        self.call(StripTag(shelf, s_id, tag)).await
+    }
 }
+struct AttachTag(ShelfDirKey, PathBuf, TagRef);
+struct AttachDTag(ShelfDirKey, PathBuf, TagRef);
+struct DetachTag(ShelfDirKey, PathBuf, TagRef);
+struct DetachDTag(ShelfDirKey, PathBuf, TagRef);
+struct StripTag(ShelfDirKey, Option<FileId>, TagRef);
 
 struct RetrieveDirRecursive(PathBuf, FileOrder);
+impl Service<AttachTag> for FileSystem {
+    type Response = (bool, bool);
+    type Error = ReturnCode;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, req: AttachTag) -> Self::Future {
+        let local_shelves = self.local_shelves.clone();
+        let shelf_dirs = self.shelf_dirs.clone();
+        let db = self.db.clone();
+        let mut fs = self.clone();
+        Box::pin(async move {
+            let (key, path) = (req.0.clone(), req.1.clone());
+            let tag = req.2;
+            let local_shelves = local_shelves.pin_owned();
+            let shelf_dirs = shelf_dirs.pin_owned();
+            let Some(shelf) = (match key {
+                ShelfDirKey::Id(id) => local_shelves.get(&id),
+                ShelfDirKey::Path(ref s_path) => {
+                    local_shelves.iter().find(|s| *s.path() == *s_path)
+                }
+            }) else {
+                return Err(ReturnCode::ShelfNotFound);
+            };
+            let sdir_id = fs.get_or_init_dir(key, path.clone()).await?;
+            let sdir = shelf_dirs.get(&sdir_id).unwrap();
+            let write_txn = db
+                .begin_write()
+                .map_err(|_| ReturnCode::InternalStateError)?;
+            let (file, new) = sdir.get_init_file(path)?;
+            if new {
+                let mut file_table = write_txn
+                    .open_table(T_FILE)
+                    .map_err(|_| ReturnCode::InternalStateError)?;
+                file_table
+                    .insert(file.id, file.to_storable())
+                    .map_err(|_| ReturnCode::InternalStateError)?;
+            }
+
+            let attached_to_file = file.attach(&tag);
+            let mut sdir = (sdir.id, sdir.data_ref().clone());
+            let attached_to_shelf = {
+                let mut shelf_dir_table = write_txn
+                    .open_table(T_SHELF_DIR)
+                    .map_err(|_| ReturnCode::InternalStateError)?;
+                while sdir.1.path != *shelf.path() {
+                    if sdir.1.attach(&tag, &file.clone()) {
+                        let s_dir_t = shelf_dir_table
+                            .get_mut(sdir.0)
+                            .map_err(|_| ReturnCode::InternalStateError)?;
+                        s_dir_t
+                            .unwrap()
+                            .value()
+                            .0
+                            .tags
+                            .entry(tag.id)
+                            .or_insert(vec![file.id])
+                            .push(file.id);
+                    }
+                    sdir = match sdir.1.parent.load().as_ref().as_ref() {
+                        Some(p) => (
+                            p.id,
+                            p.data_ref().upgrade().ok_or(ReturnCode::PathNotFound)?,
+                        ),
+                        None => return Err(ReturnCode::PathNotFound),
+                    };
+                }
+                let attached_to_shelf = sdir.1.attach(&tag, &file.clone());
+                if attached_to_shelf {
+                    let s_dir_t = shelf_dir_table
+                        .get_mut(sdir.0)
+                        .map_err(|_| ReturnCode::InternalStateError)?;
+                    s_dir_t
+                        .unwrap()
+                        .value()
+                        .0
+                        .tags
+                        .entry(tag.id)
+                        .or_insert(vec![file.id])
+                        .push(file.id);
+                }
+                attached_to_shelf
+            };
+
+            Ok((attached_to_file, attached_to_shelf))
+        })
+    }
+}
+impl Service<AttachDTag> for FileSystem {
+    type Response = (bool, bool);
+    type Error = ReturnCode;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, req: AttachDTag) -> Self::Future {
+        let local_shelves = self.local_shelves.clone();
+        let shelf_dirs = self.shelf_dirs.clone();
+        let db = self.db.clone();
+        let mut fs = self.clone();
+        Box::pin(async move {
+            let (key, path) = (req.0.clone(), req.1.clone());
+            let dtag = req.2;
+            let local_shelves = local_shelves.pin_owned();
+            let shelf_dirs = shelf_dirs.pin_owned();
+            let Some(shelf) = (match key {
+                ShelfDirKey::Id(id) => local_shelves.get(&id),
+                ShelfDirKey::Path(ref s_path) => {
+                    local_shelves.iter().find(|s| *s.path() == *s_path)
+                }
+            }) else {
+                return Err(ReturnCode::ShelfNotFound);
+            };
+            let sdir_id = fs.get_or_init_dir(key, path.clone()).await?;
+            let sdir = shelf_dirs.get(&sdir_id).unwrap();
+            let write_txn = db
+                .begin_write()
+                .map_err(|_| ReturnCode::InternalStateError)?;
+
+            let mut dir_table = write_txn
+                .open_table(T_SHELF_DIR)
+                .map_err(|_| ReturnCode::InternalStateError)?;
+
+            let shelf_dirs = shelf.dirs.pin();
+            let attach_to_dir = sdir.dtags.pin().insert(dtag.clone());
+
+            let attach_dir = shelf_dirs.get(&sdir_id).unwrap();
+            let mut attach_to_shelf = true;
+            let mut sdir = (sdir_id, sdir.data_ref().clone());
+            while sdir.1.parent.load().is_some() {
+                let parent = match sdir.1.parent.load().as_ref().as_ref() {
+                    Some(p) => (
+                        p.id,
+                        p.data_ref().upgrade().ok_or(ReturnCode::PathNotFound)?,
+                    ),
+                    None => return Err(ReturnCode::PathNotFound),
+                };
+
+                let p_t = dir_table
+                    .get_mut(parent.0)
+                    .map_err(|_| ReturnCode::InternalStateError)?;
+                if let Some(_) = parent.1.dtag_dirs.pin().get(&dtag) {
+                    parent.1.dtag_dirs.pin().update(dtag.clone(), |v| {
+                        vec![[attach_dir.clone()].as_slice(), v].concat()
+                    });
+                    attach_to_shelf = false;
+                } else {
+                    parent
+                        .1
+                        .dtag_dirs
+                        .pin()
+                        .insert(dtag.clone(), vec![attach_dir.clone()]);
+                    attach_to_shelf = true;
+                }
+                p_t.unwrap()
+                    .value()
+                    .0
+                    .dtag_dirs
+                    .entry(dtag.id)
+                    .or_insert(vec![attach_dir.id])
+                    .push(attach_dir.id);
+                sdir = parent;
+            }
+
+            let dir_table = Arc::new(Mutex::new(dir_table));
+
+            fn recursive_attach(
+                dir: &ShelfDirRef,
+                dtag: &TagRef,
+                dir_table: Arc<Mutex<redb::Table<'_, FileId, ebi_types::redb::Bincode<ShelfDir>>>>,
+            ) -> Result<(), ReturnCode> {
+                let id = dir.id;
+                if let Some(dir) = dir.upgrade() {
+                    let mut u_dir_table = dir_table.lock().unwrap();
+                    let d_t = u_dir_table
+                        .get_mut(id)
+                        .map_err(|_| ReturnCode::InternalStateError)?;
+                    d_t.unwrap().value().0.dtags.push(dtag.id);
+                    dir.dtags.pin().insert(dtag.clone());
+
+                    dir_table
+                        .lock()
+                        .unwrap()
+                        .get_mut(id)
+                        .map_err(|_| ReturnCode::InternalStateError)?;
+
+                    for subdir in dir.subdirs.pin().iter() {
+                        recursive_attach(&subdir, dtag, dir_table.clone())?;
+                    }
+                }
+                Ok(())
+            }
+
+            recursive_attach(attach_dir, &dtag, dir_table.clone())?;
+
+            Ok((attach_to_shelf, attach_to_dir))
+        })
+    }
+}
+impl Service<DetachDTag> for FileSystem {
+    type Response = (bool, bool);
+    type Error = ReturnCode;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, req: DetachDTag) -> Self::Future {
+        let local_shelves = self.local_shelves.clone();
+        let shelf_dirs = self.shelf_dirs.clone();
+        let db = self.db.clone();
+        let mut fs = self.clone();
+        Box::pin(async move {
+            let (key, path) = (req.0.clone(), req.1.clone());
+            let dtag = req.2;
+            let local_shelves = local_shelves.pin_owned();
+            let shelf_dirs = shelf_dirs.pin_owned();
+            let Some(shelf) = (match key {
+                ShelfDirKey::Id(id) => local_shelves.get(&id),
+                ShelfDirKey::Path(ref s_path) => {
+                    local_shelves.iter().find(|s| *s.path() == *s_path)
+                }
+            }) else {
+                return Err(ReturnCode::ShelfNotFound);
+            };
+            let Ok(sdir_id) = fs.get_or_init_dir(ShelfDirKey::Id(shelf.id), path).await else {
+                return Err(ReturnCode::PathNotFound);
+            };
+            let sdir = shelf_dirs.get(&sdir_id).unwrap();
+            let write_txn = db
+                .begin_write()
+                .map_err(|_| ReturnCode::InternalStateError)?;
+
+            let mut dir_table = write_txn
+                .open_table(T_SHELF_DIR)
+                .map_err(|_| ReturnCode::InternalStateError)?;
+
+            let shelf_dirs = shelf.dirs.pin();
+            let detached_to_dir = sdir.dtags.pin().remove(&dtag);
+
+            let detach_dir = shelf_dirs.get(&sdir_id).unwrap();
+            let mut detached_to_shelf = true;
+            let mut sdir = (sdir_id, sdir.data_ref().clone());
+            while sdir.1.parent.load().is_some() {
+                let parent = match sdir.1.parent.load().as_ref().as_ref() {
+                    Some(p) => (
+                        p.id,
+                        p.data_ref().upgrade().ok_or(ReturnCode::PathNotFound)?,
+                    ),
+                    None => return Err(ReturnCode::PathNotFound),
+                };
+                parent.1.dtag_dirs.pin().update(dtag.clone(), |v| {
+                    v.into_iter().cloned().filter(|n| n != detach_dir).collect()
+                });
+                let p_t = dir_table
+                    .get_mut(parent.0)
+                    .map_err(|_| ReturnCode::InternalStateError)?;
+                if let Some(vec_dir) = parent.1.dtag_dirs.pin().get(&dtag) {
+                    if vec_dir.is_empty() {
+                        parent.1.dtag_dirs.pin().remove(&dtag);
+                        detached_to_shelf = true;
+                        p_t.unwrap().value().0.dtag_dirs.remove(&dtag.id);
+                    } else {
+                        detached_to_shelf = false;
+                        p_t.unwrap()
+                            .value()
+                            .0
+                            .dtag_dirs
+                            .get_mut(&dtag.id)
+                            .unwrap()
+                            .retain(|id| *id != sdir_id);
+                    }
+                }
+                sdir = parent;
+            }
+
+            let dir_table = Arc::new(Mutex::new(dir_table));
+
+            fn recursive_detach(
+                dir: &ShelfDirRef,
+                dtag: &TagRef,
+                dir_table: Arc<Mutex<redb::Table<'_, FileId, ebi_types::redb::Bincode<ShelfDir>>>>,
+            ) -> Result<(), ReturnCode> {
+                let id = dir.id;
+                if let Some(dir) = dir.upgrade() {
+                    let mut u_dir_table = dir_table.lock().unwrap();
+                    let d_t = u_dir_table
+                        .get_mut(id)
+                        .map_err(|_| ReturnCode::InternalStateError)?;
+                    d_t.unwrap().value().0.dtags.retain(|id| *id != dtag.id);
+                    dir.dtags.pin().remove(&dtag.id);
+
+                    dir_table
+                        .lock()
+                        .unwrap()
+                        .get_mut(id)
+                        .map_err(|_| ReturnCode::InternalStateError)?;
+
+                    for subdir in dir.subdirs.pin().iter() {
+                        recursive_detach(&subdir, dtag, dir_table.clone())?;
+                    }
+                }
+                Ok(())
+            }
+
+            recursive_detach(detach_dir, &dtag, dir_table.clone())?;
+
+            Ok((detached_to_shelf, detached_to_dir))
+        })
+    }
+}
+
+impl Service<StripTag> for FileSystem {
+    type Response = ();
+    type Error = ReturnCode;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, req: StripTag) -> Self::Future {
+        let local_shelves = self.local_shelves.clone();
+        let db = self.db.clone();
+        Box::pin(async move {
+            let (key, dir_id, tag) = (req.0.clone(), req.1.clone(), req.2.clone());
+            let local_shelves = local_shelves.pin_owned();
+            let Some(shelf) = (match key {
+                ShelfDirKey::Id(id) => local_shelves.get(&id),
+                ShelfDirKey::Path(ref s_path) => {
+                    local_shelves.iter().find(|s| *s.path() == *s_path)
+                }
+            }) else {
+                return Err(ReturnCode::ShelfNotFound);
+            };
+            let dir_id = match dir_id {
+                Some(id) => id,
+                None => shelf.root.id,
+            };
+            let shelf_dirs = shelf.dirs.pin_owned();
+            let Some(sdir) = shelf_dirs.get(&dir_id) else {
+                return Err(ReturnCode::PathNotFound);
+            };
+
+            let sdir = (
+                sdir.id,
+                sdir.upgrade().ok_or(ReturnCode::InternalStateError)?,
+            );
+
+            let write_txn = db
+                .begin_write()
+                .map_err(|_| ReturnCode::InternalStateError)?;
+            let write_txn = Arc::new(Mutex::new(write_txn));
+
+            pub fn recursive_remove(
+                dir: (FileId, Arc<ShelfDir>),
+                tag: &TagRef,
+                write_txn: Arc<Mutex<redb::WriteTransaction>>,
+            ) -> Result<(), ReturnCode> {
+                let (dir, dir_id) = (dir.1, dir.0);
+                dir.dtags.pin().remove(tag);
+                dir.tags.pin().remove(tag);
+                dir.dtag_dirs.pin().remove(tag);
+                let u_write_txn = write_txn.lock().unwrap();
+                let mut file_table = u_write_txn
+                    .open_table(T_FILE)
+                    .map_err(|_| ReturnCode::InternalStateError)?;
+                let mut dir_table = u_write_txn
+                    .open_table(T_SHELF_DIR)
+                    .map_err(|_| ReturnCode::InternalStateError)?;
+                let dir_t = dir_table
+                    .get_mut(dir_id)
+                    .map_err(|_| ReturnCode::InternalStateError)?;
+                for file in dir.files.pin().iter() {
+                    if file.detach(tag) {
+                        let f_t = file_table
+                            .get_mut(file.id)
+                            .map_err(|_| ReturnCode::InternalStateError)?;
+                        f_t.unwrap().value().0.tags.retain(|id| *id != tag.id);
+                    }
+                }
+
+                dir_t.unwrap().value().0.tags.remove(&tag.id);
+
+                for child in dir.subdirs.pin().iter() {
+                    let id = child.id;
+                    let Some(child) = child.upgrade() else {
+                        break;
+                    };
+                    recursive_remove((id, child), tag, write_txn.clone())?;
+                }
+                Ok(())
+            }
+            recursive_remove(sdir, &tag, write_txn.clone())?;
+            let write_txn = Arc::try_unwrap(write_txn).unwrap_or_else(|_| panic!());
+            write_txn
+                .into_inner()
+                .unwrap()
+                .commit()
+                .map_err(|_| ReturnCode::InternalStateError)?;
+
+            Ok(())
+        })
+    }
+}
+
+impl Service<DetachTag> for FileSystem {
+    type Response = (bool, bool);
+    type Error = ReturnCode;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, req: DetachTag) -> Self::Future {
+        let local_shelves = self.local_shelves.clone();
+        let shelf_dirs = self.shelf_dirs.clone();
+        let db = self.db.clone();
+        let mut fs = self.clone();
+        Box::pin(async move {
+            let (key, path) = (req.0.clone(), req.1.clone());
+            let tag = req.2;
+            let local_shelves = local_shelves.pin_owned();
+            let shelf_dirs = shelf_dirs.pin_owned();
+            let Some(shelf) = (match key {
+                ShelfDirKey::Id(id) => local_shelves.get(&id),
+                ShelfDirKey::Path(ref s_path) => {
+                    local_shelves.iter().find(|s| *s.path() == *s_path)
+                }
+            }) else {
+                return Err(ReturnCode::ShelfNotFound);
+            };
+            let sdir_id = fs.get_or_init_dir(key, path.clone()).await?;
+            let sdir = shelf_dirs.get(&sdir_id).unwrap();
+            let write_txn = db
+                .begin_write()
+                .map_err(|_| ReturnCode::InternalStateError)?;
+            let (file, new) = sdir.get_init_file(path)?;
+            if new {
+                let mut file_table = write_txn
+                    .open_table(T_FILE)
+                    .map_err(|_| ReturnCode::InternalStateError)?;
+                file_table
+                    .insert(file.id, file.to_storable())
+                    .map_err(|_| ReturnCode::InternalStateError)?;
+            }
+
+            let detached_to_file = file.detach(&tag);
+            let mut sdir = (sdir.id, sdir.data_ref().clone());
+            let detached_to_shelf = {
+                let mut shelf_dir_table = write_txn
+                    .open_table(T_SHELF_DIR)
+                    .map_err(|_| ReturnCode::InternalStateError)?;
+                while sdir.1.path != *shelf.path() {
+                    if sdir.1.detach(&tag, Some(&file.clone())) {
+                        let s_dir_t = shelf_dir_table
+                            .get_mut(sdir.0)
+                            .map_err(|_| ReturnCode::InternalStateError)?;
+                        s_dir_t
+                            .unwrap()
+                            .value()
+                            .0
+                            .tags
+                            .entry(tag.id)
+                            .or_insert(vec![])
+                            .retain(|id| *id != file.id);
+                    }
+                    sdir = match sdir.1.parent.load().as_ref().as_ref() {
+                        Some(p) => (
+                            p.id,
+                            p.data_ref().upgrade().ok_or(ReturnCode::PathNotFound)?,
+                        ),
+                        None => return Err(ReturnCode::PathNotFound),
+                    };
+                }
+                let detached_to_shelf = sdir.1.detach(&tag, Some(&file.clone()));
+                if detached_to_shelf {
+                    let s_dir_t = shelf_dir_table
+                        .get_mut(sdir.0)
+                        .map_err(|_| ReturnCode::InternalStateError)?;
+                    s_dir_t
+                        .unwrap()
+                        .value()
+                        .0
+                        .tags
+                        .entry(tag.id)
+                        .or_insert(vec![file.id])
+                        .push(file.id);
+                }
+                detached_to_shelf
+            };
+
+            Ok((detached_to_file, detached_to_shelf))
+        })
+    }
+}
 
 #[derive(Debug, Default, Clone)]
 struct DirState {
@@ -448,10 +997,12 @@ impl Service<GetInitShelf> for FileSystem {
             };
             let mut new_subdir: Option<ImmutRef<ShelfDir, FileId>> = None;
             let mut trav_path = path.clone();
+
             loop {
                 let Ok(file_id) = get_file_id(&trav_path) else {
                     return Err(ReturnCode::InternalStateError);
                 };
+
                 let sdir = {
                     if let Some(s_data) = local_shelves.get(&file_id) {
                         return Ok(s_data.clone());
@@ -464,13 +1015,21 @@ impl Service<GetInitShelf> for FileSystem {
                         let sdir_ref = ImmutRef::<ShelfDir, FileId>::new_ref_id(file_id, sdir);
                         shelf_dirs.pin().insert(sdir_ref.clone());
                         // [TODO] handle db errors properly
+
                         let write_txn = db
                             .begin_write()
                             .map_err(|_| ReturnCode::InternalStateError)?;
-                        let mut table = write_txn
-                            .open_table(T_SHELF_DIR)
+                        {
+                            let mut table = write_txn
+                                .open_table(T_SHELF_DIR)
+                                .map_err(|_| ReturnCode::InternalStateError)?;
+                            table
+                                .insert(file_id, sdir_ref.to_storable())
+                                .map_err(|_| ReturnCode::InternalStateError)?;
+                        }
+                        write_txn
+                            .commit()
                             .map_err(|_| ReturnCode::InternalStateError)?;
-                        table.insert(file_id, sdir_ref.to_storable());
                         sdir_ref
                     }
                 };
@@ -478,6 +1037,16 @@ impl Service<GetInitShelf> for FileSystem {
 
                 if let Some(subdir) = new_subdir {
                     subdir.subdirs.pin().insert(sdir_wref.clone());
+                    let write_txn = db
+                        .begin_write()
+                        .map_err(|_| ReturnCode::InternalStateError)?;
+                    let mut table = write_txn
+                        .open_table(T_SHELF_DIR)
+                        .map_err(|_| ReturnCode::InternalStateError)?;
+                    let sdir = table
+                        .get_mut(subdir.id)
+                        .map_err(|_| ReturnCode::InternalStateError)?;
+                    sdir.unwrap().value().0.subdirs.push(sdir_wref.id.clone());
                 }
 
                 new_subdir = Some(sdir.clone());
@@ -488,6 +1057,21 @@ impl Service<GetInitShelf> for FileSystem {
                     };
                     let s_data_ref: ImmutRef<ShelfData, FileId> = ImmutRef::new_ref(s_data);
                     local_shelves.insert(s_data_ref.clone());
+                    let write_txn = db
+                        .begin_write()
+                        .map_err(|_| ReturnCode::InternalStateError)?;
+                    {
+                        let mut table = write_txn
+                            .open_table(T_SHELF_DATA)
+                            .map_err(|_| ReturnCode::InternalStateError)?;
+
+                        table
+                            .insert(s_data_ref.id, s_data_ref.to_storable())
+                            .map_err(|_| ReturnCode::InternalStateError)?;
+                    }
+                    write_txn
+                        .commit()
+                        .map_err(|_| ReturnCode::InternalStateError)?;
                     return Ok(s_data_ref);
                 }
                 trav_path = trav_path.parent().unwrap().to_path_buf();
