@@ -83,6 +83,9 @@ pub enum ReturnCode {
     WorkspaceNameEmpty = 304,
     ShelfCreationIOError = 501,
     PathNotDir = 502,
+    DbOpenError = 601,
+    DbTableOpenError = 602,
+    DbCommitError = 603,
     ParseError = i32::MAX as isize,
 }
 
@@ -106,6 +109,10 @@ pub fn parse_code(code: u32) -> ReturnCode {
         206 => ReturnCode::TagNameDuplicate,
         304 => ReturnCode::WorkspaceNameEmpty,
         501 => ReturnCode::ShelfCreationIOError,
+        502 => ReturnCode::PathNotDir,
+        601 => ReturnCode::DbOpenError,
+        602 => ReturnCode::DbTableOpenError,
+        603 => ReturnCode::DbCommitError,
         _ => ReturnCode::ParseError,
     }
 }
@@ -132,6 +139,9 @@ impl ReturnCode {
             ReturnCode::WorkspaceNameEmpty => 304,
             ReturnCode::ShelfCreationIOError => 501,
             ReturnCode::PathNotDir => 502,
+            ReturnCode::DbOpenError => 601,
+            ReturnCode::DbTableOpenError => 602,
+            ReturnCode::DbCommitError => 603,
         }
     }
 }

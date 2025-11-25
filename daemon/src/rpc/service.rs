@@ -247,7 +247,7 @@ impl Service<DeleteTag> for RpcService {
                 match &shelf.shelf_type {
                     ShelfType::Local => {
                         let shelf_key = ShelfDirKey::Path(shelf.info.load().root.to_path_buf());
-                        let _ = filesys.strip_tag(shelf_key, None, tag_ref.clone());
+                        let _ = filesys.strip_tag(shelf_key, None, tag_ref.clone()).await;
 
                         //[?] Are (remote) Sync'd shelves also in shelves ??
                         if let ShelfOwner::Sync(_sync_id) = shelf.shelf_owner {
@@ -605,7 +605,7 @@ impl Service<AttachTag> for RpcService {
                         let result = if path.is_file() {
                             filesys
                                 .attach_tag(
-                                    ShelfDirKey::Id(shelf_data.id.clone()),
+                                    ShelfDirKey::Id(shelf_data.id),
                                     path,
                                     tag.clone(),
                                 )
@@ -613,7 +613,7 @@ impl Service<AttachTag> for RpcService {
                         } else if path.is_dir() {
                             filesys
                                 .attach_dtag(
-                                    ShelfDirKey::Id(shelf_data.id.clone()),
+                                    ShelfDirKey::Id(shelf_data.id),
                                     path,
                                     tag.clone(),
                                 )
