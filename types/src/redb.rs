@@ -1,7 +1,6 @@
 use crate::tag::Tag;
 use crate::{FileId, Uuid};
 use bincode::serde::Compat;
-use bincode::{Decode, Encode};
 use bincode::{decode_from_slice, encode_to_vec};
 pub use iroh_base::NodeId;
 use redb::{Key, Value};
@@ -65,7 +64,7 @@ impl Value for FileId {
         Self: 'a;
 
     fn fixed_width() -> Option<usize> {
-        Some(16)
+        None
     }
 
     fn from_bytes<'a>(data: &'a [u8]) -> Self::SelfType<'a>
@@ -85,7 +84,7 @@ impl Value for FileId {
     }
 
     fn type_name() -> redb::TypeName {
-        redb::TypeName::new("ebi_types::Uuid")
+        redb::TypeName::new("ebi_types::FileId")
     }
 }
 
@@ -96,6 +95,16 @@ pub trait Storable: Sized {
 }
 #[derive(Debug)]
 pub struct Bincode<T: Storable>(pub T::Storable);
+
+impl<T> Clone for Bincode<T>
+where
+    T: Storable,
+    T::Storable: Clone,
+{
+    fn clone(&self) -> Self {
+        Bincode(self.0.clone())
+    }
+}
 
 impl<T> bincode::Encode for Bincode<T>
 where
@@ -178,7 +187,7 @@ impl Storable for Tag {
         Bincode(Self::Storable {
             name: self.name.clone(),
             priority: self.priority,
-            parent: self.parent.clone().and_then(|f| Some(f.id)),
+            parent: self.parent.clone().map(|f| f.id),
         })
     }
 }

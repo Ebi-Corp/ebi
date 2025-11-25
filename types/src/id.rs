@@ -34,7 +34,7 @@ impl Uuid {
         Uuid(RawUuid::new_v4())
     }
     pub fn new_v5(namespace: &Uuid, name: &[u8]) -> Uuid {
-        Uuid(RawUuid::new_v5(&namespace, name))
+        Uuid(RawUuid::new_v5(namespace, name))
     }
     pub fn now_v7() -> Self {
         Uuid(RawUuid::now_v7())

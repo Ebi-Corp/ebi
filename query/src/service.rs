@@ -96,7 +96,7 @@ impl Retriever {
                 };
 
                 let dtags = sdir_ref.dtags.pin_owned();
-                let root_dtag = dtags.get(tag_ref).clone();
+                let root_dtag = dtags.get(tag_ref);
 
                 if root_dtag.is_some() {
                     Ok(self
@@ -110,7 +110,7 @@ impl Retriever {
                             .iter()
                             .map(|f| OrderedFileSummary {
                                 file_summary: gen_summary(
-                                    &f,
+                                    f,
                                     Some(self.shelf_owner.clone()),
                                     HashSet::new(),
                                 ),

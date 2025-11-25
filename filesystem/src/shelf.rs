@@ -1,9 +1,7 @@
 use crate::dir::{HashSet, ShelfDir, ShelfDirRef};
-use crate::file::{File, FileRef};
-use ebi_proto::rpc::ReturnCode;
-use ebi_types::sharedref::ptr_eq;
+use crate::file::FileRef;
 use ebi_types::tag::{Tag, TagId};
-use ebi_types::{FileId, ImmutRef, Ref, SharedRef, Uuid, WithPath, get_file_id};
+use ebi_types::{FileId, ImmutRef, SharedRef, Uuid, WithPath};
 use rand_chacha::{ChaCha12Rng, rand_core::SeedableRng};
 use scalable_cuckoo_filter::{ScalableCuckooFilter, ScalableCuckooFilterBuilder};
 use seize::Collector;
@@ -111,12 +109,10 @@ pub fn merge<T: Clone + std::cmp::Eq + std::hash::Hash>(files: Vec<im::HashSet<T
 #[cfg(test)] //[!] Check 
 mod tests {
     use crate::file::File;
-    use ebi_types::tag::Tag;
+    use ebi_types::Ref;
     use jwalk::WalkDir;
-    use papaya::HashSet;
     use rayon::prelude::*;
     use seize::Collector;
-    use std::fs::{self, File as FileIO};
     use std::path::PathBuf;
     use std::sync::Arc;
 

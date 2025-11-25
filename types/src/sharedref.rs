@@ -1,6 +1,5 @@
-use crate::{FileId, Uuid};
+use crate::Uuid;
 use arc_swap::{ArcSwap, AsRaw, Guard};
-use papaya::Equivalent;
 use std::borrow::Borrow;
 use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
