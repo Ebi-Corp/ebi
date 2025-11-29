@@ -13,7 +13,7 @@ rayon = "1.10.0" # 1 disabled feature flag
 jwalk = "0.8.1" # no features flags
 fxhash = "0.2.1"
 chrono = { version = "0.4.40", default-features = false, features = ["clock", "std", "serde"] }
-tokio = { version = "1.44.1", features = ["sync", "time", "macros"] }
+tokio = { version = "1.44.1", features = ["sync", "rt", "time", "macros"] }
 tower = "0.5.2"
 peg = "0.8.5"
 iroh = { version  = "0.91.1", default-features = false }

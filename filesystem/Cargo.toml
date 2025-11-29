@@ -24,3 +24,6 @@ im = { workspace = true }
 serde = { workspace = true }
 redb = { workspace = true }
 rayon = { workspace = true }
+
+[dev-dependencies]
+rand = { workspace = true }

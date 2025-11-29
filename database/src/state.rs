@@ -101,6 +101,12 @@ impl StateService {
     }
 }
 
+impl Default for StateService {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 type Workspace = ebi_types::workspace::Workspace<TagFilter>;
 type Shelf = ebi_types::shelf::Shelf<TagFilter>;
 

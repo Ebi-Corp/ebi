@@ -92,9 +92,15 @@ impl<'de> Deserialize<'de> for Uuid {
     }
 }
 
-pub fn parse_peer_id(bytes: &[u8]) -> Result<NodeId, ()> {
-    let bytes: &[u8; 32] = bytes.try_into().map_err(|_| ())?;
-    NodeId::from_bytes(bytes).map_err(|_| ())
+#[derive(Debug)]
+pub enum NodeIdErr {
+    BytesErr,
+    SignatureError,
+}
+
+pub fn parse_peer_id(bytes: &[u8]) -> Result<NodeId, NodeIdErr> {
+    let bytes: &[u8; 32] = bytes.try_into().map_err(|_| NodeIdErr::BytesErr)?;
+    NodeId::from_bytes(bytes).map_err(|_| NodeIdErr::SignatureError)
 }
 
 #[derive(Debug)]

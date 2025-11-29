@@ -24,14 +24,6 @@ pub enum RetrieveFiles {
     GetTagged(WorkspaceId, FileOrder, Vec<ShelfId>, TagId),
 }
 
-enum Caching {
-    IsCacheValid(Option<TagId>, HashCache),
-}
-
-struct HashCache {
-    hash: u64,
-}
-
 #[derive(Debug)]
 pub enum CacheError {
     WorkspaceNotFound,

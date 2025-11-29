@@ -58,12 +58,15 @@ impl Formula {
     }
 }
 
+#[allow(clippy::upper_case_acronyms)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 enum BinaryOp {
     AND,
     OR,
     XOR,
 }
+
+#[allow(clippy::upper_case_acronyms)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 enum UnaryOp {
     NOT,
