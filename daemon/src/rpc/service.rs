@@ -604,19 +604,11 @@ impl Service<AttachTag> for RpcService {
 
                         let result = if path.is_file() {
                             filesys
-                                .attach_tag(
-                                    ShelfDirKey::Id(shelf_data.id),
-                                    path,
-                                    tag.clone(),
-                                )
+                                .attach_tag(ShelfDirKey::Id(shelf_data.id), path, tag.clone())
                                 .await
                         } else if path.is_dir() {
                             filesys
-                                .attach_dtag(
-                                    ShelfDirKey::Id(shelf_data.id),
-                                    path,
-                                    tag.clone(),
-                                )
+                                .attach_dtag(ShelfDirKey::Id(shelf_data.id), path, tag.clone())
                                 .await
                         } else {
                             return_error!(

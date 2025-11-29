@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "full"
+  RUST_MIN_STACK: 8000000
+  RUSTDOCFLAGS: '-D warnings'
+  CMD_DOC: cargo doc --all-features --no-deps
+  CMD_CLIPPY: cargo clippy --all-features --all-targets -- -D warnings
+  CMD_BUILD: cargo build --all-features --all-targets
+
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: rustfmt
+      - name: Format
+        run: cargo fmt --all --check
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ ubuntu-latest, macos-latest, windows-latest ]
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: stable
+        components: clippy
+    - name: Cache
+      uses: actions/cache@v4
+      with:
+        path: target
+        key: ${{ matrix.os }}
+    - name: Documentation
+      run: ${{ env.CMD_DOC }}
+    #- name: Clippy (fail on warnings)
+      #run: ${{ env.CMD_CLIPPY }}
+    - name: Test
+      run: ${{ env.CMD_TEST }}
+    - name: Build
+      run: ${{ env.CMD_BUILD }}
+
