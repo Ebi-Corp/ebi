@@ -177,7 +177,7 @@ impl Service<(NodeId, Request)> for Network {
                 _ = wait_call(watcher, request_uuid) => {
                     if let Some(res) = responses.pin().get(&request_uuid) {
                         let res = res.clone();
-                        res.try_into().map_err(|_| PeerError::UnexpectedResponse)
+                        Ok(res)
                     } else {
                         Err(PeerError::Unknown)
                     }

@@ -189,7 +189,6 @@ mod tests {
             }
 
             assert_eq!(d_l.parent.load_full(), d_r.parent.load_full());
-            dbg!(&d_l, &d_r);
             assert_eq!(d_l.subdirs, d_r.subdirs);
         }
     }

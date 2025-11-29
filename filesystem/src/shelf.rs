@@ -111,13 +111,12 @@ mod tests {
     use crate::file::File;
     use ebi_types::Ref;
     use jwalk::WalkDir;
-    use rayon::prelude::*;
     use seize::Collector;
     use std::path::PathBuf;
     use std::sync::Arc;
 
     use super::*;
-    fn list_files(root: PathBuf) -> Vec<FileRef> {
+    fn _list_files(root: PathBuf) -> Vec<FileRef> {
         WalkDir::new(root)
             .into_iter()
             .filter_map(|entry_res| {

@@ -1,7 +1,6 @@
 use bincode::serde::encode_to_vec;
 use ebi_database::state::StateService;
-use ebi_filesystem::service::ShelfDirKey;
-use ebi_filesystem::{service::FileSystem, shelf::UpdateErr};
+use ebi_filesystem::service::{FileSystem, ShelfDirKey};
 use ebi_network::service::Network;
 use ebi_proto::rpc::*;
 use ebi_query::service::QueryService;

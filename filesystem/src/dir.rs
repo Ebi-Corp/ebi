@@ -84,10 +84,12 @@ impl ShelfDir {
             Some(file) => {
                 if let Some(set) = self.tags.pin().get(tag) {
                     let res = set.pin().remove(file);
-                    if set.is_empty() {
+                    if res && set.is_empty() {
                         self.tags.pin().remove(tag);
+                        true
+                    } else {
+                        false
                     }
-                    res
                 } else {
                     false
                 }
