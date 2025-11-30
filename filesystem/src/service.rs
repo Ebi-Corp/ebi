@@ -732,7 +732,6 @@ impl Service<StripTag> for FileSystem {
                 sdir.id,
                 sdir.upgrade().ok_or(ReturnCode::InternalStateError)?,
             );
-            dbg!(&sdir.1.path);
 
             let write_txn = db
                 .begin_write()
@@ -913,17 +912,21 @@ impl Service<DetachTag> for FileSystem {
                     .map_err(|_| ReturnCode::InternalStateError)?;
                 while sdir.1.path != *shelf.path() {
                     if sdir.1.detach(&tag, Some(&file.clone())) {
-                        let s_dir_t = shelf_dir_table
-                            .get_mut(sdir.0)
-                            .map_err(|_| ReturnCode::InternalStateError)?;
-                        s_dir_t
+                        let mut s_dir_e = shelf_dir_table
+                            .get(sdir.0)
+                            .map_err(|_| ReturnCode::InternalStateError)?
                             .unwrap()
                             .value()
+                            .clone();
+                        s_dir_e
                             .0
                             .tags
                             .entry(tag.id)
                             .or_insert(vec![])
                             .retain(|id| *id != file.id);
+                        shelf_dir_table.insert(sdir.0, s_dir_e)
+                            .map_err(|_| ReturnCode::InternalStateError)?;
+
                     }
                     sdir = match sdir.1.parent.load().as_ref().as_ref() {
                         Some(p) => (
@@ -935,17 +938,21 @@ impl Service<DetachTag> for FileSystem {
                 }
                 let detached_to_shelf = sdir.1.detach(&tag, Some(&file.clone()));
                 if detached_to_shelf {
-                    let s_dir_t = shelf_dir_table
-                        .get_mut(sdir.0)
-                        .map_err(|_| ReturnCode::InternalStateError)?;
-                    s_dir_t
+                    let mut s_dir_e = shelf_dir_table
+                        .get(sdir.0)
+                        .map_err(|_| ReturnCode::InternalStateError)?
                         .unwrap()
                         .value()
+                        .clone();
+                    s_dir_e
                         .0
                         .tags
                         .entry(tag.id)
                         .or_insert(vec![])
                         .retain(|id| *id != file.id);
+
+                    shelf_dir_table.insert(sdir.0, s_dir_e)
+                        .map_err(|_| ReturnCode::InternalStateError)?;
                 }
                 detached_to_shelf
             };
@@ -1906,8 +1913,6 @@ mod tests {
             .detach_dtag(ShelfDirKey::Id(s.id), d_path.clone(), tag.clone())
             .await
             .unwrap();
-
-        dbg!(&d_path);
 
         assert!(
             fs.shelf_dirs
