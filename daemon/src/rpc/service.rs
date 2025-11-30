@@ -351,25 +351,23 @@ impl Service<StripTag> for RpcService {
                         .get_or_init_shelf(ShelfDirKey::Path(shelf.info.load().root.to_path_buf()))
                         .await
                         .unwrap();
-                    let Ok(path) = PathBuf::from(&req.path).canonicalize() else {
-                        return_error!(
-                            ReturnCode::PathNotFound,
-                            StripTagResponse,
-                            metadata.request_uuid,
-                            error_data
-                        );
-                    };
-                    let sdir_id = match filesys
-                        .get_or_init_dir(ShelfDirKey::Id(shelf_data.id), path.clone())
-                        .await
-                    {
-                        Ok(sdir_id) => sdir_id,
-                        Err(res) => {
-                            return_error!(res, StripTagResponse, metadata.request_uuid, error_data);
+                    let path = match req.path {
+                        Some(path) => {
+                            let Ok(path) = PathBuf::from(path).canonicalize() else {
+                                return_error!(
+                                    ReturnCode::PathNotFound,
+                                    StripTagResponse,
+                                    metadata.request_uuid,
+                                    error_data
+                                );
+                            };
+                            Some(path)
                         }
+                        None => None,
                     };
+
                     let result = filesys
-                        .strip_tag(ShelfDirKey::Id(shelf_data.id), Some(sdir_id), tag.clone())
+                        .strip_tag(ShelfDirKey::Id(shelf_data.id), path.clone(), tag.clone())
                         .await;
 
                     if let ShelfOwner::Sync(_sync_id) = shelf.shelf_owner {

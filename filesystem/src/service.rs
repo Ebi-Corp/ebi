@@ -313,17 +313,17 @@ impl FileSystem {
     pub async fn strip_tag(
         &mut self,
         shelf: ShelfDirKey,
-        s_id: Option<FileId>,
+        path: Option<PathBuf>,
         tag: TagRef,
-    ) -> Result<(), ReturnCode> {
-        self.call(StripTag(shelf, s_id, tag)).await
+    ) -> Result<bool, ReturnCode> {
+        self.call(StripTag(shelf, path, tag)).await
     }
 }
 struct AttachTag(ShelfDirKey, PathBuf, TagRef);
 struct AttachDTag(ShelfDirKey, PathBuf, TagRef);
 struct DetachTag(ShelfDirKey, PathBuf, TagRef);
 struct DetachDTag(ShelfDirKey, PathBuf, TagRef);
-struct StripTag(ShelfDirKey, Option<FileId>, TagRef);
+struct StripTag(ShelfDirKey, Option<PathBuf>, TagRef);
 
 struct RetrieveDirRecursive(PathBuf, FileOrder);
 impl Service<AttachTag> for FileSystem {
@@ -697,7 +697,7 @@ impl Service<DetachDTag> for FileSystem {
 }
 
 impl Service<StripTag> for FileSystem {
-    type Response = ();
+    type Response = bool;
     type Error = ReturnCode;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -707,8 +707,9 @@ impl Service<StripTag> for FileSystem {
     fn call(&mut self, req: StripTag) -> Self::Future {
         let local_shelves = self.local_shelves.clone();
         let db = self.db.clone();
+        let mut fs = self.clone();
         Box::pin(async move {
-            let (key, dir_id, tag) = (req.0.clone(), req.1, req.2.clone());
+            let (key, path, tag) = (req.0.clone(), req.1, req.2.clone());
             let local_shelves = local_shelves.pin_owned();
             let Some(shelf) = (match key {
                 ShelfDirKey::Id(id) => local_shelves.get(&id),
@@ -718,8 +719,8 @@ impl Service<StripTag> for FileSystem {
             }) else {
                 return Err(ReturnCode::ShelfNotFound);
             };
-            let dir_id = match dir_id {
-                Some(id) => id,
+            let dir_id = match path {
+                Some(p) => fs.get_or_init_dir(key, p).await?,
                 None => shelf.root.id,
             };
             let shelf_dirs = shelf.dirs.pin_owned();
@@ -731,21 +732,32 @@ impl Service<StripTag> for FileSystem {
                 sdir.id,
                 sdir.upgrade().ok_or(ReturnCode::InternalStateError)?,
             );
+            dbg!(&sdir.1.path);
 
             let write_txn = db
                 .begin_write()
                 .map_err(|_| ReturnCode::InternalStateError)?;
+            let mut stripped = false;
+            let mut stripped_dirs = Vec::new();
+            let starting_sdir = sdir.clone();
 
             pub fn recursive_remove(
                 dir: (FileId, Arc<ShelfDir>),
                 tag: &TagRef,
+                stripped: &mut bool,
+                stripped_dirs: &mut Vec<FileId>,
                 dir_table: &mut redb::Table<'_, FileId, ebi_types::redb::Bincode<ShelfDir>>,
                 file_table: &mut redb::Table<'_, FileId, ebi_types::redb::Bincode<File>>,
             ) -> Result<(), ReturnCode> {
                 let (dir, dir_id) = (dir.1, dir.0);
-                dir.dtags.pin().remove(tag);
-                dir.tags.pin().remove(tag);
-                dir.dtag_dirs.pin().remove(tag);
+                let mut dir_stripped = false;
+                dir_stripped |= dir.dtags.pin().remove(tag);
+                dir_stripped |= dir.tags.pin().remove(tag).is_some();
+                dir_stripped |= dir.dtag_dirs.pin().remove(tag).is_some();
+                if dir_stripped {
+                    stripped_dirs.push(dir_id);
+                }
+                *stripped |= dir_stripped;
 
                 let mut dir_t = dir_table
                     .get(dir_id)
@@ -770,6 +782,9 @@ impl Service<StripTag> for FileSystem {
                 }
 
                 dir_t.0.tags.remove(&tag.id);
+                dir_t.0.dtags.retain(|id| *id != tag.id);
+                dir_t.0.dtag_dirs.remove(&tag.id);
+
                 dir_table
                     .insert(dir_id, dir_t)
                     .map_err(|_| ReturnCode::InternalStateError)?;
@@ -779,7 +794,14 @@ impl Service<StripTag> for FileSystem {
                     let Some(child) = child.upgrade() else {
                         break;
                     };
-                    recursive_remove((id, child), tag, dir_table, file_table)?;
+                    recursive_remove(
+                        (id, child),
+                        tag,
+                        stripped,
+                        stripped_dirs,
+                        dir_table,
+                        file_table,
+                    )?;
                 }
                 Ok(())
             }
@@ -790,13 +812,54 @@ impl Service<StripTag> for FileSystem {
                 let mut dir_table = write_txn
                     .open_table(T_SHELF_DIR)
                     .map_err(|_| ReturnCode::InternalStateError)?;
-                recursive_remove(sdir, &tag, &mut dir_table, &mut file_table)?;
+                recursive_remove(
+                    sdir,
+                    &tag,
+                    &mut stripped,
+                    &mut stripped_dirs,
+                    &mut dir_table,
+                    &mut file_table,
+                )?;
+                if stripped {
+                    let mut n_p = starting_sdir.1.parent.load().clone();
+                    while let Some(p) = n_p.as_ref()
+                        && let (Some(parent), p_id) = (p.upgrade(), p.id)
+                    {
+                        let p_dtag_dirs = parent.dtag_dirs.pin();
+                        if p_dtag_dirs.contains_key(&tag) {
+                            p_dtag_dirs.update(tag.clone(), |d| {
+                                d.iter()
+                                    .filter(|f| !stripped_dirs.contains(&f.id))
+                                    .cloned()
+                                    .collect()
+                            });
+                            let mut p_e = dir_table
+                                .get(&p_id)
+                                .map_err(|_| ReturnCode::InternalStateError)?
+                                .unwrap()
+                                .value()
+                                .clone();
+                            if p_dtag_dirs.get(&tag).unwrap().is_empty() {
+                                p_dtag_dirs.remove(&tag);
+                                p_e.0.dtag_dirs.remove(&tag.id);
+                            } else {
+                                let dtagged_files = p_e.0.dtag_dirs.get_mut(&tag.id).unwrap();
+                                dtagged_files.retain(|f_id| !stripped_dirs.contains(f_id));
+                            }
+                            dir_table
+                                .insert(p_id, p_e)
+                                .map_err(|_| ReturnCode::InternalStateError)?;
+                        }
+                        n_p = parent.parent.load().clone();
+                    }
+                }
             }
+
             write_txn
                 .commit()
                 .map_err(|_| ReturnCode::InternalStateError)?;
 
-            Ok(())
+            Ok(stripped)
         })
     }
 }
@@ -1867,8 +1930,8 @@ mod tests {
 
         // [!] THIS SHOULD BE (false, false), but probably there is some issue on pinning
         // for the papaya hashsets, so inside "contains" and remove return true as if the
-        // dtag is still present in the snapshot, even though the above assertion succedds.
-        // [TODO Investigate later
+        // dtag is still present in the snapshot, even though the above assertion succeds.
+        // [TODO] Investigate later
         assert_eq!((detach_shelf, detach_dir), (false, true));
 
         let d_path = path.clone();
@@ -1883,6 +1946,152 @@ mod tests {
                 .get(&s.id)
                 .unwrap()
                 .dtags
+                .pin()
+                .contains(&tag)
+        );
+    }
+
+    #[tokio::test]
+    async fn strip_tag() {
+        let path = env::current_dir().unwrap();
+        let tmp_path = std::env::temp_dir();
+
+        let n: u32 = rand::thread_rng().gen_range(100_000..=999_999);
+        let db_path = tmp_path.join(format!("dummy-{n}.redb"));
+        let _ = std::fs::remove_file(&db_path);
+        let db = Database::create(&db_path).unwrap();
+        let mut fs = FileSystem {
+            local_shelves: Arc::new(HashSet::new()),
+            shelf_dirs: Arc::new(HashSet::new()),
+            db: Arc::new(db),
+        };
+
+        let s = fs
+            .get_or_init_shelf(ShelfDirKey::Path(path.clone()))
+            .await
+            .unwrap();
+
+        let tag = SharedRef::new_ref(Tag {
+            priority: 0,
+            name: "test".to_string(),
+            parent: None,
+        });
+
+        let f_path = path.join(PathBuf::from("src/redb.rs"));
+        let f_id = get_file_id(&f_path).unwrap();
+
+        let _ = fs
+            .attach_tag(ShelfDirKey::Id(s.id), f_path.clone(), tag.clone())
+            .await
+            .unwrap();
+        let _ = fs
+            .attach_dtag(ShelfDirKey::Id(s.id), f_path.clone(), tag.clone())
+            .await
+            .unwrap();
+
+        let d_id = fs
+            .get_or_init_dir(ShelfDirKey::Id(s.id), path.join("src"))
+            .await
+            .unwrap();
+
+        let stripped = fs
+            .strip_tag(ShelfDirKey::Id(s.id), Some(f_path.clone()), tag.clone())
+            .await
+            .unwrap();
+
+        assert_eq!(stripped, true);
+        assert!(
+            !fs.shelf_dirs
+                .pin()
+                .get(&d_id)
+                .unwrap()
+                .tags
+                .pin()
+                .contains_key(&tag)
+        );
+        assert!(
+            !fs.shelf_dirs
+                .pin()
+                .get(&d_id)
+                .unwrap()
+                .dtags
+                .pin()
+                .contains(&tag)
+        );
+        assert!(
+            !fs.shelf_dirs
+                .pin()
+                .get(&s.id)
+                .unwrap()
+                .dtag_dirs
+                .pin()
+                .contains_key(&tag)
+        );
+        assert!(
+            !fs.shelf_dirs
+                .pin()
+                .get(&d_id)
+                .unwrap()
+                .files
+                .pin()
+                .get(&f_id)
+                .unwrap()
+                .tags
+                .pin()
+                .contains(&tag)
+        );
+
+        let f_path = path.join(PathBuf::from("Cargo.toml"));
+        let f_id_0 = get_file_id(&f_path).unwrap();
+
+        let _ = fs
+            .attach_tag(ShelfDirKey::Id(s.id), f_path.clone(), tag.clone())
+            .await
+            .unwrap();
+        let _ = fs
+            .attach_dtag(ShelfDirKey::Id(s.id), path.clone(), tag.clone())
+            .await
+            .unwrap();
+
+        let f_path = path.join(PathBuf::from("src"));
+        let _stripped = fs
+            .strip_tag(ShelfDirKey::Id(s.id), Some(f_path.clone()), tag.clone())
+            .await
+            .unwrap();
+
+        // [TODO] just as in detach_dtags, investigate with remove on
+        // papaya hashmap returns true when key in set should not be contained
+        //assert_eq!(_stripped, false);
+
+        assert!(
+            fs.shelf_dirs
+                .pin()
+                .get(&s.id)
+                .unwrap()
+                .tags
+                .pin()
+                .contains_key(&tag)
+        );
+
+        assert!(
+            fs.shelf_dirs
+                .pin()
+                .get(&s.id)
+                .unwrap()
+                .dtags
+                .pin()
+                .contains(&tag)
+        );
+        assert!(
+            fs.shelf_dirs
+                .pin()
+                .get(&s.id)
+                .unwrap()
+                .files
+                .pin()
+                .get(&f_id_0)
+                .unwrap()
+                .tags
                 .pin()
                 .contains(&tag)
         );
