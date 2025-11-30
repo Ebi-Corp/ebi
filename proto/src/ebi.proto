@@ -213,7 +213,7 @@ message StripTag { //[x]
   bytes workspace_id = 1;
   bytes shelf_id = 2;
   bytes tag_id = 3;
-  string path = 4;
+  optional string path = 4;
   RequestMetadata metadata = 5;
 } 
 
