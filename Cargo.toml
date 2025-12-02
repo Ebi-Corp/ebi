@@ -12,6 +12,9 @@ ebi-types = { path = "types", features = ["redb"] }
 rayon = "1.10.0" # 1 disabled feature flag
 jwalk = "0.8.1" # no features flags
 fxhash = "0.2.1"
+notify = "8.2.0"
+crossbeam-channel = "0.5.15"
+notify-debouncer-mini = "0.7.0"
 chrono = { version = "0.4.40", default-features = false, features = ["clock", "std", "serde"] }
 tokio = { version = "1.44.1", features = ["sync", "rt", "time", "macros"] }
 tower = "0.5.2"

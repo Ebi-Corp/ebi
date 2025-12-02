@@ -4,6 +4,7 @@ use ebi_types::{FileId, Uuid, tag::Tag};
 use redb::TableDefinition;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fmt::Debug;
 use std::path::PathBuf;
 
 pub const T_SHELF_DATA: TableDefinition<FileId, Bincode<ShelfData>> =
@@ -89,15 +90,12 @@ impl Storable for File {
 #[cfg(test)] //[!] Check 
 mod tests {
     use std::env;
-    use std::sync::Arc;
 
     use crate::service::FileSystem;
     use crate::service::ShelfDirKey;
 
     use super::*;
-    use ::redb::Database;
     use ebi_types::*;
-    use papaya::HashSet;
 
     fn equal_fs(fs_left: &FileSystem, fs_right: &FileSystem) {
         let left_shelves_pin = fs_left.local_shelves.pin();
@@ -199,13 +197,7 @@ mod tests {
         let tmp_path = std::env::temp_dir();
         let db_path = tmp_path.join("test_db");
         let _ = std::fs::remove_file(&db_path);
-        let db = Database::create(&db_path).unwrap();
-
-        let mut fs = FileSystem {
-            local_shelves: Arc::new(HashSet::new()),
-            shelf_dirs: Arc::new(HashSet::new()),
-            db: Arc::new(db),
-        };
+        let mut fs = FileSystem::new(&db_path).unwrap();
 
         let s = fs
             .get_or_init_shelf(ShelfDirKey::Path(path.clone()))
@@ -245,11 +237,11 @@ mod tests {
         let shelf_dirs = fs.shelf_dirs.clone();
         drop(fs);
 
-        let fs = FileSystem {
-            local_shelves,
-            shelf_dirs,
-            db: Arc::new(Database::create(tmp_path.join("dummy_db")).unwrap()),
-        };
+
+        let mut fs = FileSystem::new(&tmp_path.join("dummy_db")).unwrap();
+        fs.local_shelves = local_shelves;
+        fs.shelf_dirs = shelf_dirs;
+
         let load_fs = FileSystem::full_load(&db_path).await.unwrap();
 
         equal_fs(&load_fs, &fs);
