@@ -31,12 +31,12 @@ pub struct FileSystem {
     pub db: Arc<Database>,
     pub orphan_dirs: Arc<HashSet<ImmutRef<ShelfDir, FileId>>>, // this contains dirs that are not part of the shelf
     pub orphan_files: Arc<HashSet<ImmutRef<File, FileId>>>, // anymore, might be useful for dir and file moved
-    pub cached_ids: Arc<HashMap<PathBuf, FileId>>,
+    pub mapped_ids: Arc<HashMap<PathBuf, FileId>>,
     pub watchers: Arc<HashSet<ShelfWatcher>>,
 }
 
-impl Drop for FileSystem {
-    fn drop(&mut self) {
+impl FileSystem {
+    pub fn close(&mut self) {
         for watcher in self.watchers.pin().iter() {
             watcher.channel.tx.send(Signal::Close).unwrap();
         }
@@ -95,7 +95,7 @@ impl FileSystem {
             db: Arc::new(db),
             orphan_files: Arc::new(HashSet::new()),
             orphan_dirs: Arc::new(HashSet::new()),
-            cached_ids: Arc::new(HashMap::new()),
+            mapped_ids: Arc::new(HashMap::new()),
             watchers: Arc::new(HashSet::new()),
         })
     }
@@ -275,7 +275,7 @@ impl FileSystem {
         Ok(FileSystem {
             local_shelves: Arc::new(shelves),
             shelf_dirs: Arc::new(dirs),
-            cached_ids: Arc::new(HashMap::new()), // [TODO] fill this in the loading
+            mapped_ids: Arc::new(HashMap::new()), // [TODO] fill this in the loading
             orphan_dirs: Arc::new(HashSet::new()),
             orphan_files: Arc::new(HashSet::new()),
             watchers: Arc::new(HashSet::new()),
@@ -369,12 +369,15 @@ impl Service<AttachTag> for FileSystem {
         let local_shelves = self.local_shelves.clone();
         let shelf_dirs = self.shelf_dirs.clone();
         let db = self.db.clone();
+        let mapped_ids = self.mapped_ids.clone();
         let mut fs = self.clone();
+
         Box::pin(async move {
             let (key, path) = (req.0.clone(), req.1.clone());
             let tag = req.2;
             let local_shelves = local_shelves.pin_owned();
             let shelf_dirs = shelf_dirs.pin_owned();
+            let mapped_ids = mapped_ids.pin_owned();
             let Some(shelf) = (match key {
                 ShelfDirKey::Id(id) => local_shelves.get(&id),
                 ShelfDirKey::Path(ref s_path) => {
@@ -398,7 +401,19 @@ impl Service<AttachTag> for FileSystem {
             let write_txn = db
                 .begin_write()
                 .map_err(|_| ReturnCode::InternalStateError)?;
-            let (file, new) = sdir.get_init_file(path)?;
+            let file_id = {
+                match mapped_ids.get(&path) {
+                    Some(id) => *id,
+                    None => {
+                        let Ok(new_id) = get_file_id(&path) else {
+                            return Err(ReturnCode::InternalStateError);
+                        };
+                        mapped_ids.insert(path.clone(), new_id);
+                        new_id
+                    }
+                }
+            };
+            let (file, new) = sdir.get_init_file(file_id, path)?;
             let attached_to_file = file.attach(&tag);
             if new {
                 let mut file_table = write_txn
@@ -906,12 +921,14 @@ impl Service<DetachTag> for FileSystem {
         let local_shelves = self.local_shelves.clone();
         let shelf_dirs = self.shelf_dirs.clone();
         let db = self.db.clone();
+        let mapped_ids = self.mapped_ids.clone();
         let mut fs = self.clone();
         Box::pin(async move {
             let (key, path) = (req.0.clone(), req.1.clone());
             let tag = req.2;
             let local_shelves = local_shelves.pin_owned();
             let shelf_dirs = shelf_dirs.pin_owned();
+            let mapped_ids = mapped_ids.pin_owned();
             let Some(shelf) = (match key {
                 ShelfDirKey::Id(id) => local_shelves.get(&id),
                 ShelfDirKey::Path(ref s_path) => {
@@ -925,7 +942,19 @@ impl Service<DetachTag> for FileSystem {
             let write_txn = db
                 .begin_write()
                 .map_err(|_| ReturnCode::InternalStateError)?;
-            let (file, new) = sdir.get_init_file(path)?;
+            let file_id = {
+                match mapped_ids.get(&path) {
+                    Some(id) => *id,
+                    None => {
+                        let Ok(new_id) = get_file_id(&path) else {
+                            return Err(ReturnCode::InternalStateError);
+                        };
+                        mapped_ids.insert(path.clone(), new_id);
+                        new_id
+                    }
+                }
+            };
+            let (file, new) = sdir.get_init_file(file_id, path)?;
             if new {
                 let mut file_table = write_txn
                     .open_table(T_FILE)
@@ -1014,6 +1043,7 @@ impl Service<RetrieveDirRecursive> for FileSystem {
 
     fn call(&mut self, req: RetrieveDirRecursive) -> Self::Future {
         let shelf_dirs = self.shelf_dirs.clone();
+        let mapped_ids = self.mapped_ids.clone();
         Box::pin(async move {
             let root = req.0;
             let order = req.1;
@@ -1022,8 +1052,8 @@ impl Service<RetrieveDirRecursive> for FileSystem {
             let order_c = order.clone();
             WalkDirGeneric::<DirState>::new(root)
                 .process_read_dir(move |_depth, path, state, _entries| {
-                    if let Ok(dir_id) = get_file_id(path)
-                        && let Some(sdir) = shelf_dirs_c.pin().get(&dir_id)
+                    if let Ok(dir_id) = mapped_ids.pin().get(path).ok_or(get_file_id(path))
+                        && let Some(sdir) = shelf_dirs_c.pin().get(dir_id)
                     {
                         state.dtags = sdir
                             .dtags
@@ -1081,7 +1111,9 @@ impl Service<RetrieveDirRecursive> for FileSystem {
                             }
                             #[cfg(windows)]
                             {
-                                if let Ok(file_id) = get_file_id(entry.path()) {
+                                if let Ok(file_id) =
+                                    mapped_ids.pin().get(path).ok_or(get_file_id(&path))
+                                {
                                     let ordered_file = if let Some(file) =
                                         entry.client_state.files.get(&file_id)
                                     {
@@ -1130,33 +1162,32 @@ impl Service<GetInitShelf> for FileSystem {
 
     fn call(&mut self, req: GetInitShelf) -> Self::Future {
         let fs = self.clone();
+
         let watchers = self.watchers.clone();
         let db = self.db.clone();
         Box::pin(async move {
             let shelf_key = req.0;
             let local_shelves = fs.local_shelves.pin_owned();
             let shelf_dirs = fs.shelf_dirs.pin_owned();
-            let path = match shelf_key {
-                ShelfDirKey::Id(id) => {
-                    let Some(shelf) = local_shelves.get(&id) else {
-                        return Err(ReturnCode::ShelfNotFound);
-                    };
-                    return Ok(shelf.clone());
-                }
-                ShelfDirKey::Path(path) => {
-                    // might or might not be worth adding a lookup / par iter
-                    if let Some(shelf) = local_shelves.iter().find(|s| *s.path() == path) {
-                        return Ok(shelf.clone());
-                    };
-                    if path.is_dir() {
-                        path
-                    } else if let Some(parent) = path.parent() {
-                        parent.to_owned()
-                    } else {
-                        return Err(ReturnCode::PathNotFound);
-                    }
-                }
+            let mapped_ids = fs.mapped_ids.pin();
+
+            let (id, path) = match shelf_key {
+                ShelfDirKey::Id(id) => (Some(id), None),
+                ShelfDirKey::Path(path) => (mapped_ids.get(&path).copied(), Some(path)),
             };
+
+            if let Some(id) = id
+                && let Some(shelf) = local_shelves.get(&id)
+            {
+                return Ok(shelf.clone());
+            }
+
+            let path = path.unwrap();
+
+            if !path.is_dir() {
+                return Err(ReturnCode::PathNotFound);
+            }
+
             let mut prev_subdir: Option<ImmutRef<ShelfDir, FileId>> = None;
             let mut trav_path = path
                 .clone()
@@ -1164,20 +1195,29 @@ impl Service<GetInitShelf> for FileSystem {
                 .map_err(|_| ReturnCode::InternalStateError)?;
 
             loop {
-                let Ok(file_id) = get_file_id(&trav_path) else {
-                    return Err(ReturnCode::InternalStateError);
+                let path_id = {
+                    match mapped_ids.get(&trav_path) {
+                        Some(id) => *id,
+                        None => {
+                            let Ok(new_id) = get_file_id(&trav_path) else {
+                                return Err(ReturnCode::InternalStateError);
+                            };
+                            mapped_ids.insert(trav_path.clone(), new_id);
+                            new_id
+                        }
+                    }
                 };
 
                 let sdir = {
-                    if let Some(s_data) = local_shelves.get(&file_id) {
+                    if let Some(s_data) = local_shelves.get(&path_id) {
                         return Ok(s_data.clone());
-                    } else if let Some(sdir) = shelf_dirs.get(&file_id) {
+                    } else if let Some(sdir) = shelf_dirs.get(&path_id) {
                         sdir.clone()
                     } else {
                         let Ok(sdir) = ShelfDir::new(path.clone()) else {
                             return Err(ReturnCode::InternalStateError);
                         };
-                        let sdir_ref = ImmutRef::<ShelfDir, FileId>::new_ref_id(file_id, sdir);
+                        let sdir_ref = ImmutRef::<ShelfDir, FileId>::new_ref_id(path_id, sdir);
                         shelf_dirs.insert(sdir_ref.clone());
                         // [TODO] handle db errors properly
 
@@ -1189,7 +1229,7 @@ impl Service<GetInitShelf> for FileSystem {
                                 .open_table(T_SHELF_DIR)
                                 .map_err(|_| ReturnCode::InternalStateError)?;
                             table
-                                .insert(file_id, sdir_ref.to_storable())
+                                .insert(path_id, sdir_ref.to_storable())
                                 .map_err(|_| ReturnCode::InternalStateError)?;
                         }
                         write_txn
@@ -1248,7 +1288,6 @@ impl Service<GetInitShelf> for FileSystem {
                 prev_subdir = Some(sdir.clone());
 
                 if sdir.path == path {
-
                     let sdir_id = sdir.id;
                     let new_watcher = ShelfWatcher::new(sdir.id, &sdir.path)
                         .map_err(|_| ReturnCode::InternalStateError)?;
@@ -1275,7 +1314,7 @@ impl Service<GetInitShelf> for FileSystem {
                         .map_err(|_| ReturnCode::InternalStateError)?;
 
                     watchers.pin().insert(new_watcher);
-                    fs.watch_shelf(sdir_id).await?;
+                    fs.watch_shelf(sdir_id)?;
 
                     return Ok(s_data_ref);
                 }
@@ -1298,11 +1337,13 @@ impl Service<GetInitDir> for FileSystem {
         let shelf_dirs = self.shelf_dirs.clone();
         let local_shelves = self.local_shelves.clone();
         let db = self.db.clone();
+        let mapped_ids = self.mapped_ids.clone();
         Box::pin(async move {
             let shelf_key = req.0;
             let r_path = req.1;
             let local_shelves = local_shelves.pin_owned();
             let shelf_dirs = shelf_dirs.pin_owned();
+            let mapped_ids = mapped_ids.pin();
 
             let Some(shelf) = (match shelf_key {
                 ShelfDirKey::Id(id) => local_shelves.get(&id),
@@ -1327,22 +1368,42 @@ impl Service<GetInitDir> for FileSystem {
                 .clone()
                 .canonicalize()
                 .map_err(|_| ReturnCode::InternalStateError)?;
-            let Ok(nfile_id) = get_file_id(&trav_path) else {
-                return Err(ReturnCode::InternalStateError);
+
+            let start_path_id = {
+                match mapped_ids.get(&trav_path) {
+                    Some(id) => *id,
+                    None => {
+                        let Ok(new_id) = get_file_id(&trav_path) else {
+                            return Err(ReturnCode::InternalStateError);
+                        };
+                        mapped_ids.insert(trav_path.clone(), new_id);
+                        new_id
+                    }
+                }
             };
 
             loop {
-                let Ok(file_id) = get_file_id(&trav_path) else {
-                    return Err(ReturnCode::InternalStateError);
+                let path_id = {
+                    match mapped_ids.get(&trav_path) {
+                        Some(id) => *id,
+                        None => {
+                            let Ok(new_id) = get_file_id(&trav_path) else {
+                                return Err(ReturnCode::InternalStateError);
+                            };
+                            mapped_ids.insert(trav_path.clone(), new_id);
+                            new_id
+                        }
+                    }
                 };
+
                 let sdir = {
-                    if let Some(sdir) = shelf_dirs.get(&file_id) {
+                    if let Some(sdir) = shelf_dirs.get(&path_id) {
                         sdir.clone()
                     } else {
                         let Ok(sdir) = ShelfDir::new(path.clone()) else {
                             return Err(ReturnCode::InternalStateError);
                         };
-                        let sdir_ref = ImmutRef::<ShelfDir, FileId>::new_ref_id(file_id, sdir);
+                        let sdir_ref = ImmutRef::<ShelfDir, FileId>::new_ref_id(path_id, sdir);
                         shelf_dirs.insert(sdir_ref.clone());
                         let write_txn = db
                             .begin_write()
@@ -1352,7 +1413,7 @@ impl Service<GetInitDir> for FileSystem {
                                 .open_table(T_SHELF_DIR)
                                 .map_err(|_| ReturnCode::DbTableOpenError)?;
                             table
-                                .insert(file_id, sdir_ref.to_storable())
+                                .insert(path_id, sdir_ref.to_storable())
                                 .map_err(|_| ReturnCode::InternalStateError)?;
                         }
                         write_txn.commit().map_err(|_| ReturnCode::DbCommitError)?;
@@ -1434,7 +1495,7 @@ impl Service<GetInitDir> for FileSystem {
                     .map_err(|_| ReturnCode::InternalStateError)?;
 
                 if sdir.path == shelf.root_path {
-                    return Ok(nfile_id);
+                    return Ok(start_path_id);
                 }
 
                 trav_path = trav_path.parent().unwrap().to_path_buf();
