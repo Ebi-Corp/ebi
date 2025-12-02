@@ -91,15 +91,6 @@ impl<T, I> Borrow<I> for ImmutRef<T, I> {
     }
 }
 
-impl<T> Borrow<PathBuf> for ImmutRef<T, crate::FileId>
-where
-    T: WithPath,
-{
-    fn borrow(&self) -> &PathBuf {
-        self.path()
-    }
-}
-
 impl<T, I> Borrow<I> for WeakRef<T, I> {
     fn borrow(&self) -> &I {
         &self.id

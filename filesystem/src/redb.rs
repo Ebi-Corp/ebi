@@ -235,8 +235,8 @@ mod tests {
         // crete new fs with dummy db to enable opening of commited file
         let local_shelves = fs.local_shelves.clone();
         let shelf_dirs = fs.shelf_dirs.clone();
+        fs.close();
         drop(fs);
-
 
         let mut fs = FileSystem::new(&tmp_path.join("dummy_db")).unwrap();
         fs.local_shelves = local_shelves;

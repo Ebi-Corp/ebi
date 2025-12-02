@@ -2,7 +2,7 @@ use crate::file::{File, FileRef};
 use arc_swap::ArcSwap;
 use ebi_proto::rpc::ReturnCode;
 use ebi_types::tag::TagRef;
-use ebi_types::{FileId, ImmutRef, Ref, WeakRef, WithPath, get_file_id};
+use ebi_types::{FileId, ImmutRef, Ref, WeakRef, WithPath};
 use seize::Collector;
 use std::hash::RandomState;
 use std::io;
@@ -46,18 +46,21 @@ impl ShelfDir {
             subdirs: hash_set!(collector),
         })
     }
-    pub(crate) fn get_init_file(&self, path: PathBuf) -> Result<(FileRef, bool), ReturnCode> {
-        match self.files.pin().iter().find(|s| *s.path() == path) {
+    pub(crate) fn get_init_file(
+        &self,
+        f_id: FileId,
+        path: PathBuf,
+    ) -> Result<(FileRef, bool), ReturnCode> {
+        match self.files.pin().get(&f_id) {
             Some(file) => Ok((file.clone(), false)),
             None => {
-                let file_id = get_file_id(&path).map_err(|_| ReturnCode::FileNotFound)?;
                 let file = File::new(
                     path,
                     papaya::HashSet::<TagRef>::builder()
                         .shared_collector(self.collector.clone())
                         .build(),
                 );
-                let file = ImmutRef::new_ref_id(file_id, file);
+                let file = ImmutRef::new_ref_id(f_id, file);
                 self.files.pin().insert(file.clone());
                 Ok((file, true))
             }
