@@ -18,6 +18,7 @@ pub mod file;
 pub mod redb;
 pub mod service;
 pub mod shelf;
+pub mod watcher;
 use crate::dir::ShelfDir;
 use crate::file::File;
 use crate::shelf::ShelfData;

@@ -9,6 +9,7 @@ use crate::dir::{ShelfDir, ShelfDirRef};
 use crate::file::{File, FileRef};
 use crate::redb::{T_FILE, T_SHELF_DATA, T_SHELF_DIR, T_TAG};
 use crate::shelf::ShelfData;
+use crate::watcher::{ShelfWatcher, Signal};
 use ebi_proto::rpc::ReturnCode;
 use ebi_types::file::{FileOrder, FileSummary, OrderedFileSummary};
 use ebi_types::redb::{Storable, TagStorable};
@@ -28,6 +29,18 @@ pub struct FileSystem {
     pub local_shelves: Arc<HashSet<ImmutRef<ShelfData, FileId>>>,
     pub shelf_dirs: Arc<HashSet<ImmutRef<ShelfDir, FileId>>>,
     pub db: Arc<Database>,
+    pub orphan_dirs: Arc<HashSet<ImmutRef<ShelfDir, FileId>>>, // this contains dirs that are not part of the shelf
+    pub orphan_files: Arc<HashSet<ImmutRef<File, FileId>>>, // anymore, might be useful for dir and file moved
+    pub cached_ids: Arc<HashMap<PathBuf, FileId>>,
+    pub watchers: Arc<HashSet<ShelfWatcher>>,
+}
+
+impl Drop for FileSystem {
+    fn drop(&mut self) {
+        for watcher in self.watchers.pin().iter() {
+            watcher.channel.tx.send(Signal::Close).unwrap();
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -74,6 +87,19 @@ fn setup_tags(raw_tags: HashMap<Uuid, TagStorable>) -> HashSet<SharedRef<Tag>> {
 }
 
 impl FileSystem {
+    pub fn new(db_path: &PathBuf) -> Result<Self, ReturnCode> {
+        let db = Database::create(db_path).map_err(|_| ReturnCode::PathNotFound)?;
+        Ok(FileSystem {
+            local_shelves: Arc::new(HashSet::new()),
+            shelf_dirs: Arc::new(HashSet::new()),
+            db: Arc::new(db),
+            orphan_files: Arc::new(HashSet::new()),
+            orphan_dirs: Arc::new(HashSet::new()),
+            cached_ids: Arc::new(HashMap::new()),
+            watchers: Arc::new(HashSet::new()),
+        })
+    }
+
     pub async fn full_load(db_path: &PathBuf) -> Result<Self, ReturnCode> {
         let db = Database::create(db_path).map_err(|_| ReturnCode::DbOpenError)?;
         let read_txn = db.begin_read().unwrap();
@@ -249,6 +275,10 @@ impl FileSystem {
         Ok(FileSystem {
             local_shelves: Arc::new(shelves),
             shelf_dirs: Arc::new(dirs),
+            cached_ids: Arc::new(HashMap::new()), // [TODO] fill this in the loading
+            orphan_dirs: Arc::new(HashSet::new()),
+            orphan_files: Arc::new(HashSet::new()),
+            watchers: Arc::new(HashSet::new()),
             db: Arc::new(db),
         })
     }
@@ -319,6 +349,7 @@ impl FileSystem {
         self.call(StripTag(shelf, path, tag)).await
     }
 }
+
 struct AttachTag(ShelfDirKey, PathBuf, TagRef);
 struct AttachDTag(ShelfDirKey, PathBuf, TagRef);
 struct DetachTag(ShelfDirKey, PathBuf, TagRef);
@@ -924,9 +955,9 @@ impl Service<DetachTag> for FileSystem {
                             .entry(tag.id)
                             .or_insert(vec![])
                             .retain(|id| *id != file.id);
-                        shelf_dir_table.insert(sdir.0, s_dir_e)
+                        shelf_dir_table
+                            .insert(sdir.0, s_dir_e)
                             .map_err(|_| ReturnCode::InternalStateError)?;
-
                     }
                     sdir = match sdir.1.parent.load().as_ref().as_ref() {
                         Some(p) => (
@@ -951,7 +982,8 @@ impl Service<DetachTag> for FileSystem {
                         .or_insert(vec![])
                         .retain(|id| *id != file.id);
 
-                    shelf_dir_table.insert(sdir.0, s_dir_e)
+                    shelf_dir_table
+                        .insert(sdir.0, s_dir_e)
                         .map_err(|_| ReturnCode::InternalStateError)?;
                 }
                 detached_to_shelf
@@ -1097,13 +1129,13 @@ impl Service<GetInitShelf> for FileSystem {
     }
 
     fn call(&mut self, req: GetInitShelf) -> Self::Future {
-        let shelf_dirs = self.shelf_dirs.clone();
-        let local_shelves = self.local_shelves.clone();
+        let fs = self.clone();
+        let watchers = self.watchers.clone();
         let db = self.db.clone();
         Box::pin(async move {
             let shelf_key = req.0;
-            let local_shelves = local_shelves.pin_owned();
-            let shelf_dirs = shelf_dirs.pin_owned();
+            let local_shelves = fs.local_shelves.pin_owned();
+            let shelf_dirs = fs.shelf_dirs.pin_owned();
             let path = match shelf_key {
                 ShelfDirKey::Id(id) => {
                     let Some(shelf) = local_shelves.get(&id) else {
@@ -1216,6 +1248,11 @@ impl Service<GetInitShelf> for FileSystem {
                 prev_subdir = Some(sdir.clone());
 
                 if sdir.path == path {
+
+                    let sdir_id = sdir.id;
+                    let new_watcher = ShelfWatcher::new(sdir.id, &sdir.path)
+                        .map_err(|_| ReturnCode::InternalStateError)?;
+
                     let Ok(s_data) = ShelfData::new(sdir) else {
                         return Err(ReturnCode::ShelfCreationIOError);
                     };
@@ -1236,6 +1273,10 @@ impl Service<GetInitShelf> for FileSystem {
                     write_txn
                         .commit()
                         .map_err(|_| ReturnCode::InternalStateError)?;
+
+                    watchers.pin().insert(new_watcher);
+                    fs.watch_shelf(sdir_id).await?;
+
                     return Ok(s_data_ref);
                 }
                 trav_path = trav_path.parent().unwrap().to_path_buf();
@@ -1405,14 +1446,11 @@ impl Service<GetInitDir> for FileSystem {
 #[cfg(test)]
 mod tests {
     use std::env;
-    use std::sync::Arc;
 
     use crate::service::FileSystem;
     use crate::service::ShelfDirKey;
 
     use super::*;
-    use ::redb::Database;
-    use papaya::HashSet;
     use rand::Rng;
 
     #[tokio::test]
@@ -1423,12 +1461,7 @@ mod tests {
         let n: u32 = rand::thread_rng().gen_range(100_000..=999_999);
         let db_path = tmp_path.join(format!("dummy-{n}.redb"));
         let _ = std::fs::remove_file(&db_path);
-        let db = Database::create(&db_path).unwrap();
-        let mut fs = FileSystem {
-            local_shelves: Arc::new(HashSet::new()),
-            shelf_dirs: Arc::new(HashSet::new()),
-            db: Arc::new(db),
-        };
+        let mut fs = FileSystem::new(&db_path).unwrap();
 
         let s = fs
             .get_or_init_shelf(ShelfDirKey::Path(path.clone()))
@@ -1575,12 +1608,7 @@ mod tests {
         let n: u32 = rand::thread_rng().gen_range(100_000..=999_999);
         let db_path = tmp_path.join(format!("dummy-{n}.redb"));
         let _ = std::fs::remove_file(&db_path);
-        let db = Database::create(&db_path).unwrap();
-        let mut fs = FileSystem {
-            local_shelves: Arc::new(HashSet::new()),
-            shelf_dirs: Arc::new(HashSet::new()),
-            db: Arc::new(db),
-        };
+        let mut fs = FileSystem::new(&db_path).unwrap();
 
         let s = fs
             .get_or_init_shelf(ShelfDirKey::Path(path.clone()))
@@ -1724,12 +1752,7 @@ mod tests {
         let n: u32 = rand::thread_rng().gen_range(100_000..=999_999);
         let db_path = tmp_path.join(format!("dummy-{n}.redb"));
         let _ = std::fs::remove_file(&db_path);
-        let db = Database::create(&db_path).unwrap();
-        let mut fs = FileSystem {
-            local_shelves: Arc::new(HashSet::new()),
-            shelf_dirs: Arc::new(HashSet::new()),
-            db: Arc::new(db),
-        };
+        let mut fs = FileSystem::new(&db_path).unwrap();
 
         let s = fs
             .get_or_init_shelf(ShelfDirKey::Path(path.clone()))
@@ -1814,12 +1837,7 @@ mod tests {
         let n: u32 = rand::thread_rng().gen_range(100_000..=999_999);
         let db_path = tmp_path.join(format!("dummy-{n}.redb"));
         let _ = std::fs::remove_file(&db_path);
-        let db = Database::create(&db_path).unwrap();
-        let mut fs = FileSystem {
-            local_shelves: Arc::new(HashSet::new()),
-            shelf_dirs: Arc::new(HashSet::new()),
-            db: Arc::new(db),
-        };
+        let mut fs = FileSystem::new(&db_path).unwrap();
 
         let s = fs
             .get_or_init_shelf(ShelfDirKey::Path(path.clone()))
@@ -1964,12 +1982,7 @@ mod tests {
         let n: u32 = rand::thread_rng().gen_range(100_000..=999_999);
         let db_path = tmp_path.join(format!("dummy-{n}.redb"));
         let _ = std::fs::remove_file(&db_path);
-        let db = Database::create(&db_path).unwrap();
-        let mut fs = FileSystem {
-            local_shelves: Arc::new(HashSet::new()),
-            shelf_dirs: Arc::new(HashSet::new()),
-            db: Arc::new(db),
-        };
+        let mut fs = FileSystem::new(&db_path).unwrap();
 
         let s = fs
             .get_or_init_shelf(ShelfDirKey::Path(path.clone()))

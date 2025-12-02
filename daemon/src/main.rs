@@ -12,7 +12,6 @@ use ebi_types::{RequestId, Uuid};
 use iroh::{Endpoint, NodeId, SecretKey};
 use papaya::{HashMap, HashSet};
 use paste::paste;
-use redb::Database;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
@@ -122,13 +121,9 @@ async fn main() -> Result<()> {
     //[/] The Peer service subscribes to the ResponseHandler when a request is sent.
     //[/] It is then notified when a response is received so it can acquire the read lock on the Response map.
     let daemon_info = Arc::new(DaemonInfo::new(id, "".to_string()));
-    let db = Database::create(PathBuf::from("fs-save.redb"))?;
+    let db_path = PathBuf::from("fs-save.redb");
 
-    let filesys = FileSystem {
-        db: Arc::new(db),
-        shelf_dirs: Arc::new(papaya::HashSet::new()),
-        local_shelves: Arc::new(papaya::HashSet::new()),
-    };
+    let filesys = FileSystem::new(&db_path).unwrap();
 
     let state_srv = StateService::new();
 
