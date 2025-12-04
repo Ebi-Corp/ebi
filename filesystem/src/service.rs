@@ -1506,26 +1506,29 @@ impl Service<GetInitDir> for FileSystem {
 
 #[cfg(test)]
 mod tests {
-    use std::env;
-
     use crate::service::FileSystem;
     use crate::service::ShelfDirKey;
 
     use super::*;
-    use rand::Rng;
 
     #[tokio::test]
     async fn attach_tag() {
-        let path = env::current_dir().unwrap();
-        let tmp_path = std::env::temp_dir();
-
-        let n: u32 = rand::thread_rng().gen_range(100_000..=999_999);
-        let db_path = tmp_path.join(format!("dummy-{n}.redb"));
+        let test_path = std::env::temp_dir().join("ebi-test");
+        let test_path = test_path.join("attach-tag");
+        let _ = std::fs::create_dir_all(test_path.clone());
+        let db_path = test_path.join("database.redb");
         let _ = std::fs::remove_file(&db_path);
         let mut fs = FileSystem::new(&db_path).unwrap();
 
+        let shelf_path = test_path.join(test_path.join("test_shelf_dir"));
+        let _ = std::fs::create_dir(shelf_path.clone());
+        let subdir_path = shelf_path.join("test_subdir");
+        let _ = std::fs::create_dir(subdir_path.clone());
+        let _ = std::fs::File::create(subdir_path.join("file.txt"));
+        let _ = std::fs::File::create(subdir_path.join("other_file.txt"));
+
         let s = fs
-            .get_or_init_shelf(ShelfDirKey::Path(path.clone()))
+            .get_or_init_shelf(ShelfDirKey::Path(shelf_path.clone()))
             .await
             .unwrap();
 
@@ -1535,7 +1538,7 @@ mod tests {
             parent: None,
         });
 
-        let f_path = path.join(PathBuf::from("src/redb.rs"));
+        let f_path = subdir_path.join("file.txt");
         let f_id = get_file_id(&f_path).unwrap();
 
         let (attach_shelf, attach_file) = fs
@@ -1544,7 +1547,7 @@ mod tests {
             .unwrap();
 
         let d_id = fs
-            .get_or_init_dir(ShelfDirKey::Id(s.id), path.join("src"))
+            .get_or_init_dir(ShelfDirKey::Id(s.id), subdir_path.clone())
             .await
             .unwrap();
 
@@ -1572,7 +1575,7 @@ mod tests {
                 .contains(&tag)
         );
 
-        let f_path = path.join(PathBuf::from("src/service.rs"));
+        let f_path = subdir_path.join("other_file.txt");
         let f_id = get_file_id(&f_path).unwrap();
 
         let (attach_shelf, attach_file) = fs
@@ -1603,14 +1606,14 @@ mod tests {
         assert_eq!((attach_shelf, attach_file), (false, false));
 
         let n_s = fs
-            .get_or_init_shelf(ShelfDirKey::Path(path.join("src")))
+            .get_or_init_shelf(ShelfDirKey::Path(subdir_path.clone()))
             .await
             .unwrap();
 
         let (attach_shelf, attach_file) = fs
             .attach_tag(
                 ShelfDirKey::Id(n_s.id),
-                path.join(PathBuf::from("src/redb.rs")),
+                subdir_path.join("file.txt"),
                 tag.clone(),
             )
             .await
@@ -1628,7 +1631,7 @@ mod tests {
         let (attach_shelf, attach_file) = fs
             .attach_tag(
                 ShelfDirKey::Id(s.id),
-                path.join(PathBuf::from("src/service.rs")),
+                subdir_path.join("other_file.txt"),
                 other_tag_same_name,
             )
             .await
@@ -1663,16 +1666,22 @@ mod tests {
 
     #[tokio::test]
     async fn detach_tag() {
-        let path = env::current_dir().unwrap();
-        let tmp_path = std::env::temp_dir();
-
-        let n: u32 = rand::thread_rng().gen_range(100_000..=999_999);
-        let db_path = tmp_path.join(format!("dummy-{n}.redb"));
-        let _ = std::fs::remove_file(&db_path);
+        let test_path = std::env::temp_dir().join("ebi-test");
+        let test_path = test_path.join("detach-tag");
+        let _ = std::fs::create_dir_all(test_path.clone());
+        let db_path = test_path.join("database.redb");
         let mut fs = FileSystem::new(&db_path).unwrap();
+        let shelf_path = test_path.join(test_path.join("test_shelf_dir"));
+        let _ = std::fs::create_dir(shelf_path.clone());
+        let subdir_path = shelf_path.join("test_subdir");
+        let _ = std::fs::create_dir(subdir_path.clone());
+
+        let _ = std::fs::create_dir(subdir_path.clone());
+        let _ = std::fs::File::create(subdir_path.join("file.txt"));
+        let _ = std::fs::File::create(subdir_path.join("other_file.txt"));
 
         let s = fs
-            .get_or_init_shelf(ShelfDirKey::Path(path.clone()))
+            .get_or_init_shelf(ShelfDirKey::Path(shelf_path.clone()))
             .await
             .unwrap();
 
@@ -1682,7 +1691,7 @@ mod tests {
             parent: None,
         });
 
-        let f_path = path.join(PathBuf::from("src/redb.rs"));
+        let f_path = subdir_path.join(PathBuf::from("file.txt"));
         let f_id = get_file_id(&f_path).unwrap();
 
         let _ = fs
@@ -1691,7 +1700,7 @@ mod tests {
             .unwrap();
 
         let d_id = fs
-            .get_or_init_dir(ShelfDirKey::Id(s.id), path.join("src"))
+            .get_or_init_dir(ShelfDirKey::Id(s.id), subdir_path.clone())
             .await
             .unwrap();
 
@@ -1736,7 +1745,7 @@ mod tests {
             .await
             .unwrap();
 
-        let f_path = path.join(PathBuf::from("src/service.rs"));
+        let f_path = subdir_path.join(PathBuf::from("other_file.txt"));
         let f_id = get_file_id(&f_path).unwrap();
         let _ = fs
             .attach_tag(ShelfDirKey::Id(s.id), f_path.clone(), tag.clone())
@@ -1771,7 +1780,7 @@ mod tests {
                 .contains(&tag)
         );
 
-        let f_path = path.join(PathBuf::from("src/redb.rs"));
+        let f_path = subdir_path.join(PathBuf::from("file.txt"));
         let f_id = get_file_id(&f_path).unwrap();
         let (detach_shelf, detach_file) = fs
             .detach_tag(ShelfDirKey::Id(s.id), f_path.clone(), tag.clone())
@@ -1807,16 +1816,20 @@ mod tests {
 
     #[tokio::test]
     async fn attach_dtag() {
-        let path = env::current_dir().unwrap();
-        let tmp_path = std::env::temp_dir();
-
-        let n: u32 = rand::thread_rng().gen_range(100_000..=999_999);
-        let db_path = tmp_path.join(format!("dummy-{n}.redb"));
+        let test_path = std::env::temp_dir().join("ebi-test");
+        let test_path = test_path.join("attach-dtag");
+        let _ = std::fs::create_dir_all(test_path.clone());
+        let db_path = test_path.join("database.redb");
         let _ = std::fs::remove_file(&db_path);
         let mut fs = FileSystem::new(&db_path).unwrap();
 
+        let shelf_path = test_path.join(test_path.join("test_shelf_dir"));
+        let _ = std::fs::create_dir(shelf_path.clone());
+        let subdir_path = shelf_path.join("test_subdir");
+        let _ = std::fs::create_dir(subdir_path.clone());
+
         let s = fs
-            .get_or_init_shelf(ShelfDirKey::Path(path.clone()))
+            .get_or_init_shelf(ShelfDirKey::Path(shelf_path.clone()))
             .await
             .unwrap();
 
@@ -1826,9 +1839,8 @@ mod tests {
             parent: None,
         });
 
-        let d_path = path.clone();
         let (attach_shelf, attach_dir) = fs
-            .attach_dtag(ShelfDirKey::Id(s.id), d_path.clone(), tag.clone())
+            .attach_dtag(ShelfDirKey::Id(s.id), shelf_path.clone(), tag.clone())
             .await
             .unwrap();
 
@@ -1853,11 +1865,10 @@ mod tests {
 
         assert_eq!((attach_shelf, attach_dir), (true, true));
 
-        let d_path = path.join(PathBuf::from("src")).canonicalize().unwrap();
-        let d_id = get_file_id(&d_path).unwrap();
+        let d_id = get_file_id(&subdir_path).unwrap();
 
         let (attach_shelf, attach_dir) = fs
-            .attach_dtag(ShelfDirKey::Id(s.id), d_path.clone(), tag.clone())
+            .attach_dtag(ShelfDirKey::Id(s.id), subdir_path.clone(), tag.clone())
             .await
             .unwrap();
 
@@ -1883,7 +1894,7 @@ mod tests {
         );
 
         let (attach_shelf, attach_dir) = fs
-            .attach_dtag(ShelfDirKey::Id(s.id), d_path.clone(), tag.clone())
+            .attach_dtag(ShelfDirKey::Id(s.id), subdir_path.clone(), tag.clone())
             .await
             .unwrap();
 
@@ -1892,16 +1903,20 @@ mod tests {
 
     #[tokio::test]
     async fn detach_dtag() {
-        let path = env::current_dir().unwrap();
-        let tmp_path = std::env::temp_dir();
-
-        let n: u32 = rand::thread_rng().gen_range(100_000..=999_999);
-        let db_path = tmp_path.join(format!("dummy-{n}.redb"));
+        let test_path = std::env::temp_dir().join("ebi-test");
+        let test_path = test_path.join("detach-dtag");
+        let _ = std::fs::create_dir_all(test_path.clone());
+        let db_path = test_path.join("database.redb");
         let _ = std::fs::remove_file(&db_path);
         let mut fs = FileSystem::new(&db_path).unwrap();
 
+        let shelf_path = test_path.join(test_path.join("test_shelf_dir"));
+        let _ = std::fs::create_dir(shelf_path.clone());
+        let subdir_path = shelf_path.join("test_subdir");
+        let _ = std::fs::create_dir(subdir_path.clone());
+
         let s = fs
-            .get_or_init_shelf(ShelfDirKey::Path(path.clone()))
+            .get_or_init_shelf(ShelfDirKey::Path(shelf_path.clone()))
             .await
             .unwrap();
 
@@ -1911,13 +1926,12 @@ mod tests {
             parent: None,
         });
 
-        let d_path = path.clone();
         let _ = fs
-            .attach_dtag(ShelfDirKey::Id(s.id), d_path.clone(), tag.clone())
+            .attach_dtag(ShelfDirKey::Id(s.id), shelf_path.clone(), tag.clone())
             .await
             .unwrap();
         let (detach_shelf, detach_dir) = fs
-            .detach_dtag(ShelfDirKey::Id(s.id), d_path.clone(), tag.clone())
+            .detach_dtag(ShelfDirKey::Id(s.id), shelf_path.clone(), tag.clone())
             .await
             .unwrap();
 
@@ -1943,19 +1957,18 @@ mod tests {
         assert_eq!((detach_shelf, detach_dir), (true, true));
 
         let _ = fs
-            .attach_dtag(ShelfDirKey::Id(s.id), d_path.clone(), tag.clone())
+            .attach_dtag(ShelfDirKey::Id(s.id), shelf_path.clone(), tag.clone())
             .await
             .unwrap();
 
-        let d_path = path.join(PathBuf::from("src")).canonicalize().unwrap();
-        let d_id = get_file_id(&d_path).unwrap();
+        let d_id = get_file_id(&subdir_path).unwrap();
         let _ = fs
-            .attach_dtag(ShelfDirKey::Id(s.id), d_path.clone(), tag.clone())
+            .attach_dtag(ShelfDirKey::Id(s.id), subdir_path.clone(), tag.clone())
             .await
             .unwrap();
 
         let (detach_shelf, detach_dir) = fs
-            .detach_dtag(ShelfDirKey::Id(s.id), d_path.clone(), tag.clone())
+            .detach_dtag(ShelfDirKey::Id(s.id), subdir_path.clone(), tag.clone())
             .await
             .unwrap();
 
@@ -1989,7 +2002,7 @@ mod tests {
         );
 
         let (detach_shelf, detach_dir) = fs
-            .detach_dtag(ShelfDirKey::Id(s.id), d_path.clone(), tag.clone())
+            .detach_dtag(ShelfDirKey::Id(s.id), subdir_path.clone(), tag.clone())
             .await
             .unwrap();
 
@@ -2018,9 +2031,8 @@ mod tests {
         // [TODO] Investigate later
         assert_eq!((detach_shelf, detach_dir), (false, true));
 
-        let d_path = path.clone();
         let (detach_shelf, detach_dir) = fs
-            .detach_dtag(ShelfDirKey::Id(s.id), d_path.clone(), tag.clone())
+            .detach_dtag(ShelfDirKey::Id(s.id), shelf_path.clone(), tag.clone())
             .await
             .unwrap();
         assert_eq!((detach_shelf, detach_dir), (true, true));
@@ -2037,16 +2049,23 @@ mod tests {
 
     #[tokio::test]
     async fn strip_tag() {
-        let path = env::current_dir().unwrap();
-        let tmp_path = std::env::temp_dir();
+        let test_path = std::env::temp_dir().join("ebi-test");
+        let test_path = test_path.join("strip-dtag");
+        let _ = std::fs::create_dir_all(test_path.clone());
 
-        let n: u32 = rand::thread_rng().gen_range(100_000..=999_999);
-        let db_path = tmp_path.join(format!("dummy-{n}.redb"));
+        let db_path = test_path.join(format!("database.redb"));
         let _ = std::fs::remove_file(&db_path);
         let mut fs = FileSystem::new(&db_path).unwrap();
 
+        let shelf_path = test_path.join(test_path.join("test_shelf_dir"));
+        let _ = std::fs::create_dir(shelf_path.clone());
+        let subdir_path = shelf_path.join("test_subdir");
+        let _ = std::fs::create_dir(subdir_path.clone());
+        let _ = std::fs::File::create(subdir_path.join("file.txt"));
+        let _ = std::fs::File::create(shelf_path.join("other_file.txt"));
+
         let s = fs
-            .get_or_init_shelf(ShelfDirKey::Path(path.clone()))
+            .get_or_init_shelf(ShelfDirKey::Path(shelf_path.clone()))
             .await
             .unwrap();
 
@@ -2056,7 +2075,7 @@ mod tests {
             parent: None,
         });
 
-        let f_path = path.join(PathBuf::from("src/redb.rs"));
+        let f_path = subdir_path.join("file.txt");
         let f_id = get_file_id(&f_path).unwrap();
 
         let _ = fs
@@ -2069,7 +2088,7 @@ mod tests {
             .unwrap();
 
         let d_id = fs
-            .get_or_init_dir(ShelfDirKey::Id(s.id), path.join("src"))
+            .get_or_init_dir(ShelfDirKey::Id(s.id), subdir_path.clone())
             .await
             .unwrap();
 
@@ -2120,7 +2139,7 @@ mod tests {
                 .contains(&tag)
         );
 
-        let f_path = path.join(PathBuf::from("Cargo.toml"));
+        let f_path = shelf_path.join("other_file.txt");
         let f_id_0 = get_file_id(&f_path).unwrap();
 
         let _ = fs
@@ -2128,11 +2147,11 @@ mod tests {
             .await
             .unwrap();
         let _ = fs
-            .attach_dtag(ShelfDirKey::Id(s.id), path.clone(), tag.clone())
+            .attach_dtag(ShelfDirKey::Id(s.id), shelf_path.clone(), tag.clone())
             .await
             .unwrap();
 
-        let f_path = path.join(PathBuf::from("src"));
+        let f_path = subdir_path.clone();
         let _stripped = fs
             .strip_tag(ShelfDirKey::Id(s.id), Some(f_path.clone()), tag.clone())
             .await
