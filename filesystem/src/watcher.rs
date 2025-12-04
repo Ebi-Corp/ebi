@@ -223,7 +223,7 @@ impl FileSystem {
         }?;
 
         let parent_path = path.parent().map(|f| f.to_path_buf())?; // [TODO] handle the case when
-                                                                   // path is already root
+        // path is already root
         let p_id = mapped_ids.get(&parent_path).cloned()?;
         Some((path_id, p_id))
     }
@@ -405,22 +405,20 @@ mod tests {
     use ebi_types::tag::Tag;
     use ebi_types::*;
 
-    use rand::Rng;
-
     #[tokio::test]
     async fn remove_file() {
-        let tmp_path = std::env::temp_dir().join("ebi-tests");
-        let _ = std::fs::create_dir(tmp_path.clone());
-        let n: u32 = rand::thread_rng().gen_range(100_000..=999_999);
+        let test_path = std::env::temp_dir().join("ebi-test");
+        let test_path = test_path.join("remove-file");
+        let _ = std::fs::create_dir_all(test_path.clone());
 
-        let db_path = tmp_path.join(format!("dummy-{n}.redb"));
-        let test_shelf_path = tmp_path.join(tmp_path.join(format!("testdir-{n}")));
+        let db_path = test_path.join("database.redb");
+        let shelf_path = test_path.join(test_path.join("test_shelf_path"));
 
         let _ = std::fs::remove_file(&db_path);
         let mut fs = FileSystem::new(&db_path).unwrap();
-        let _ = std::fs::create_dir(test_shelf_path.clone()).unwrap();
+        let _ = std::fs::create_dir(shelf_path.clone()).unwrap();
         let s = fs
-            .get_or_init_shelf(ShelfDirKey::Path(test_shelf_path.clone()))
+            .get_or_init_shelf(ShelfDirKey::Path(shelf_path.clone()))
             .await
             .unwrap();
         let tag = SharedRef::new_ref(Tag {
@@ -428,7 +426,7 @@ mod tests {
             name: "test".to_string(),
             parent: None,
         });
-        let test_f_path = test_shelf_path.join("test_file");
+        let test_f_path = shelf_path.join("test_file");
         let _file = std::fs::File::create(test_f_path.clone()).unwrap();
 
         let _ = fs
@@ -439,7 +437,7 @@ mod tests {
         let mapped_ids = fs.mapped_ids.pin();
         let f_id = mapped_ids.get(&test_f_path).unwrap();
         let _ = std::fs::remove_file(test_f_path.clone());
-        let _ = std::fs::remove_dir(tmp_path.clone());
+        let _ = std::fs::remove_dir(test_path.clone());
         std::thread::sleep(Duration::from_millis(10));
 
         assert!(
@@ -454,20 +452,20 @@ mod tests {
         );
         assert!(fs.orphan_files.pin().get(f_id).is_some());
     }
+
     #[tokio::test]
     async fn moving_file() {
-        let tmp_path = std::env::temp_dir().join("ebi-tests");
-        let _ = std::fs::create_dir(tmp_path.clone());
-        let n: u32 = rand::thread_rng().gen_range(100_000..=999_999);
-
-        let db_path = tmp_path.join(format!("dummy-{n}.redb"));
-        let test_shelf_path = tmp_path.join(tmp_path.join(format!("testdir-{n}")));
+        let test_path = std::env::temp_dir().join("ebi-test");
+        let test_path = test_path.join("moving-file");
+        let _ = std::fs::create_dir_all(test_path.clone());
+        let db_path = test_path.join("database.redb");
+        let shelf_path = test_path.join(test_path.join("test_shelf_path"));
 
         let _ = std::fs::remove_file(&db_path);
         let mut fs = FileSystem::new(&db_path).unwrap();
-        let _ = std::fs::create_dir(test_shelf_path.clone()).unwrap();
+        let _ = std::fs::create_dir(shelf_path.clone()).unwrap();
         let s = fs
-            .get_or_init_shelf(ShelfDirKey::Path(test_shelf_path.clone()))
+            .get_or_init_shelf(ShelfDirKey::Path(shelf_path.clone()))
             .await
             .unwrap();
         let tag = SharedRef::new_ref(Tag {
@@ -475,7 +473,7 @@ mod tests {
             name: "test".to_string(),
             parent: None,
         });
-        let test_f_path = test_shelf_path.join("test_file");
+        let test_f_path = shelf_path.join("file.txt");
         let _file = std::fs::File::create(test_f_path.clone()).unwrap();
 
         let _ = fs
@@ -497,7 +495,7 @@ mod tests {
                 .is_some()
         );
         assert!(fs.orphan_files.pin().get(f_id).is_none());
-        let new_path = tmp_path.join("renamed_test_file");
+        let new_path = test_path.join("renamed_test_file");
 
         let _ = std::fs::rename(test_f_path.clone(), new_path.clone());
         std::thread::sleep(Duration::from_millis(10));
@@ -513,5 +511,20 @@ mod tests {
                 .is_none()
         );
         assert!(fs.orphan_files.pin().get(f_id).is_some());
+
+        let _ = std::fs::rename(new_path.clone(), test_f_path.clone());
+        std::thread::sleep(Duration::from_millis(10));
+
+        assert!(
+            fs.shelf_dirs
+                .pin()
+                .get(&s.id)
+                .unwrap()
+                .files
+                .pin()
+                .get(f_id)
+                .is_some()
+        );
+        assert!(fs.orphan_files.pin().get(f_id).is_none());
     }
 }

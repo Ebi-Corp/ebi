@@ -89,8 +89,6 @@ impl Storable for File {
 
 #[cfg(test)] //[!] Check 
 mod tests {
-    use std::env;
-
     use crate::service::FileSystem;
     use crate::service::ShelfDirKey;
 
@@ -193,18 +191,25 @@ mod tests {
 
     #[tokio::test]
     async fn save_restore_db() {
-        let path = env::current_dir().unwrap();
-        let tmp_path = std::env::temp_dir();
-        let db_path = tmp_path.join("test_db");
+        let test_path = std::env::temp_dir().join("ebi-test");
+        let test_path = test_path.join("save-restore-db");
+        let _ = std::fs::create_dir_all(test_path.clone());
+        let db_path = test_path.join("database.redb");
         let _ = std::fs::remove_file(&db_path);
         let mut fs = FileSystem::new(&db_path).unwrap();
 
+        let test_path = test_path.join(test_path.join("test_shelf_dir"));
+        let _ = std::fs::create_dir(test_path.clone());
+        let test_subpath = test_path.join("test_subdir");
+        let _ = std::fs::create_dir(test_subpath.clone());
+        let _ = std::fs::File::create(test_subpath.join("file.txt"));
+
         let s = fs
-            .get_or_init_shelf(ShelfDirKey::Path(path.clone()))
+            .get_or_init_shelf(ShelfDirKey::Path(test_path.clone()))
             .await
             .unwrap();
         let _dir_id_1 = fs
-            .get_or_init_dir(ShelfDirKey::Id(s.id), path.join(PathBuf::from("src")))
+            .get_or_init_dir(ShelfDirKey::Id(s.id), test_subpath.clone())
             .await
             .unwrap();
 
@@ -220,25 +225,22 @@ mod tests {
         });
 
         let _ = fs
-            .attach_tag(
-                ShelfDirKey::Id(s.id),
-                path.join(PathBuf::from("src/redb.rs")),
-                c_tag,
-            )
+            .attach_tag(ShelfDirKey::Id(s.id), test_subpath.join("file.txt"), c_tag)
             .await
             .unwrap();
         let _ = fs
-            .attach_dtag(ShelfDirKey::Id(s.id), path.join(PathBuf::from("src")), tag)
+            .attach_dtag(ShelfDirKey::Id(s.id), test_subpath.clone(), tag)
             .await
             .unwrap();
 
-        // crete new fs with dummy db to enable opening of commited file
+        // crete new fs with empty db but same data
         let local_shelves = fs.local_shelves.clone();
         let shelf_dirs = fs.shelf_dirs.clone();
         fs.close();
         drop(fs);
 
-        let mut fs = FileSystem::new(&tmp_path.join("dummy_db")).unwrap();
+        let new_db_path = test_path.join("new_database.redb");
+        let mut fs = FileSystem::new(&new_db_path).unwrap();
         fs.local_shelves = local_shelves;
         fs.shelf_dirs = shelf_dirs;
 
@@ -246,6 +248,7 @@ mod tests {
 
         equal_fs(&load_fs, &fs);
 
-        let _ = std::fs::remove_file(db_path);
+        let _ = std::fs::remove_file(&new_db_path);
+        let _ = std::fs::remove_file(&db_path);
     }
 }
