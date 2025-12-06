@@ -1086,69 +1086,53 @@ impl Service<RetrieveDirRecursive> for FileSystem {
             let dirs_c = dirs.clone();
             let order_c = order.clone();
             WalkDirGeneric::<DirState>::new(root)
-                .process_read_dir(move |_depth, path, state, _entries| {
-                    if let Ok(dir_id) = mapped_ids.pin().get(path).ok_or(get_file_id(path))
-                        && let Some(sdir) = dirs_c.pin().get(dir_id)
-                    {
-                        state.dtags = sdir
-                            .dtags
-                            .pin()
-                            .iter()
-                            .map(|t| TagData::from(&*t.load_full()))
-                            .collect();
-                        state.files = sdir
-                            .files
-                            .pin()
-                            .iter()
-                            .map(|f| OrderedFileSummary {
-                                file_summary: crate::file::gen_summary(
-                                    f,
-                                    None,
-                                    state.dtags.clone(),
-                                ),
-                                order: order_c.clone(),
-                            })
-                            .collect();
+                .process_read_dir({
+                    let mapped_ids = mapped_ids.clone();
+                    move |_depth, path, state, _entries| {
+                        if let Ok(dir_id) = mapped_ids.pin().get(path).ok_or(get_file_id(path))
+                            && let Some(sdir) = dirs_c.pin().get(dir_id)
+                        {
+                            state.dtags = sdir
+                                .dtags
+                                .pin()
+                                .iter()
+                                .map(|t| TagData::from(&*t.load_full()))
+                                .collect();
+                            state.files = sdir
+                                .files
+                                .pin()
+                                .iter()
+                                .map(|f| OrderedFileSummary {
+                                    file_summary: crate::file::gen_summary(
+                                        f,
+                                        None,
+                                        state.dtags.clone(),
+                                    ),
+                                    order: order_c.clone(),
+                                })
+                                .collect();
+                        }
+                        // [!] further sorting should be implemneted here with _entries.sort() based with
+                        // file_order
                     }
-                    // [!] further sorting should be implemneted here with _entries.sort() based with
-                    // file_order
                 })
                 .follow_links(false)
                 .skip_hidden(true) // must be configurable
                 .sort(false) // [TODO] presorting here is probably beneficial with process_read_dir
                 .into_iter()
-                .for_each(|entry_res| {
-                    if let Ok(entry) = entry_res {
-                        // [TODO] properly handle errors
-                        if entry.file_type().is_file()
-                            && let Ok(metadata) = entry.metadata()
-                        {
-                            #[cfg(unix)]
+                .for_each({
+                    #[cfg(windows)]
+                    let mapped_ids = mapped_ids.clone();
+                    let files = files.clone();
+                    move |entry_res| {
+                        if let Ok(entry) = entry_res {
+                            // [TODO] properly handle errors
+                            if entry.file_type().is_file()
+                                && let Ok(metadata) = entry.metadata()
                             {
-                                let file_id = FileId::new_inode(metadata.dev(), metadata.ino());
-                                let ordered_file =
-                                    if let Some(file) = entry.client_state.files.get(&file_id) {
-                                        file.clone()
-                                    } else {
-                                        let tags = entry.client_state.dtags.clone();
-                                        OrderedFileSummary {
-                                            file_summary: FileSummary {
-                                                id: file_id,
-                                                path: entry.path(),
-                                                owner: None,
-                                                tags,
-                                                metadata: metadata.into(),
-                                            },
-                                            order: order.clone(),
-                                        }
-                                    };
-                                files.write().unwrap().insert(ordered_file);
-                            }
-                            #[cfg(windows)]
-                            {
-                                if let Ok(file_id) =
-                                    mapped_ids.pin().get(path).ok_or(get_file_id(&path))
+                                #[cfg(unix)]
                                 {
+                                    let file_id = FileId::new_inode(metadata.dev(), metadata.ino());
                                     let ordered_file = if let Some(file) =
                                         entry.client_state.files.get(&file_id)
                                     {
@@ -1167,8 +1151,34 @@ impl Service<RetrieveDirRecursive> for FileSystem {
                                         }
                                     };
                                     files.write().unwrap().insert(ordered_file);
-                                } else {
-                                    todo!(); //[!] Handle Error 
+                                }
+                                #[cfg(windows)]
+                                {
+                                    let path = entry.path();
+                                    if let Ok(file_id) =
+                                        mapped_ids.pin().get(&path).ok_or(get_file_id(&path))
+                                    {
+                                        let ordered_file = if let Some(file) =
+                                            entry.client_state.files.get(file_id)
+                                        {
+                                            file.clone()
+                                        } else {
+                                            let tags = entry.client_state.dtags.clone();
+                                            OrderedFileSummary {
+                                                file_summary: FileSummary {
+                                                    id: *file_id,
+                                                    path: entry.path(),
+                                                    owner: None,
+                                                    tags,
+                                                    metadata: metadata.into(),
+                                                },
+                                                order: order.clone(),
+                                            }
+                                        };
+                                        files.write().unwrap().insert(ordered_file);
+                                    } else {
+                                        todo!(); //[!] Handle Error 
+                                    }
                                 }
                             }
                         }

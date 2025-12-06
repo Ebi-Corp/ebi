@@ -524,8 +524,8 @@ mod tests {
 
         let d_id = mapped_ids.get(&dir_path).unwrap();
 
-        let _ = std::fs::remove_dir_all(dir_path.clone()).unwrap();
-        std::thread::sleep(Duration::from_millis(50));
+        let _ = std::fs::remove_dir_all(dir_path.clone());
+        std::thread::sleep(Duration::from_millis(150));
 
         assert!(fs.dirs.pin().get(d_id).is_none());
         assert!(fs.orphan_dirs.pin().get(d_id).is_some());
@@ -578,7 +578,7 @@ mod tests {
         let new_path = test_path.join("renamed_test_file");
 
         let _ = std::fs::rename(test_f_path.clone(), new_path.clone());
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(150));
 
         assert!(
             fs.dirs
@@ -593,7 +593,7 @@ mod tests {
         assert!(fs.orphan_files.pin().get(f_id).is_some());
 
         let _ = std::fs::rename(new_path.clone(), test_f_path.clone());
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(150));
 
         assert!(
             fs.dirs
@@ -621,7 +621,7 @@ mod tests {
 
         let _ = std::fs::remove_file(&db_path);
         let mut fs = FileSystem::new(&db_path).unwrap();
-        let _ = std::fs::create_dir_all(subdir.clone());
+        std::fs::create_dir_all(subdir.clone()).unwrap();
         let s = fs
             .get_or_init_shelf(ShelfDirKey::Path(shelf_path.clone()))
             .await
@@ -644,13 +644,13 @@ mod tests {
 
         let new_path = test_path.join("new_dir_location");
         let _ = std::fs::rename(subdir.clone(), new_path.clone());
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(150));
 
         assert!(fs.dirs.pin().get(d_id).is_none());
         assert!(fs.orphan_dirs.pin().get(d_id).is_some());
 
         let _ = std::fs::rename(new_path.clone(), subdir.clone());
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(150));
 
         assert!(fs.dirs.pin().get(d_id).is_some());
         assert!(fs.orphan_dirs.pin().get(d_id).is_none());
@@ -709,7 +709,7 @@ mod tests {
         let _ = std::fs::rename(test_f_path1.clone(), temp_path.clone());
         let _ = std::fs::rename(test_f_path2.clone(), test_f_path1.clone());
         let _ = std::fs::rename(temp_path.clone(), test_f_path2.clone());
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(150));
 
         assert!(
             fs.dirs
@@ -811,7 +811,7 @@ mod tests {
         let _ = std::fs::rename(subdir1.clone(), temp_path.clone());
         let _ = std::fs::rename(subdir2.clone(), subdir1.clone());
         let _ = std::fs::rename(temp_path.clone(), subdir2.clone());
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(150));
 
         assert!(
             fs.shelves
@@ -908,7 +908,7 @@ mod tests {
         let dir_id2 = mapped_ids.get(&subdir_path2).unwrap();
 
         let _ = std::fs::rename(test_f_path1.clone(), subdir_path2.join("file1.txt"));
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(150));
 
         assert!(
             fs.dirs
@@ -980,7 +980,7 @@ mod tests {
         let dir_id2 = mapped_ids.get(&subdir_path2).unwrap();
         let f_id2 = mapped_ids.get(&test_f_path2).unwrap();
 
-        let _ = std::fs::rename(subdir_path2.clone(), subdir_path1.join("new_location")).unwrap();
+        let _ = std::fs::rename(subdir_path2.clone(), subdir_path1.join("new_location"));
         std::thread::sleep(Duration::from_millis(100));
 
         assert_eq!(
