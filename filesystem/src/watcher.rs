@@ -263,7 +263,6 @@ impl FileSystem {
         let dirs = self.dirs.pin();
 
         while let Some(task) = queue.pop_front() {
-            dbg!(&task);
             let shelf = self.shelves.pin().get(&task.shelf_id).cloned()?;
             let parent_path = task.path.parent().map(|f| f.to_path_buf())?; // [TODO] handle root
             let parent_id = mapped_ids.get(&parent_path).cloned()?;
@@ -350,6 +349,9 @@ impl FileSystem {
                                     path: path.clone(),
                                     new_path: path.clone(),
                                 }),
+                                // it seems that Both is always fired together with the respective
+                                // To and From events, so we probabily do not need to handle it
+                                // separetely, except for efficiency reasons
                                 RenameMode::Both => None,
                                 _ => None,
                             },
@@ -375,7 +377,8 @@ impl FileSystem {
                         path: path.clone(),
                         new_path: path.clone(),
                     }),
-                    EventKind::Remove(RemoveKind::Folder) => Some(Task {
+                    EventKind::Remove(RemoveKind::Folder) =>
+                        Some(Task {
                         op: Operation::Remove(Entity::Dir),
                         shelf_id: id,
                         path: path.clone(),
@@ -461,7 +464,7 @@ mod tests {
             parent: None,
         });
         let test_f_path = shelf_path.join("test_file");
-        let _file = std::fs::File::create(test_f_path.clone()).unwrap();
+        let _ = std::fs::File::create(test_f_path.clone()).unwrap();
 
         let _ = fs
             .attach_tag(ShelfDirKey::Id(s.id), test_f_path.clone(), tag.clone())
@@ -471,7 +474,7 @@ mod tests {
         let mapped_ids = fs.mapped_ids.pin();
         let f_id = mapped_ids.get(&test_f_path).unwrap();
         let _ = std::fs::remove_file(test_f_path.clone());
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(100));
 
         assert!(
             fs.dirs
@@ -484,13 +487,62 @@ mod tests {
                 .is_none()
         );
         assert!(fs.orphan_files.pin().get(f_id).is_some());
-        let _ = std::fs::remove_dir(test_path.clone());
+
+        let _ = std::fs::remove_dir_all(test_path);
     }
 
     #[tokio::test]
-    async fn move_file() {
+    async fn remove_dir() {
         let test_path = std::env::temp_dir().join("ebi-test");
-        let test_path = test_path.join("move-file");
+        let test_path = test_path.join("remove-dir");
+        let _ = std::fs::create_dir_all(test_path.clone());
+
+        let db_path = test_path.join("database.redb");
+        let shelf_path = test_path.join("test_shelf_path");
+        let dir_path = shelf_path.join("subdir");
+
+        let _ = std::fs::remove_file(&db_path);
+        let mut fs = FileSystem::new(&db_path).unwrap();
+        let _ = std::fs::create_dir_all(dir_path.clone());
+        let s = fs
+            .get_or_init_shelf(ShelfDirKey::Path(shelf_path.clone()))
+            .await
+            .unwrap();
+        let tag = SharedRef::new_ref(Tag {
+            priority: 0,
+            name: "test".to_string(),
+            parent: None,
+        });
+        let test_f_path = dir_path.join("test_file");
+        let _ = std::fs::File::create(test_f_path.clone()).unwrap();
+
+        let _ = fs
+            .attach_tag(ShelfDirKey::Id(s.id), test_f_path.clone(), tag.clone())
+            .await
+            .unwrap();
+
+        let mapped_ids = fs.mapped_ids.pin();
+
+        let d_id = mapped_ids.get(&dir_path).unwrap();
+
+        let _ = std::fs::remove_dir_all(dir_path.clone()).unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+
+        assert!(
+            fs.dirs
+                .pin()
+                .get(d_id)
+                .is_none()
+        );
+        assert!(fs.orphan_dirs.pin().get(d_id).is_some());
+
+        let _ = std::fs::remove_dir_all(test_path);
+    }
+
+    #[tokio::test]
+    async fn move_file_out_of_shelf() {
+        let test_path = std::env::temp_dir().join("ebi-test");
+        let test_path = test_path.join("move-file-out-of-shelf");
         let _ = std::fs::create_dir_all(test_path.clone());
         let db_path = test_path.join("database.redb");
         let shelf_path = test_path.join(test_path.join("test_shelf_path"));
@@ -560,12 +612,73 @@ mod tests {
                 .is_some()
         );
         assert!(fs.orphan_files.pin().get(f_id).is_none());
+
+        let _ = std::fs::remove_dir_all(test_path);
     }
 
     #[tokio::test]
-    async fn move_between_shelves() {
+    async fn move_dir_out_of_shelf() {
         let test_path = std::env::temp_dir().join("ebi-test");
-        let test_path = test_path.join("move-between-shelves");
+        let test_path = test_path.join("move-dir-out-of-shelf");
+        let _ = std::fs::create_dir_all(test_path.clone());
+        let db_path = test_path.join("database.redb");
+        let shelf_path = test_path.join(test_path.join("test_shelf_path"));
+        let subdir = shelf_path.join(shelf_path.join("subdir"));
+
+        let _ = std::fs::remove_file(&db_path);
+        let mut fs = FileSystem::new(&db_path).unwrap();
+        let _ = std::fs::create_dir_all(subdir.clone());
+        let s = fs
+            .get_or_init_shelf(ShelfDirKey::Path(shelf_path.clone()))
+            .await
+            .unwrap();
+        let tag = SharedRef::new_ref(Tag {
+            priority: 0,
+            name: "test".to_string(),
+            parent: None,
+        });
+        let test_f_path = subdir.join("file.txt");
+        let _ = std::fs::File::create(test_f_path.clone()).unwrap();
+
+        let _ = fs
+            .attach_tag(ShelfDirKey::Id(s.id), test_f_path.clone(), tag.clone())
+            .await
+            .unwrap();
+
+        let mapped_ids = fs.mapped_ids.pin();
+        let d_id = mapped_ids.get(&subdir).unwrap();
+
+
+        let new_path = test_path.join("new_dir_location");
+        let _ = std::fs::rename(subdir.clone(), new_path.clone());
+        std::thread::sleep(Duration::from_millis(50));
+
+        assert!(
+            fs.dirs
+                .pin()
+                .get(d_id)
+                .is_none()
+        );
+        assert!(fs.orphan_dirs.pin().get(d_id).is_some());
+
+        let _ = std::fs::rename(new_path.clone(), subdir.clone());
+        std::thread::sleep(Duration::from_millis(50));
+
+        assert!(
+            fs.dirs
+                .pin()
+                .get(d_id)
+                .is_some()
+        );
+        assert!(fs.orphan_dirs.pin().get(d_id).is_none());
+
+        let _ = std::fs::remove_dir_all(test_path);
+    }
+
+    #[tokio::test]
+    async fn move_file_between_shelves() {
+        let test_path = std::env::temp_dir().join("ebi-test");
+        let test_path = test_path.join("move-file-between-shelves");
         let _ = std::fs::create_dir_all(test_path.clone());
         let db_path = test_path.join("database.redb");
         let shelf_path1 = test_path.join(test_path.join("test_shelf_path1"));
@@ -657,5 +770,255 @@ mod tests {
         );
         assert!(fs.orphan_files.pin().get(f_id1).is_none());
         assert!(fs.orphan_files.pin().get(f_id2).is_none());
+
+        let _ = std::fs::remove_dir_all(test_path);
+    }
+
+    #[tokio::test]
+    async fn move_dir_between_shelves() {
+        let test_path = std::env::temp_dir().join("ebi-test");
+        let test_path = test_path.join("move-dir-between-shelves");
+        let _ = std::fs::create_dir_all(test_path.clone());
+        let db_path = test_path.join("database.redb");
+        let shelf_path1 = test_path.join(test_path.join("test_shelf_path1"));
+        let shelf_path2 = test_path.join(test_path.join("test_shelf_path2"));
+        let subdir1 = shelf_path1.join("subdir1");
+        let subdir2 = shelf_path2.join("subdir2");
+
+        let _ = std::fs::remove_file(&db_path);
+        let mut fs = FileSystem::new(&db_path).unwrap();
+        let _ = std::fs::create_dir_all(subdir1.clone());
+        let _ = std::fs::create_dir_all(subdir2.clone());
+
+        let s1 = fs
+            .get_or_init_shelf(ShelfDirKey::Path(shelf_path1.clone()))
+            .await
+            .unwrap();
+        let s2 = fs
+            .get_or_init_shelf(ShelfDirKey::Path(shelf_path2.clone()))
+            .await
+            .unwrap();
+        let tag = SharedRef::new_ref(Tag {
+            priority: 0,
+            name: "test".to_string(),
+            parent: None,
+        });
+
+        let test_f_path1 = subdir1.join("file1.txt");
+        let _ = std::fs::File::create(test_f_path1.clone()).unwrap();
+
+        let _ = fs
+            .attach_tag(ShelfDirKey::Id(s1.id), test_f_path1.clone(), tag.clone())
+            .await
+            .unwrap();
+
+        let test_f_path2 = subdir2.join("file2.txt");
+        let _ = std::fs::File::create(test_f_path2.clone()).unwrap();
+
+        let _ = fs
+            .attach_tag(ShelfDirKey::Id(s2.id), test_f_path2.clone(), tag.clone())
+            .await
+            .unwrap();
+
+        let mapped_ids = fs.mapped_ids.pin();
+        let d_id1 = mapped_ids.get(&subdir1).unwrap();
+        let d_id2 = mapped_ids.get(&subdir2).unwrap();
+
+        let temp_path = test_path.join("tmp_dir_loc");
+        let _ = std::fs::rename(subdir1.clone(), temp_path.clone());
+        let _ = std::fs::rename(subdir2.clone(), subdir1.clone());
+        let _ = std::fs::rename(temp_path.clone(), subdir2.clone());
+        std::thread::sleep(Duration::from_millis(50));
+
+        assert!(
+            fs.shelves
+                .pin()
+                .get(&s1.id)
+                .unwrap()
+                .dirs
+                .pin()
+                .get(d_id2)
+                .is_some()
+        );
+        assert!(
+            fs.shelves
+                .pin()
+                .get(&s1.id)
+                .unwrap()
+                .dirs
+                .pin()
+                .get(d_id1)
+                .is_none()
+        );
+        assert!(
+            fs.shelves
+                .pin()
+                .get(&s2.id)
+                .unwrap()
+                .dirs
+                .pin()
+                .get(d_id1)
+                .is_some()
+        );
+        assert!(
+            fs.shelves
+                .pin()
+                .get(&s2.id)
+                .unwrap()
+                .dirs
+                .pin()
+                .get(d_id2)
+                .is_none()
+        );
+
+        assert!(fs.orphan_dirs.pin().get(d_id2).is_none());
+        assert!(fs.orphan_dirs.pin().get(d_id1).is_none());
+
+        let _ = std::fs::remove_dir_all(test_path);
+    }
+
+    #[tokio::test]
+    async fn move_file_between_dirs() {
+        let test_path = std::env::temp_dir().join("ebi-test");
+        let test_path = test_path.join("move-file-between-dirs");
+        let _ = std::fs::create_dir_all(test_path.clone());
+        let db_path = test_path.join("database.redb");
+        let shelf_path = test_path.join(test_path.join("test_shelf_path1"));
+        let subdir_path1 = shelf_path.join("test_subdir1");
+        let subdir_path2 = shelf_path.join("test_subdir2");
+
+        let _ = std::fs::remove_file(&db_path);
+        let mut fs = FileSystem::new(&db_path).unwrap();
+        let _ = std::fs::create_dir_all(subdir_path2.clone());
+        let _ = std::fs::create_dir_all(subdir_path1.clone());
+        let s1 = fs
+            .get_or_init_shelf(ShelfDirKey::Path(shelf_path.clone()))
+            .await
+            .unwrap();
+
+        let tag = SharedRef::new_ref(Tag {
+            priority: 0,
+            name: "test".to_string(),
+            parent: None,
+        });
+
+        let test_f_path1 = subdir_path1.join("file1.txt");
+        let _ = std::fs::File::create(test_f_path1.clone()).unwrap();
+
+        let _ = fs
+            .attach_tag(ShelfDirKey::Id(s1.id), test_f_path1.clone(), tag.clone())
+            .await
+            .unwrap();
+
+        let test_f_path2 = subdir_path2.join("file2.txt");
+        let _ = std::fs::File::create(test_f_path2.clone()).unwrap();
+
+        let _ = fs
+            .attach_tag(ShelfDirKey::Id(s1.id), test_f_path2.clone(), tag.clone())
+            .await
+            .unwrap();
+
+        let mapped_ids = fs.mapped_ids.pin();
+        let f_id1 = mapped_ids.get(&test_f_path1).unwrap();
+        let _f_id2 = mapped_ids.get(&test_f_path2).unwrap();
+        let dir_id1 = mapped_ids.get(&subdir_path1).unwrap();
+        let dir_id2 = mapped_ids.get(&subdir_path2).unwrap();
+
+        let _ = std::fs::rename(test_f_path1.clone(), subdir_path2.join("file1.txt"));
+        std::thread::sleep(Duration::from_millis(50));
+
+        assert!(
+            fs.dirs
+                .pin()
+                .get(dir_id2)
+                .unwrap()
+                .files
+                .pin()
+                .get(f_id1)
+                .is_some()
+        );
+        assert!(
+            fs.dirs
+                .pin()
+                .get(dir_id1)
+                .unwrap()
+                .files
+                .pin()
+                .get(f_id1)
+                .is_none()
+        );
+        assert!(fs.orphan_files.pin().get(f_id1).is_none());
+
+        let _ = std::fs::remove_dir_all(test_path);
+    }
+    #[tokio::test]
+    async fn move_dir_between_single_shelf() {
+        let test_path = std::env::temp_dir().join("ebi-test");
+        let test_path = test_path.join("move-dir-between-single-shelf");
+        let _ = std::fs::create_dir_all(test_path.clone());
+        let db_path = test_path.join("database.redb");
+        let shelf_path = test_path.join(test_path.join("test_shelf_path1"));
+        let subdir_path1 = shelf_path.join("test_subdir1");
+        let subdir_path2 = shelf_path.join("test_subdir2");
+
+        let _ = std::fs::remove_file(&db_path);
+        let mut fs = FileSystem::new(&db_path).unwrap();
+        let _ = std::fs::create_dir_all(subdir_path2.clone());
+        let _ = std::fs::create_dir_all(subdir_path1.clone());
+        let s1 = fs
+            .get_or_init_shelf(ShelfDirKey::Path(shelf_path.clone()))
+            .await
+            .unwrap();
+
+        let tag = SharedRef::new_ref(Tag {
+            priority: 0,
+            name: "test".to_string(),
+            parent: None,
+        });
+
+        let test_f_path1 = subdir_path1.join("file1.txt");
+        let _ = std::fs::File::create(test_f_path1.clone()).unwrap();
+
+        let _ = fs
+            .attach_tag(ShelfDirKey::Id(s1.id), test_f_path1.clone(), tag.clone())
+            .await
+            .unwrap();
+
+        let test_f_path2 = subdir_path2.join("file2.txt");
+        let _ = std::fs::File::create(test_f_path2.clone()).unwrap();
+
+        let _ = fs
+            .attach_tag(ShelfDirKey::Id(s1.id), test_f_path2.clone(), tag.clone())
+            .await
+            .unwrap();
+
+        let mapped_ids = fs.mapped_ids.pin();
+        let _dir_id1 = mapped_ids.get(&subdir_path1).unwrap();
+        let dir_id2 = mapped_ids.get(&subdir_path2).unwrap();
+        let f_id2 = mapped_ids.get(&test_f_path2).unwrap();
+
+        let _ = std::fs::rename(subdir_path2.clone(), subdir_path1.join("new_location")).unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+
+        assert_eq!(
+            fs.dirs
+            .pin()
+            .get(dir_id2)
+            .unwrap()
+            .path,
+            subdir_path1.join("new_location")
+        );
+        assert!(
+            fs.dirs
+            .pin()
+            .get(dir_id2)
+            .unwrap()
+            .files
+            .pin()
+            .get(f_id2)
+            .is_some()
+        );
+
+        let _ = std::fs::remove_dir_all(test_path);
     }
 }
