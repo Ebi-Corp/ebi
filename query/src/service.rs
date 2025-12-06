@@ -8,6 +8,7 @@ use ebi_types::file::{FileOrder, OrderedFileSummary};
 use ebi_types::shelf::Shelf;
 use ebi_types::{FileId, ImmutRef, NodeId, Uuid, parse_peer_id};
 use ebi_types::{
+    WithPath,
     shelf::{ShelfOwner, ShelfType},
     tag::TagId,
     workspace::Workspace,
@@ -101,7 +102,7 @@ impl Retriever {
                 if root_dtag.is_some() {
                     Ok(self
                         .filesys
-                        .retrieve_dir_recursive(sdir_ref.path.clone(), self.order.clone())
+                        .retrieve_dir_recursive(sdir_ref.path(), self.order.clone())
                         .await?)
                 } else {
                     let mut files = match sdir_ref.tags.pin_owned().get(tag_ref) {
@@ -124,10 +125,7 @@ impl Retriever {
                             if let Some(subdir) = subdir.upgrade() {
                                 files = files.union(
                                     self.filesys
-                                        .retrieve_dir_recursive(
-                                            subdir.path.clone(),
-                                            self.order.clone(),
-                                        )
+                                        .retrieve_dir_recursive(subdir.path(), self.order.clone())
                                         .await?,
                                 );
                             }
@@ -160,7 +158,7 @@ impl Retriever {
         };
         let result = self
             .filesys
-            .retrieve_dir_recursive(sdir_ref.path.clone(), self.order.clone())
+            .retrieve_dir_recursive(sdir_ref.path(), self.order.clone())
             .await?;
         Ok(result)
     }

@@ -5,11 +5,12 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
+use crate::ModifiablePath;
 use crate::dir::{ShelfDir, ShelfDirRef};
 use crate::file::{File, FileRef};
 use crate::redb::{T_FILE, T_SHELF_DATA, T_SHELF_DIR, T_TAG};
 use crate::shelf::ShelfData;
-use crate::watcher::{ShelfWatcher, Signal};
+use crate::watcher::{Channel, ShelfWatcher, Signal};
 use ebi_proto::rpc::ReturnCode;
 use ebi_types::file::{FileOrder, FileSummary, OrderedFileSummary};
 use ebi_types::redb::{Storable, TagStorable};
@@ -26,20 +27,21 @@ use tower::Service;
 
 #[derive(Clone)]
 pub struct FileSystem {
-    pub local_shelves: Arc<HashSet<ImmutRef<ShelfData, FileId>>>,
-    pub shelf_dirs: Arc<HashSet<ImmutRef<ShelfDir, FileId>>>,
-    pub db: Arc<Database>,
-    pub orphan_dirs: Arc<HashSet<ImmutRef<ShelfDir, FileId>>>, // this contains dirs that are not part of the shelf
-    pub orphan_files: Arc<HashSet<ImmutRef<File, FileId>>>, // anymore, might be useful for dir and file moved
+    pub shelves: Arc<HashSet<ImmutRef<ShelfData, FileId>>>,
+    pub dirs: Arc<HashSet<ImmutRef<ShelfDir, FileId>>>,
+    pub files: Arc<HashSet<ImmutRef<File, FileId>>>,
+    // directories and files deleted/moved out from a shelf
+    pub orphan_dirs: Arc<HashSet<ImmutRef<ShelfDir, FileId>>>,
+    pub orphan_files: Arc<HashSet<ImmutRef<File, FileId>>>,
     pub mapped_ids: Arc<HashMap<PathBuf, FileId>>,
-    pub watchers: Arc<HashSet<ShelfWatcher>>,
+    pub event_channel: Arc<Channel>,
+    pub db: Arc<Database>,
+    pub collector: Arc<Collector>,
 }
 
 impl FileSystem {
     pub fn close(&mut self) {
-        for watcher in self.watchers.pin().iter() {
-            watcher.channel.tx.send(Signal::Close).unwrap();
-        }
+        self.event_channel.tx.send(Signal::Close).unwrap();
     }
 }
 
@@ -89,15 +91,19 @@ fn setup_tags(raw_tags: HashMap<Uuid, TagStorable>) -> HashSet<SharedRef<Tag>> {
 impl FileSystem {
     pub fn new(db_path: &PathBuf) -> Result<Self, ReturnCode> {
         let db = Database::create(db_path).map_err(|_| ReturnCode::PathNotFound)?;
-        Ok(FileSystem {
-            local_shelves: Arc::new(HashSet::new()),
-            shelf_dirs: Arc::new(HashSet::new()),
-            db: Arc::new(db),
+        let fs = FileSystem {
+            shelves: Arc::new(HashSet::new()),
+            dirs: Arc::new(HashSet::new()),
+            files: Arc::new(HashSet::new()),
             orphan_files: Arc::new(HashSet::new()),
             orphan_dirs: Arc::new(HashSet::new()),
             mapped_ids: Arc::new(HashMap::new()),
-            watchers: Arc::new(HashSet::new()),
-        })
+            event_channel: Arc::new(Channel::new()),
+            db: Arc::new(db),
+            collector: Arc::new(Collector::new()),
+        };
+        fs.event_handler();
+        Ok(fs)
     }
 
     pub async fn full_load(db_path: &PathBuf) -> Result<Self, ReturnCode> {
@@ -140,7 +146,7 @@ impl FileSystem {
                 .map(|t_id| tag_refs_pin.get(t_id).unwrap().clone())
                 .collect();
             let file = File {
-                path: file.path.clone(),
+                path: ModifiablePath::new(file.path.clone()),
                 tags,
             };
             files.pin().insert(ImmutRef::new_ref_id(*id, file));
@@ -202,7 +208,7 @@ impl FileSystem {
             }
 
             let s_dir = ShelfDir {
-                path: dir.path.clone(),
+                path: ModifiablePath::new(dir.path.clone()),
                 files,
                 collector,
                 tags,
@@ -255,6 +261,7 @@ impl FileSystem {
             raw_shelves.pin().insert(k, v);
         }
         let shelves = HashSet::new();
+        let channel = Channel::new();
         for (s_id, s_raw) in raw_shelves.pin().iter() {
             let dirs: crate::dir::HashSet<WeakRef<ShelfDir, FileId>> = s_raw
                 .dirs
@@ -262,9 +269,12 @@ impl FileSystem {
                 .map(|s_id| all_dirs.get(s_id).unwrap().downgrade())
                 .collect();
             let root = all_dirs.get(&s_raw.root).unwrap().clone();
+
+            let _watcher = ShelfWatcher::new(*s_id, &s_raw.root_path, channel.tx.clone());
             let s_data = ShelfData {
                 root: root.clone(),
                 dirs,
+                _watcher,
                 root_path: s_raw.root_path.clone(),
             };
             shelves
@@ -272,14 +282,17 @@ impl FileSystem {
                 .insert(ImmutRef::<ShelfData, FileId>::new_ref_id(*s_id, s_data));
         }
         drop(all_dirs);
+        drop(all_files);
         Ok(FileSystem {
-            local_shelves: Arc::new(shelves),
-            shelf_dirs: Arc::new(dirs),
+            shelves: Arc::new(shelves),
+            dirs: Arc::new(dirs),
+            files: Arc::new(files),
             mapped_ids: Arc::new(HashMap::new()), // [TODO] fill this in the loading
             orphan_dirs: Arc::new(HashSet::new()),
             orphan_files: Arc::new(HashSet::new()),
-            watchers: Arc::new(HashSet::new()),
+            event_channel: Arc::new(Channel::new()),
             db: Arc::new(db),
+            collector: Arc::new(Collector::new()),
         })
     }
 
@@ -366,23 +379,23 @@ impl Service<AttachTag> for FileSystem {
     }
 
     fn call(&mut self, req: AttachTag) -> Self::Future {
-        let local_shelves = self.local_shelves.clone();
-        let shelf_dirs = self.shelf_dirs.clone();
+        let shelves = self.shelves.clone();
+        let dirs = self.dirs.clone();
+        let files = self.files.clone();
         let db = self.db.clone();
         let mapped_ids = self.mapped_ids.clone();
+        let collector = self.collector.clone();
         let mut fs = self.clone();
 
         Box::pin(async move {
             let (key, path) = (req.0.clone(), req.1.clone());
             let tag = req.2;
-            let local_shelves = local_shelves.pin_owned();
-            let shelf_dirs = shelf_dirs.pin_owned();
+            let shelves = shelves.pin_owned();
+            let dirs = dirs.pin_owned();
             let mapped_ids = mapped_ids.pin_owned();
             let Some(shelf) = (match key {
-                ShelfDirKey::Id(id) => local_shelves.get(&id),
-                ShelfDirKey::Path(ref s_path) => {
-                    local_shelves.iter().find(|s| *s.path() == *s_path)
-                }
+                ShelfDirKey::Id(id) => shelves.get(&id),
+                ShelfDirKey::Path(ref s_path) => shelves.iter().find(|s| *s.path() == *s_path),
             }) else {
                 return Err(ReturnCode::ShelfNotFound);
             };
@@ -397,7 +410,7 @@ impl Service<AttachTag> for FileSystem {
 
             let sdir_id = fs.get_or_init_dir(key, p_path).await?;
 
-            let sdir = shelf_dirs.get(&sdir_id).unwrap();
+            let sdir = dirs.get(&sdir_id).unwrap();
             let write_txn = db
                 .begin_write()
                 .map_err(|_| ReturnCode::InternalStateError)?;
@@ -413,9 +426,25 @@ impl Service<AttachTag> for FileSystem {
                     }
                 }
             };
-            let (file, new) = sdir.get_init_file(file_id, path)?;
+            let (file, is_new) = match files.pin().get(&file_id) {
+                Some(file) => (file.clone(), false),
+                None => {
+                    let file = File::new(
+                        path,
+                        papaya::HashSet::<TagRef>::builder()
+                            .shared_collector(collector.clone())
+                            .build(),
+                    );
+                    let file = ImmutRef::new_ref_id(file_id, file);
+                    files.pin().insert(file.clone());
+                    (file, true)
+                }
+            };
+
+            sdir.files.pin().insert(file.clone());
             let attached_to_file = file.attach(&tag);
-            if new {
+
+            if attached_to_file || is_new {
                 let mut file_table = write_txn
                     .open_table(T_FILE)
                     .map_err(|_| ReturnCode::InternalStateError)?;
@@ -502,35 +531,33 @@ impl Service<AttachDTag> for FileSystem {
     }
 
     fn call(&mut self, req: AttachDTag) -> Self::Future {
-        let local_shelves = self.local_shelves.clone();
-        let shelf_dirs = self.shelf_dirs.clone();
+        let shelves = self.shelves.clone();
+        let dirs = self.dirs.clone();
         let db = self.db.clone();
         let mut fs = self.clone();
         Box::pin(async move {
             let (key, path) = (req.0.clone(), req.1.clone());
             let dtag = req.2;
-            let local_shelves = local_shelves.pin_owned();
-            let shelf_dirs = shelf_dirs.pin_owned();
+            let shelves = shelves.pin_owned();
+            let dirs = dirs.pin_owned();
             let Some(shelf) = (match key {
-                ShelfDirKey::Id(id) => local_shelves.get(&id),
-                ShelfDirKey::Path(ref s_path) => {
-                    local_shelves.iter().find(|s| *s.path() == *s_path)
-                }
+                ShelfDirKey::Id(id) => shelves.get(&id),
+                ShelfDirKey::Path(ref s_path) => shelves.iter().find(|s| *s.path() == *s_path),
             }) else {
                 return Err(ReturnCode::ShelfNotFound);
             };
             let sdir_id = fs.get_or_init_dir(key, path.clone()).await?;
-            let sdir = shelf_dirs.get(&sdir_id).unwrap();
+            let sdir = dirs.get(&sdir_id).unwrap();
             let write_txn = db
                 .begin_write()
                 .map_err(|_| ReturnCode::InternalStateError)?;
 
-            let shelf_dirs = shelf.dirs.pin();
+            let dirs = shelf.dirs.pin();
 
             let mut attached_to_shelf = !shelf.root.dtags.pin().contains(&dtag);
 
             let attached_to_dir = sdir.dtags.pin().insert(dtag.clone());
-            let attach_dir = shelf_dirs.get(&sdir_id).unwrap();
+            let attach_dir = dirs.get(&sdir_id).unwrap();
             let mut sdir = (sdir_id, sdir.data_ref().clone());
 
             fn recursive_attach(
@@ -635,27 +662,25 @@ impl Service<DetachDTag> for FileSystem {
     }
 
     fn call(&mut self, req: DetachDTag) -> Self::Future {
-        let local_shelves = self.local_shelves.clone();
-        let shelf_dirs = self.shelf_dirs.clone();
+        let shelves = self.shelves.clone();
+        let dirs = self.dirs.clone();
         let db = self.db.clone();
         let mut fs = self.clone();
         Box::pin(async move {
             let (key, path) = (req.0.clone(), req.1.clone());
             let dtag = req.2;
-            let local_shelves = local_shelves.pin_owned();
-            let shelf_dirs = shelf_dirs.pin_owned();
+            let shelves = shelves.pin_owned();
+            let dirs = dirs.pin_owned();
             let Some(shelf) = (match key {
-                ShelfDirKey::Id(id) => local_shelves.get(&id),
-                ShelfDirKey::Path(ref s_path) => {
-                    local_shelves.iter().find(|s| *s.path() == *s_path)
-                }
+                ShelfDirKey::Id(id) => shelves.get(&id),
+                ShelfDirKey::Path(ref s_path) => shelves.iter().find(|s| *s.path() == *s_path),
             }) else {
                 return Err(ReturnCode::ShelfNotFound);
             };
             let Ok(sdir_id) = fs.get_or_init_dir(ShelfDirKey::Id(shelf.id), path).await else {
                 return Err(ReturnCode::PathNotFound);
             };
-            let sdir = shelf_dirs.get(&sdir_id).unwrap();
+            let sdir = dirs.get(&sdir_id).unwrap();
             let write_txn = db
                 .begin_write()
                 .map_err(|_| ReturnCode::InternalStateError)?;
@@ -664,9 +689,9 @@ impl Service<DetachDTag> for FileSystem {
                 .open_table(T_SHELF_DIR)
                 .map_err(|_| ReturnCode::InternalStateError)?;
 
-            let shelf_dirs = shelf.dirs.pin();
+            let dirs = shelf.dirs.pin();
 
-            let detach_dir = shelf_dirs.get(&sdir_id).unwrap();
+            let detach_dir = dirs.get(&sdir_id).unwrap();
 
             let detached_to_dir = sdir.dtags.pin().remove(&dtag.id);
 
@@ -751,17 +776,15 @@ impl Service<StripTag> for FileSystem {
     }
 
     fn call(&mut self, req: StripTag) -> Self::Future {
-        let local_shelves = self.local_shelves.clone();
+        let shelves = self.shelves.clone();
         let db = self.db.clone();
         let mut fs = self.clone();
         Box::pin(async move {
             let (key, path, tag) = (req.0.clone(), req.1, req.2.clone());
-            let local_shelves = local_shelves.pin_owned();
+            let shelves = shelves.pin_owned();
             let Some(shelf) = (match key {
-                ShelfDirKey::Id(id) => local_shelves.get(&id),
-                ShelfDirKey::Path(ref s_path) => {
-                    local_shelves.iter().find(|s| *s.path() == *s_path)
-                }
+                ShelfDirKey::Id(id) => shelves.get(&id),
+                ShelfDirKey::Path(ref s_path) => shelves.iter().find(|s| *s.path() == *s_path),
             }) else {
                 return Err(ReturnCode::ShelfNotFound);
             };
@@ -769,8 +792,8 @@ impl Service<StripTag> for FileSystem {
                 Some(p) => fs.get_or_init_dir(key, p).await?,
                 None => shelf.root.id,
             };
-            let shelf_dirs = shelf.dirs.pin_owned();
-            let Some(sdir) = shelf_dirs.get(&dir_id) else {
+            let dirs = shelf.dirs.pin_owned();
+            let Some(sdir) = dirs.get(&dir_id) else {
                 return Err(ReturnCode::PathNotFound);
             };
 
@@ -918,27 +941,27 @@ impl Service<DetachTag> for FileSystem {
     }
 
     fn call(&mut self, req: DetachTag) -> Self::Future {
-        let local_shelves = self.local_shelves.clone();
-        let shelf_dirs = self.shelf_dirs.clone();
+        let shelves = self.shelves.clone();
+        let dirs = self.dirs.clone();
+        let files = self.files.clone();
         let db = self.db.clone();
         let mapped_ids = self.mapped_ids.clone();
         let mut fs = self.clone();
+        let collector = self.collector.clone();
         Box::pin(async move {
             let (key, path) = (req.0.clone(), req.1.clone());
             let tag = req.2;
-            let local_shelves = local_shelves.pin_owned();
-            let shelf_dirs = shelf_dirs.pin_owned();
+            let shelves = shelves.pin_owned();
+            let dirs = dirs.pin_owned();
             let mapped_ids = mapped_ids.pin_owned();
             let Some(shelf) = (match key {
-                ShelfDirKey::Id(id) => local_shelves.get(&id),
-                ShelfDirKey::Path(ref s_path) => {
-                    local_shelves.iter().find(|s| *s.path() == *s_path)
-                }
+                ShelfDirKey::Id(id) => shelves.get(&id),
+                ShelfDirKey::Path(ref s_path) => shelves.iter().find(|s| *s.path() == *s_path),
             }) else {
                 return Err(ReturnCode::ShelfNotFound);
             };
             let sdir_id = fs.get_or_init_dir(key, path.clone()).await?;
-            let sdir = shelf_dirs.get(&sdir_id).unwrap();
+            let sdir = dirs.get(&sdir_id).unwrap();
             let write_txn = db
                 .begin_write()
                 .map_err(|_| ReturnCode::InternalStateError)?;
@@ -954,8 +977,22 @@ impl Service<DetachTag> for FileSystem {
                     }
                 }
             };
-            let (file, new) = sdir.get_init_file(file_id, path)?;
-            if new {
+            let (file, is_new) = match files.pin().get(&file_id) {
+                Some(file) => (file.clone(), false),
+                None => {
+                    let file = File::new(
+                        path,
+                        papaya::HashSet::<TagRef>::builder()
+                            .shared_collector(collector.clone())
+                            .build(),
+                    );
+                    let file = ImmutRef::new_ref_id(file_id, file);
+                    (file, true)
+                }
+            };
+            sdir.files.pin().insert(file.clone());
+            let detached_to_file = file.detach(&tag);
+            if detached_to_file || is_new {
                 let mut file_table = write_txn
                     .open_table(T_FILE)
                     .map_err(|_| ReturnCode::InternalStateError)?;
@@ -963,8 +1000,6 @@ impl Service<DetachTag> for FileSystem {
                     .insert(file.id, file.to_storable())
                     .map_err(|_| ReturnCode::InternalStateError)?;
             }
-
-            let detached_to_file = file.detach(&tag);
             let mut sdir = (sdir.id, sdir.data_ref().clone());
             let detached_to_shelf = {
                 let mut shelf_dir_table = write_txn
@@ -1042,18 +1077,18 @@ impl Service<RetrieveDirRecursive> for FileSystem {
     }
 
     fn call(&mut self, req: RetrieveDirRecursive) -> Self::Future {
-        let shelf_dirs = self.shelf_dirs.clone();
+        let dirs = self.dirs.clone();
         let mapped_ids = self.mapped_ids.clone();
         Box::pin(async move {
             let root = req.0;
             let order = req.1;
             let files = Arc::new(RwLock::new(im::HashSet::<OrderedFileSummary>::new()));
-            let shelf_dirs_c = shelf_dirs.clone();
+            let dirs_c = dirs.clone();
             let order_c = order.clone();
             WalkDirGeneric::<DirState>::new(root)
                 .process_read_dir(move |_depth, path, state, _entries| {
                     if let Ok(dir_id) = mapped_ids.pin().get(path).ok_or(get_file_id(path))
-                        && let Some(sdir) = shelf_dirs_c.pin().get(dir_id)
+                        && let Some(sdir) = dirs_c.pin().get(dir_id)
                     {
                         state.dtags = sdir
                             .dtags
@@ -1163,12 +1198,12 @@ impl Service<GetInitShelf> for FileSystem {
     fn call(&mut self, req: GetInitShelf) -> Self::Future {
         let fs = self.clone();
 
-        let watchers = self.watchers.clone();
+        let tx = self.event_channel.tx.clone();
         let db = self.db.clone();
         Box::pin(async move {
             let shelf_key = req.0;
-            let local_shelves = fs.local_shelves.pin_owned();
-            let shelf_dirs = fs.shelf_dirs.pin_owned();
+            let shelves = fs.shelves.pin_owned();
+            let dirs = fs.dirs.pin_owned();
             let mapped_ids = fs.mapped_ids.pin();
 
             let (id, path) = match shelf_key {
@@ -1177,7 +1212,7 @@ impl Service<GetInitShelf> for FileSystem {
             };
 
             if let Some(id) = id
-                && let Some(shelf) = local_shelves.get(&id)
+                && let Some(shelf) = shelves.get(&id)
             {
                 return Ok(shelf.clone());
             }
@@ -1209,16 +1244,16 @@ impl Service<GetInitShelf> for FileSystem {
                 };
 
                 let sdir = {
-                    if let Some(s_data) = local_shelves.get(&path_id) {
+                    if let Some(s_data) = shelves.get(&path_id) {
                         return Ok(s_data.clone());
-                    } else if let Some(sdir) = shelf_dirs.get(&path_id) {
+                    } else if let Some(sdir) = dirs.get(&path_id) {
                         sdir.clone()
                     } else {
                         let Ok(sdir) = ShelfDir::new(path.clone()) else {
                             return Err(ReturnCode::InternalStateError);
                         };
                         let sdir_ref = ImmutRef::<ShelfDir, FileId>::new_ref_id(path_id, sdir);
-                        shelf_dirs.insert(sdir_ref.clone());
+                        dirs.insert(sdir_ref.clone());
                         // [TODO] handle db errors properly
 
                         let write_txn = db
@@ -1288,15 +1323,11 @@ impl Service<GetInitShelf> for FileSystem {
                 prev_subdir = Some(sdir.clone());
 
                 if sdir.path == path {
-                    let sdir_id = sdir.id;
-                    let new_watcher = ShelfWatcher::new(sdir.id, &sdir.path)
-                        .map_err(|_| ReturnCode::InternalStateError)?;
-
-                    let Ok(s_data) = ShelfData::new(sdir) else {
+                    let Ok(s_data) = ShelfData::new(sdir, tx) else {
                         return Err(ReturnCode::ShelfCreationIOError);
                     };
                     let s_data_ref: ImmutRef<ShelfData, FileId> = ImmutRef::new_ref(s_data);
-                    local_shelves.insert(s_data_ref.clone());
+                    shelves.insert(s_data_ref.clone());
                     let write_txn = db
                         .begin_write()
                         .map_err(|_| ReturnCode::InternalStateError)?;
@@ -1312,9 +1343,6 @@ impl Service<GetInitShelf> for FileSystem {
                     write_txn
                         .commit()
                         .map_err(|_| ReturnCode::InternalStateError)?;
-
-                    watchers.pin().insert(new_watcher);
-                    fs.watch_shelf(sdir_id)?;
 
                     return Ok(s_data_ref);
                 }
@@ -1334,20 +1362,20 @@ impl Service<GetInitDir> for FileSystem {
     }
 
     fn call(&mut self, req: GetInitDir) -> Self::Future {
-        let shelf_dirs = self.shelf_dirs.clone();
-        let local_shelves = self.local_shelves.clone();
+        let dirs = self.dirs.clone();
+        let shelves = self.shelves.clone();
         let db = self.db.clone();
         let mapped_ids = self.mapped_ids.clone();
         Box::pin(async move {
             let shelf_key = req.0;
             let r_path = req.1;
-            let local_shelves = local_shelves.pin_owned();
-            let shelf_dirs = shelf_dirs.pin_owned();
+            let shelves = shelves.pin_owned();
+            let dirs = dirs.pin_owned();
             let mapped_ids = mapped_ids.pin();
 
             let Some(shelf) = (match shelf_key {
-                ShelfDirKey::Id(id) => local_shelves.get(&id),
-                ShelfDirKey::Path(path) => local_shelves.iter().find(|s| *s.path() == path),
+                ShelfDirKey::Id(id) => shelves.get(&id),
+                ShelfDirKey::Path(path) => shelves.iter().find(|s| *s.path() == path),
             }) else {
                 return Err(ReturnCode::ShelfNotFound);
             };
@@ -1397,14 +1425,14 @@ impl Service<GetInitDir> for FileSystem {
                 };
 
                 let sdir = {
-                    if let Some(sdir) = shelf_dirs.get(&path_id) {
+                    if let Some(sdir) = dirs.get(&path_id) {
                         sdir.clone()
                     } else {
                         let Ok(sdir) = ShelfDir::new(path.clone()) else {
                             return Err(ReturnCode::InternalStateError);
                         };
                         let sdir_ref = ImmutRef::<ShelfDir, FileId>::new_ref_id(path_id, sdir);
-                        shelf_dirs.insert(sdir_ref.clone());
+                        dirs.insert(sdir_ref.clone());
                         let write_txn = db
                             .begin_write()
                             .map_err(|_| ReturnCode::InternalStateError)?;
@@ -1553,7 +1581,7 @@ mod tests {
 
         assert_eq!((attach_shelf, attach_file), (true, true));
         assert!(
-            fs.shelf_dirs
+            fs.dirs
                 .pin()
                 .get(&d_id)
                 .unwrap()
@@ -1562,7 +1590,7 @@ mod tests {
                 .contains_key(&tag)
         );
         assert!(
-            fs.shelf_dirs
+            fs.dirs
                 .pin()
                 .get(&d_id)
                 .unwrap()
@@ -1585,7 +1613,7 @@ mod tests {
 
         assert_eq!((attach_shelf, attach_file), (false, true));
         assert!(
-            fs.shelf_dirs
+            fs.dirs
                 .pin()
                 .get(&d_id)
                 .unwrap()
@@ -1639,7 +1667,7 @@ mod tests {
 
         assert_eq!((attach_shelf, attach_file), (true, true));
         assert!(
-            fs.shelf_dirs
+            fs.dirs
                 .pin()
                 .get(&d_id)
                 .unwrap()
@@ -1648,7 +1676,7 @@ mod tests {
                 .contains_key(&tag)
         );
         assert!(
-            fs.shelf_dirs
+            fs.dirs
                 .pin()
                 .get(&d_id)
                 .unwrap()
@@ -1711,7 +1739,7 @@ mod tests {
 
         assert_eq!((detach_shelf, detach_file), (true, true));
         assert!(
-            !fs.shelf_dirs
+            !fs.dirs
                 .pin()
                 .get(&d_id)
                 .unwrap()
@@ -1720,7 +1748,7 @@ mod tests {
                 .contains_key(&tag)
         );
         assert!(
-            !fs.shelf_dirs
+            !fs.dirs
                 .pin()
                 .get(&d_id)
                 .unwrap()
@@ -1758,7 +1786,7 @@ mod tests {
 
         assert_eq!((detach_shelf, detach_file), (false, true));
         assert!(
-            fs.shelf_dirs
+            fs.dirs
                 .pin()
                 .get(&d_id)
                 .unwrap()
@@ -1767,7 +1795,7 @@ mod tests {
                 .contains_key(&tag)
         );
         assert!(
-            !fs.shelf_dirs
+            !fs.dirs
                 .pin()
                 .get(&d_id)
                 .unwrap()
@@ -1789,7 +1817,7 @@ mod tests {
 
         assert_eq!((detach_shelf, detach_file), (true, true));
         assert!(
-            !fs.shelf_dirs
+            !fs.dirs
                 .pin()
                 .get(&d_id)
                 .unwrap()
@@ -1798,7 +1826,7 @@ mod tests {
                 .contains_key(&tag)
         );
         assert!(
-            !fs.shelf_dirs
+            !fs.dirs
                 .pin()
                 .get(&d_id)
                 .unwrap()
@@ -1845,7 +1873,7 @@ mod tests {
             .unwrap();
 
         assert!(
-            !fs.shelf_dirs
+            !fs.dirs
                 .pin()
                 .get(&s.id)
                 .unwrap()
@@ -1853,15 +1881,7 @@ mod tests {
                 .pin()
                 .contains_key(&tag)
         );
-        assert!(
-            fs.shelf_dirs
-                .pin()
-                .get(&s.id)
-                .unwrap()
-                .dtags
-                .pin()
-                .contains(&tag)
-        );
+        assert!(fs.dirs.pin().get(&s.id).unwrap().dtags.pin().contains(&tag));
 
         assert_eq!((attach_shelf, attach_dir), (true, true));
 
@@ -1874,17 +1894,9 @@ mod tests {
 
         // the dtag has been applied to above, so it is not reattached to the dir
         assert_eq!((attach_shelf, attach_dir), (false, false));
+        assert!(fs.dirs.pin().get(&d_id).unwrap().dtags.pin().contains(&tag));
         assert!(
-            fs.shelf_dirs
-                .pin()
-                .get(&d_id)
-                .unwrap()
-                .dtags
-                .pin()
-                .contains(&tag)
-        );
-        assert!(
-            fs.shelf_dirs
+            fs.dirs
                 .pin()
                 .get(&s.id)
                 .unwrap()
@@ -1936,7 +1948,7 @@ mod tests {
             .unwrap();
 
         assert!(
-            !fs.shelf_dirs
+            !fs.dirs
                 .pin()
                 .get(&s.id)
                 .unwrap()
@@ -1944,15 +1956,7 @@ mod tests {
                 .pin()
                 .contains_key(&tag)
         );
-        assert!(
-            !fs.shelf_dirs
-                .pin()
-                .get(&s.id)
-                .unwrap()
-                .dtags
-                .pin()
-                .contains(&tag)
-        );
+        assert!(!fs.dirs.pin().get(&s.id).unwrap().dtags.pin().contains(&tag));
 
         assert_eq!((detach_shelf, detach_dir), (true, true));
 
@@ -1973,17 +1977,9 @@ mod tests {
             .unwrap();
 
         assert_eq!((detach_shelf, detach_dir), (false, true));
+        assert!(!fs.dirs.pin().get(&d_id).unwrap().dtags.pin().contains(&tag));
         assert!(
-            !fs.shelf_dirs
-                .pin()
-                .get(&d_id)
-                .unwrap()
-                .dtags
-                .pin()
-                .contains(&tag)
-        );
-        assert!(
-            !fs.shelf_dirs
+            !fs.dirs
                 .pin()
                 .get(&s.id)
                 .unwrap()
@@ -1991,39 +1987,15 @@ mod tests {
                 .pin()
                 .contains_key(&tag)
         );
-        assert!(
-            fs.shelf_dirs
-                .pin()
-                .get(&s.id)
-                .unwrap()
-                .dtags
-                .pin()
-                .contains(&tag)
-        );
+        assert!(fs.dirs.pin().get(&s.id).unwrap().dtags.pin().contains(&tag));
 
         let (detach_shelf, detach_dir) = fs
             .detach_dtag(ShelfDirKey::Id(s.id), subdir_path.clone(), tag.clone())
             .await
             .unwrap();
 
-        assert!(
-            fs.shelf_dirs
-                .pin()
-                .get(&s.id)
-                .unwrap()
-                .dtags
-                .pin()
-                .contains(&tag)
-        );
-        assert!(
-            !fs.shelf_dirs
-                .pin()
-                .get(&d_id)
-                .unwrap()
-                .dtags
-                .pin()
-                .contains(&tag)
-        );
+        assert!(fs.dirs.pin().get(&s.id).unwrap().dtags.pin().contains(&tag));
+        assert!(!fs.dirs.pin().get(&d_id).unwrap().dtags.pin().contains(&tag));
 
         // [!] THIS SHOULD BE (false, false), but probably there is some issue on pinning
         // for the papaya hashsets, so inside "contains" and remove return true as if the
@@ -2036,15 +2008,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!((detach_shelf, detach_dir), (true, true));
-        assert!(
-            !fs.shelf_dirs
-                .pin()
-                .get(&s.id)
-                .unwrap()
-                .dtags
-                .pin()
-                .contains(&tag)
-        );
+        assert!(!fs.dirs.pin().get(&s.id).unwrap().dtags.pin().contains(&tag));
     }
 
     #[tokio::test]
@@ -2099,7 +2063,7 @@ mod tests {
 
         assert_eq!(stripped, true);
         assert!(
-            !fs.shelf_dirs
+            !fs.dirs
                 .pin()
                 .get(&d_id)
                 .unwrap()
@@ -2107,17 +2071,9 @@ mod tests {
                 .pin()
                 .contains_key(&tag)
         );
+        assert!(!fs.dirs.pin().get(&d_id).unwrap().dtags.pin().contains(&tag));
         assert!(
-            !fs.shelf_dirs
-                .pin()
-                .get(&d_id)
-                .unwrap()
-                .dtags
-                .pin()
-                .contains(&tag)
-        );
-        assert!(
-            !fs.shelf_dirs
+            !fs.dirs
                 .pin()
                 .get(&s.id)
                 .unwrap()
@@ -2126,7 +2082,7 @@ mod tests {
                 .contains_key(&tag)
         );
         assert!(
-            !fs.shelf_dirs
+            !fs.dirs
                 .pin()
                 .get(&d_id)
                 .unwrap()
@@ -2162,7 +2118,7 @@ mod tests {
         //assert_eq!(_stripped, false);
 
         assert!(
-            fs.shelf_dirs
+            fs.dirs
                 .pin()
                 .get(&s.id)
                 .unwrap()
@@ -2171,17 +2127,9 @@ mod tests {
                 .contains_key(&tag)
         );
 
+        assert!(fs.dirs.pin().get(&s.id).unwrap().dtags.pin().contains(&tag));
         assert!(
-            fs.shelf_dirs
-                .pin()
-                .get(&s.id)
-                .unwrap()
-                .dtags
-                .pin()
-                .contains(&tag)
-        );
-        assert!(
-            fs.shelf_dirs
+            fs.dirs
                 .pin()
                 .get(&s.id)
                 .unwrap()

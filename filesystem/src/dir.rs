@@ -1,8 +1,8 @@
-use crate::file::{File, FileRef};
+use crate::ModifiablePath;
+use crate::file::FileRef;
 use arc_swap::ArcSwap;
-use ebi_proto::rpc::ReturnCode;
 use ebi_types::tag::TagRef;
-use ebi_types::{FileId, ImmutRef, Ref, WeakRef, WithPath};
+use ebi_types::{FileId, WeakRef, WithPath};
 use seize::Collector;
 use std::hash::RandomState;
 use std::io;
@@ -16,7 +16,7 @@ pub(crate) type HashMap<K, V> = papaya::HashMap<K, V, RandomState, Arc<Collector
 
 #[derive(Debug)]
 pub struct ShelfDir {
-    pub path: PathBuf,
+    pub path: ModifiablePath,
     pub files: HashSet<FileRef>,
     pub collector: Arc<Collector>,
     pub tags: HashMap<TagRef, HashSet<FileRef>>,
@@ -27,8 +27,8 @@ pub struct ShelfDir {
 }
 
 impl WithPath for ShelfDir {
-    fn path(&self) -> &PathBuf {
-        &self.path
+    fn path(&self) -> PathBuf {
+        self.path.0.load_full().as_ref().clone()
     }
 }
 
@@ -37,7 +37,7 @@ impl ShelfDir {
         let collector = Arc::new(Collector::new());
         Ok(ShelfDir {
             files: hash_set!(collector),
-            path,
+            path: ModifiablePath::new(path),
             collector: collector.clone(),
             tags: hash_map!(collector),
             dtags: hash_set!(collector),
@@ -45,26 +45,6 @@ impl ShelfDir {
             parent: ArcSwap::new(Arc::new(None)),
             subdirs: hash_set!(collector),
         })
-    }
-    pub(crate) fn get_init_file(
-        &self,
-        f_id: FileId,
-        path: PathBuf,
-    ) -> Result<(FileRef, bool), ReturnCode> {
-        match self.files.pin().get(&f_id) {
-            Some(file) => Ok((file.clone(), false)),
-            None => {
-                let file = File::new(
-                    path,
-                    papaya::HashSet::<TagRef>::builder()
-                        .shared_collector(self.collector.clone())
-                        .build(),
-                );
-                let file = ImmutRef::new_ref_id(f_id, file);
-                self.files.pin().insert(file.clone());
-                Ok((file, true))
-            }
-        }
     }
 
     pub fn attach(&self, tag: &TagRef, file: &FileRef) -> bool {
