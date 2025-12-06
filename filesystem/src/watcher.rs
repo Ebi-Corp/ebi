@@ -377,8 +377,7 @@ impl FileSystem {
                         path: path.clone(),
                         new_path: path.clone(),
                     }),
-                    EventKind::Remove(RemoveKind::Folder) =>
-                        Some(Task {
+                    EventKind::Remove(RemoveKind::Folder) => Some(Task {
                         op: Operation::Remove(Entity::Dir),
                         shelf_id: id,
                         path: path.clone(),
@@ -528,12 +527,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir_path.clone()).unwrap();
         std::thread::sleep(Duration::from_millis(50));
 
-        assert!(
-            fs.dirs
-                .pin()
-                .get(d_id)
-                .is_none()
-        );
+        assert!(fs.dirs.pin().get(d_id).is_none());
         assert!(fs.orphan_dirs.pin().get(d_id).is_some());
 
         let _ = std::fs::remove_dir_all(test_path);
@@ -648,28 +642,17 @@ mod tests {
         let mapped_ids = fs.mapped_ids.pin();
         let d_id = mapped_ids.get(&subdir).unwrap();
 
-
         let new_path = test_path.join("new_dir_location");
         let _ = std::fs::rename(subdir.clone(), new_path.clone());
         std::thread::sleep(Duration::from_millis(50));
 
-        assert!(
-            fs.dirs
-                .pin()
-                .get(d_id)
-                .is_none()
-        );
+        assert!(fs.dirs.pin().get(d_id).is_none());
         assert!(fs.orphan_dirs.pin().get(d_id).is_some());
 
         let _ = std::fs::rename(new_path.clone(), subdir.clone());
         std::thread::sleep(Duration::from_millis(50));
 
-        assert!(
-            fs.dirs
-                .pin()
-                .get(d_id)
-                .is_some()
-        );
+        assert!(fs.dirs.pin().get(d_id).is_some());
         assert!(fs.orphan_dirs.pin().get(d_id).is_none());
 
         let _ = std::fs::remove_dir_all(test_path);
@@ -1001,22 +984,18 @@ mod tests {
         std::thread::sleep(Duration::from_millis(100));
 
         assert_eq!(
-            fs.dirs
-            .pin()
-            .get(dir_id2)
-            .unwrap()
-            .path,
+            fs.dirs.pin().get(dir_id2).unwrap().path,
             subdir_path1.join("new_location")
         );
         assert!(
             fs.dirs
-            .pin()
-            .get(dir_id2)
-            .unwrap()
-            .files
-            .pin()
-            .get(f_id2)
-            .is_some()
+                .pin()
+                .get(dir_id2)
+                .unwrap()
+                .files
+                .pin()
+                .get(f_id2)
+                .is_some()
         );
 
         let _ = std::fs::remove_dir_all(test_path);

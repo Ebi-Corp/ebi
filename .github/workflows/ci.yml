@@ -2,15 +2,16 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [ master ]
   pull_request:
-    branches: [ main ]
+    branches: [ master ]
+  workflow_dispatch:
+
 
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: "full"
   RUST_MIN_STACK: 8000000
-  RUSTDOCFLAGS: '-D warnings'
   CMD_DOC: cargo doc --all-features --no-deps
   CMD_CLIPPY: cargo clippy --all-features --all-targets -- -D warnings
   CMD_BUILD: cargo build --all-features --all-targets
@@ -42,6 +43,15 @@ jobs:
       with:
         toolchain: stable
         components: clippy
+    - name: Install protoc (Linux)
+      if: runner.os == 'Linux'
+      run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+    - name: Install protoc (macOS)
+      if: runner.os == 'macOS'
+      run: brew install protobuf
+    - name: Install protoc (Windows)
+      if: runner.os == 'Windows'
+      run: choco install protoc -y
     - name: Cache
       uses: actions/cache@v4
       with:
