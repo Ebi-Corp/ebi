@@ -1,6 +1,6 @@
 use crate::{dir::ShelfDir, file::File, shelf::ShelfData};
-use ebi_types::redb::*;
 use ebi_types::{FileId, Uuid, tag::Tag};
+use ebi_types::{WithPath, redb::*};
 use redb::TableDefinition;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -49,7 +49,7 @@ impl Storable for ShelfDir {
 
     fn to_storable(&self) -> Bincode<Self> {
         Bincode(ShelfDirStorable {
-            path: self.path.clone(),
+            path: self.path(),
             files: self.files.pin().iter().map(|f| f.id).collect(),
             tags: self
                 .tags
@@ -81,7 +81,7 @@ impl Storable for File {
 
     fn to_storable(&self) -> Bincode<Self> {
         Bincode(FileStorable {
-            path: self.path.clone(),
+            path: self.path(),
             tags: self.tags.pin().iter().map(|t| t.id).collect(),
         })
     }
@@ -89,6 +89,8 @@ impl Storable for File {
 
 #[cfg(test)] //[!] Check 
 mod tests {
+    use std::time::Duration;
+
     use crate::service::FileSystem;
     use crate::service::ShelfDirKey;
 
@@ -96,8 +98,8 @@ mod tests {
     use ebi_types::*;
 
     fn equal_fs(fs_left: &FileSystem, fs_right: &FileSystem) {
-        let left_shelves_pin = fs_left.local_shelves.pin();
-        let right_shelves_pin = fs_right.local_shelves.pin();
+        let left_shelves_pin = fs_left.shelves.pin();
+        let right_shelves_pin = fs_right.shelves.pin();
         let mut left_shelves: Vec<_> = left_shelves_pin.into_iter().collect();
         let mut right_shelves: Vec<_> = right_shelves_pin.into_iter().collect();
         left_shelves.sort_by_key(|s| s.id);
@@ -111,8 +113,8 @@ mod tests {
             assert_eq!(s_l.dirs, s_r.dirs)
         }
 
-        let left_dirs_pin = fs_left.shelf_dirs.pin();
-        let right_dirs_pin = fs_right.shelf_dirs.pin();
+        let left_dirs_pin = fs_left.dirs.pin();
+        let right_dirs_pin = fs_right.dirs.pin();
         let mut left_dirs: Vec<_> = left_dirs_pin.into_iter().collect();
         let mut right_dirs: Vec<_> = right_dirs_pin.into_iter().collect();
         left_dirs.sort_by_key(|d| d.id);
@@ -234,15 +236,17 @@ mod tests {
             .unwrap();
 
         // crete new fs with empty db but same data
-        let local_shelves = fs.local_shelves.clone();
-        let shelf_dirs = fs.shelf_dirs.clone();
+        let shelves = fs.shelves.clone();
+        let dirs = fs.dirs.clone();
         fs.close();
+        std::thread::sleep(Duration::from_millis(50));
         drop(fs);
 
         let new_db_path = test_path.join("new_database.redb");
+        let _ = std::fs::remove_file(&new_db_path);
         let mut fs = FileSystem::new(&new_db_path).unwrap();
-        fs.local_shelves = local_shelves;
-        fs.shelf_dirs = shelf_dirs;
+        fs.shelves = shelves;
+        fs.dirs = dirs;
 
         let load_fs = FileSystem::full_load(&db_path).await.unwrap();
 

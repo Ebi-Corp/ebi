@@ -98,7 +98,7 @@ impl<T, I> Borrow<I> for WeakRef<T, I> {
 }
 
 pub trait WithPath {
-    fn path(&self) -> &PathBuf;
+    fn path(&self) -> PathBuf;
 }
 
 impl<T, I> PartialEq for Inner<T, I>

@@ -5,18 +5,20 @@ use ebi_types::{
 use im::HashSet;
 use std::path::PathBuf;
 
+use crate::ModifiablePath;
+
 pub type FileRef = ImmutRef<File, FileId>;
 pub type TagRef = SharedRef<Tag>;
 
 #[derive(Debug)]
 pub struct File {
-    pub path: PathBuf,
+    pub path: ModifiablePath,
     pub tags: crate::dir::HashSet<TagRef>,
 }
 
 impl WithPath for File {
-    fn path(&self) -> &PathBuf {
-        &self.path
+    fn path(&self) -> PathBuf {
+        self.path.0.load_full().as_ref().clone()
     }
 }
 
@@ -32,12 +34,15 @@ pub fn gen_summary(
         .map(|t| TagData::from(&*t.load_full()))
         .collect();
     tags = tags.union(dtags);
-    FileSummary::new(file_ref.id, file_ref.path.clone(), owner, tags)
+    FileSummary::new(file_ref.id, file_ref.path(), owner, tags)
 }
 
 impl File {
     pub fn new(path: PathBuf, tags: crate::dir::HashSet<TagRef>) -> Self {
-        File { path, tags }
+        File {
+            path: ModifiablePath::new(path),
+            tags,
+        }
     }
 
     pub fn attach(&self, tag: &TagRef) -> bool {

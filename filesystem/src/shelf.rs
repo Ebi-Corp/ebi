@@ -1,5 +1,7 @@
 use crate::dir::{HashSet, ShelfDir, ShelfDirRef};
 use crate::file::FileRef;
+use crate::watcher::{ShelfWatcher, Signal};
+use crossbeam_channel::Sender;
 use ebi_types::tag::{Tag, TagId};
 use ebi_types::{FileId, ImmutRef, SharedRef, Uuid, WithPath};
 use rand_chacha::{ChaCha12Rng, rand_core::SeedableRng};
@@ -35,6 +37,7 @@ pub struct ShelfData {
     pub root: ImmutRef<ShelfDir, FileId>,
     pub dirs: HashSet<ShelfDirRef>,
     pub root_path: PathBuf,
+    pub(crate) _watcher: ShelfWatcher,
 }
 
 impl PartialEq for ShelfData {
@@ -44,23 +47,28 @@ impl PartialEq for ShelfData {
 }
 
 impl WithPath for ShelfData {
-    fn path(&self) -> &PathBuf {
-        &self.root_path
+    fn path(&self) -> PathBuf {
+        self.root_path.clone()
     }
 }
 
 impl ShelfData {
-    pub fn new(root_ref: ImmutRef<ShelfDir, FileId>) -> Result<Self, io::Error> {
-        let path = root_ref.path.clone();
+    pub fn new(
+        root_ref: ImmutRef<ShelfDir, FileId>,
+        tx: Sender<Signal>,
+    ) -> Result<Self, io::Error> {
+        let path = root_ref.path();
         let collector = Arc::new(Collector::new());
         let dirs = papaya::HashSet::<ShelfDirRef>::builder()
             .shared_collector(collector)
             .build();
         let downgraded_root = root_ref.downgrade();
         dirs.pin().insert(downgraded_root);
+        let _watcher = ShelfWatcher::new(root_ref.id, &path, tx);
         Ok(ShelfData {
             root: root_ref,
             dirs,
+            _watcher,
             root_path: path,
         })
     }
