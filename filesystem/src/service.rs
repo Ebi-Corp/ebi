@@ -1227,15 +1227,15 @@ impl Service<GetInitShelf> for FileSystem {
                 return Ok(shelf.clone());
             }
 
-            let path = std::path::absolute(path.unwrap()).map_err(|_| ReturnCode::InternalStateError)?; //[!] Check Error
+            let path =
+                std::path::absolute(path.unwrap()).map_err(|_| ReturnCode::InternalStateError)?; //[!] Check Error
 
             if !path.is_dir() {
                 return Err(ReturnCode::PathNotFound);
             }
 
             let mut prev_subdir: Option<ImmutRef<ShelfDir, FileId>> = None;
-            let mut trav_path = path
-                .clone();
+            let mut trav_path = path.clone();
 
             loop {
                 let path_id = {
@@ -1250,8 +1250,6 @@ impl Service<GetInitShelf> for FileSystem {
                         }
                     }
                 };
-
-                
 
                 let sdir = {
                     if let Some(s_data) = shelves.get(&path_id) {
@@ -1402,8 +1400,7 @@ impl Service<GetInitDir> for FileSystem {
                 r_path
             };
             let mut prev_subdir: Option<ImmutRef<ShelfDir, FileId>> = None;
-            let mut trav_path = path
-                .clone();
+            let mut trav_path = path.clone();
 
             let start_path_id = {
                 match mapped_ids.get(&trav_path) {
