@@ -45,7 +45,7 @@ impl FileSystem {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum ShelfDirKey {
     Id(FileId),
     Path(PathBuf),
@@ -1227,7 +1227,7 @@ impl Service<GetInitShelf> for FileSystem {
                 return Ok(shelf.clone());
             }
 
-            let path = path.unwrap();
+            let path = std::path::absolute(path.unwrap()).map_err(|_| ReturnCode::InternalStateError)?; //[!] Check Error
 
             if !path.is_dir() {
                 return Err(ReturnCode::PathNotFound);
@@ -1235,9 +1235,7 @@ impl Service<GetInitShelf> for FileSystem {
 
             let mut prev_subdir: Option<ImmutRef<ShelfDir, FileId>> = None;
             let mut trav_path = path
-                .clone()
-                .canonicalize()
-                .map_err(|_| ReturnCode::InternalStateError)?;
+                .clone();
 
             loop {
                 let path_id = {
@@ -1252,6 +1250,8 @@ impl Service<GetInitShelf> for FileSystem {
                         }
                     }
                 };
+
+                
 
                 let sdir = {
                     if let Some(s_data) = shelves.get(&path_id) {
@@ -1378,7 +1378,7 @@ impl Service<GetInitDir> for FileSystem {
         let mapped_ids = self.mapped_ids.clone();
         Box::pin(async move {
             let shelf_key = req.0;
-            let r_path = req.1;
+            let r_path = std::path::absolute(req.1).map_err(|_| ReturnCode::InternalStateError)?; //[!] Check Error 
             let shelves = shelves.pin_owned();
             let dirs = dirs.pin_owned();
             let mapped_ids = mapped_ids.pin();
@@ -1403,9 +1403,7 @@ impl Service<GetInitDir> for FileSystem {
             };
             let mut prev_subdir: Option<ImmutRef<ShelfDir, FileId>> = None;
             let mut trav_path = path
-                .clone()
-                .canonicalize()
-                .map_err(|_| ReturnCode::InternalStateError)?;
+                .clone();
 
             let start_path_id = {
                 match mapped_ids.get(&trav_path) {

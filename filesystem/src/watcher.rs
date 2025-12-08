@@ -264,11 +264,12 @@ impl FileSystem {
 
         while let Some(task) = queue.pop_front() {
             let shelf = self.shelves.pin().get(&task.shelf_id).cloned()?;
-            let parent_path = task.path.parent().map(|f| f.to_path_buf())?; // [TODO] handle root
+            let parent_path = std::path::absolute(task.path.parent().map(|f| f.to_path_buf())?).ok()?; // [TODO] handle root
             let parent_id = mapped_ids.get(&parent_path).cloned()?;
             match task.op {
                 Operation::Add(entity) => {
-                    let path_id = get_file_id(task.path).ok()?;
+                    let abs_path = std::path::absolute(&task.path).ok()?;
+                    let path_id = get_file_id(abs_path).ok()?;
                     match entity {
                         Entity::File => {
                             let file = orphan_files
@@ -295,7 +296,8 @@ impl FileSystem {
                     }
                 }
                 Operation::Remove(entity) => {
-                    let path_id = mapped_ids.get(&task.path)?;
+                    let abs_path = std::path::absolute(&task.path).ok()?;
+                    let path_id = mapped_ids.get(&abs_path)?;
                     match entity {
                         Entity::File => {
                             let file = dirs
@@ -327,7 +329,7 @@ impl FileSystem {
     fn preprocess_event(&self, signal: Result<Signal, RecvError>) -> Option<Task> {
         match signal {
             Ok(Signal::Event(id, Ok(event))) => {
-                let path = event.paths.first()?;
+                let path = std::path::absolute(event.paths.first()?).ok()?;
                 match event.kind {
                     // access updated
                     EventKind::Access(_) => None,
@@ -377,12 +379,22 @@ impl FileSystem {
                         path: path.clone(),
                         new_path: path.clone(),
                     }),
-                    EventKind::Remove(RemoveKind::Folder) => Some(Task {
-                        op: Operation::Remove(Entity::Dir),
-                        shelf_id: id,
-                        path: path.clone(),
-                        new_path: path.clone(),
-                    }),
+                    EventKind::Remove(RemoveKind::Any) => { //[!] Required //[?] Why?
+                        println!("Received Remove Any event for path: {:?}", path);
+                        Some(Task {
+                            op: Operation::Remove(Entity::Unknown),
+                            shelf_id: id,
+                            path: path.clone(),
+                            new_path: path.clone(), 
+                    })},
+                    EventKind::Remove(RemoveKind::Folder) => {
+                        println!("Received Remove Folder event for path: {:?}", path); //[!] Debug
+                        Some(Task {
+                            op: Operation::Remove(Entity::Dir),
+                            shelf_id: id,
+                            path: path.clone(),
+                            new_path: path.clone(),
+                    })},
                     _ => None,
                 }
             }
@@ -443,7 +455,7 @@ mod tests {
 
     #[tokio::test]
     async fn remove_file() {
-        let test_path = std::env::temp_dir().join("ebi-test");
+        let test_path = std::path::absolute(std::env::temp_dir()).unwrap().join("ebi-test");
         let test_path = test_path.join("remove-file");
         let _ = std::fs::create_dir_all(test_path.clone());
 
@@ -492,7 +504,7 @@ mod tests {
 
     #[tokio::test]
     async fn remove_dir() {
-        let test_path = std::env::temp_dir().join("ebi-test");
+        let test_path = std::path::absolute(std::env::temp_dir()).unwrap().join("ebi-test");
         let test_path = test_path.join("remove-dir");
         let _ = std::fs::create_dir_all(test_path.clone());
 
@@ -535,7 +547,7 @@ mod tests {
 
     #[tokio::test]
     async fn move_file_out_of_shelf() {
-        let test_path = std::env::temp_dir().join("ebi-test");
+        let test_path = std::path::absolute(std::env::temp_dir()).unwrap().join("ebi-test");
         let test_path = test_path.join("move-file-out-of-shelf");
         let _ = std::fs::create_dir_all(test_path.clone());
         let db_path = test_path.join("database.redb");
@@ -612,7 +624,7 @@ mod tests {
 
     #[tokio::test]
     async fn move_dir_out_of_shelf() {
-        let test_path = std::env::temp_dir().join("ebi-test");
+        let test_path = std::path::absolute(std::env::temp_dir()).unwrap().join("ebi-test");
         let test_path = test_path.join("move-dir-out-of-shelf");
         let _ = std::fs::create_dir_all(test_path.clone());
         let db_path = test_path.join("database.redb");
@@ -660,7 +672,7 @@ mod tests {
 
     #[tokio::test]
     async fn move_file_between_shelves() {
-        let test_path = std::env::temp_dir().join("ebi-test");
+        let test_path = std::path::absolute(std::env::temp_dir()).unwrap().join("ebi-test");
         let test_path = test_path.join("move-file-between-shelves");
         let _ = std::fs::create_dir_all(test_path.clone());
         let db_path = test_path.join("database.redb");
@@ -759,7 +771,7 @@ mod tests {
 
     #[tokio::test]
     async fn move_dir_between_shelves() {
-        let test_path = std::env::temp_dir().join("ebi-test");
+        let test_path = std::path::absolute(std::env::temp_dir()).unwrap().join("ebi-test");
         let test_path = test_path.join("move-dir-between-shelves");
         let _ = std::fs::create_dir_all(test_path.clone());
         let db_path = test_path.join("database.redb");
@@ -862,7 +874,7 @@ mod tests {
 
     #[tokio::test]
     async fn move_file_between_dirs() {
-        let test_path = std::env::temp_dir().join("ebi-test");
+        let test_path = std::path::absolute(std::env::temp_dir()).unwrap().join("ebi-test");
         let test_path = test_path.join("move-file-between-dirs");
         let _ = std::fs::create_dir_all(test_path.clone());
         let db_path = test_path.join("database.redb");
@@ -936,7 +948,7 @@ mod tests {
     }
     #[tokio::test]
     async fn move_dir_between_single_shelf() {
-        let test_path = std::env::temp_dir().join("ebi-test");
+        let test_path = std::path::absolute(std::env::temp_dir()).unwrap().join("ebi-test");
         let test_path = test_path.join("move-dir-between-single-shelf");
         let _ = std::fs::create_dir_all(test_path.clone());
         let db_path = test_path.join("database.redb");

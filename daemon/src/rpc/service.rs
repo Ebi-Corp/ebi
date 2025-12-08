@@ -353,7 +353,7 @@ impl Service<StripTag> for RpcService {
                         .unwrap();
                     let path = match req.path {
                         Some(path) => {
-                            let Ok(path) = PathBuf::from(path).canonicalize() else {
+                            let Ok(path) = std::path::absolute(PathBuf::from(path)) else {
                                 return_error!(
                                     ReturnCode::PathNotFound,
                                     StripTagResponse,
@@ -467,7 +467,7 @@ impl Service<DetachTag> for RpcService {
                     ShelfType::Local => {
                         let shelf_key = ShelfDirKey::Path(shelf.info.load().root.to_path_buf());
 
-                        let Ok(path) = PathBuf::from(&req.path).canonicalize() else {
+                        let Ok(path) = std::path::absolute(PathBuf::from(&req.path)) else {
                             return_error!(
                                 ReturnCode::PathNotFound,
                                 DetachTagResponse,
@@ -590,7 +590,7 @@ impl Service<AttachTag> for RpcService {
                             .await
                             .unwrap();
 
-                        let Ok(path) = PathBuf::from(&req.path).canonicalize() else {
+                        let Ok(path) = std::path::absolute(PathBuf::from(&req.path)) else {
                             return_error!(
                                 ReturnCode::PathNotFound,
                                 AttachTagResponse,
@@ -897,7 +897,7 @@ impl Service<AddShelf> for RpcService {
                 );
             };
 
-            let Ok(path) = PathBuf::from(&req.path).canonicalize() else {
+            let Ok(path) = std::path::absolute(PathBuf::from(&req.path)) else {
                 return_error!(
                     ReturnCode::PathNotFound,
                     AddShelfResponse,
