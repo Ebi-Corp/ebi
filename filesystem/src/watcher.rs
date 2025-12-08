@@ -373,6 +373,14 @@ impl FileSystem {
                         path: path.clone(),
                         new_path: path.clone(),
                     }),
+                    EventKind::Create(CreateKind::Any) => { //[!] Required //[?] Why?
+                        println!("Received Create Any event for path: {:?}", path);
+                        Some(Task {
+                            op: Operation::Add(Entity::Unknown),
+                            shelf_id: id,
+                            path: path.clone(),
+                            new_path: path.clone(),
+                    })},
                     EventKind::Remove(RemoveKind::File) => Some(Task {
                         op: Operation::Remove(Entity::File),
                         shelf_id: id,
@@ -388,7 +396,6 @@ impl FileSystem {
                             new_path: path.clone(), 
                     })},
                     EventKind::Remove(RemoveKind::Folder) => {
-                        println!("Received Remove Folder event for path: {:?}", path); //[!] Debug
                         Some(Task {
                             op: Operation::Remove(Entity::Dir),
                             shelf_id: id,
