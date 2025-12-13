@@ -15,7 +15,7 @@ use tokio::sync::RwLock;
 pub type ShelfId = Uuid;
 pub type TagRef = SharedRef<Tag>;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum ShelfType {
     Local,
     Remote,
