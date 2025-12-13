@@ -4,13 +4,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::NodeId;
+use crate::Ref;
 use crate::Uuid;
 use crate::tag::Tag;
 use crate::{InfoState, SharedRef, StatefulField, StatefulRef};
 use arc_swap::ArcSwap;
 use chrono::Duration;
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock;
 
 pub type ShelfId = Uuid;
 pub type TagRef = SharedRef<Tag>;
@@ -62,14 +62,13 @@ impl<TagFilter> Clone for Shelf<TagFilter> {
             shelf_owner: self.shelf_owner.clone(),
             config: self.config.clone(),
             filter_tags: ArcSwap::new(self.filter_tags.load_full()),
-            info: self.info.clone(),
+            info: self.info.clone_inner(),
         }
     }
 }
 
 impl<TagFilter: Default> Shelf<TagFilter> {
     pub fn new(
-        lock: Arc<RwLock<()>>,
         path: PathBuf,
         name: String,
         shelf_type: ShelfType,
@@ -82,7 +81,7 @@ impl<TagFilter: Default> Shelf<TagFilter> {
             shelf_owner,
             config: config.unwrap_or_default(),
             filter_tags: ArcSwap::new(Arc::new(TagFilter::default())), // [TODO] Filter parameters (size, ...) should be configurable
-            info: StatefulRef::new_ref(ShelfInfo::new(Some(name), Some(description), path), lock),
+            info: StatefulRef::new_ref(ShelfInfo::new(Some(name), Some(description), path)),
         };
         Ok(shelf)
     }

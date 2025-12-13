@@ -1,7 +1,7 @@
 use crate::shelf::{Shelf, ShelfConfig, ShelfOwner, ShelfType};
 use crate::tag::Tag;
 use crate::workspace::Workspace;
-use crate::{FileId, Uuid};
+use crate::{FileId, StatefulRef, Uuid};
 use bincode::serde::Compat;
 use bincode::{decode_from_slice, encode_to_vec};
 pub use iroh_base::NodeId;
@@ -198,29 +198,37 @@ impl Storable for Tag {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct WorkspaceStorable {
+    pub id: Uuid,
     pub name: String,
     pub description: String,
     pub shelves: Vec<Uuid>,
     pub tags: Vec<Uuid>,
     pub lookup: HashMap<String, Uuid>,
 }
-impl<F> Storable for Workspace<F> {
+impl<F> Storable for StatefulRef<Workspace<F>> {
     type Storable = WorkspaceStorable;
 
     fn to_storable(&self) -> Bincode<Self> {
-        let info_data = self.info.load_full();
+        let workspace = self.load_full();
+        let info_data = workspace.info.load_full();
         Bincode(Self::Storable {
+            id: self.id,
             name: info_data.name.get(),
             description: info_data.description.get(),
-            shelves: self.shelves.keys().cloned().collect(),
-            tags: self.tags.keys().cloned().collect(),
-            lookup: self.lookup.iter().map(|(s, i)| (s.clone(), *i)).collect(),
+            shelves: workspace.shelves.keys().cloned().collect(),
+            tags: workspace.tags.keys().cloned().collect(),
+            lookup: workspace
+                .lookup
+                .iter()
+                .map(|(s, i)| (s.clone(), *i))
+                .collect(),
         })
     }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ShelfStorable<F> {
+    pub id: Uuid,
     pub name: String,
     pub description: String,
     pub root: PathBuf,
@@ -230,23 +238,25 @@ pub struct ShelfStorable<F> {
     pub filter_tags: F,
 }
 
-impl<F> Storable for Shelf<F>
+impl<F> Storable for StatefulRef<Shelf<F>>
 where
     for<'a> F: Clone + Serialize + Debug + Deserialize<'a> + 'static,
 {
     type Storable = ShelfStorable<F>;
 
     fn to_storable(&self) -> Bincode<Self> {
-        let info_data = self.info.load_full();
+        let shelf = self.load_full();
+        let info_data = shelf.info.load_full();
 
         Bincode(Self::Storable {
+            id: self.id,
             name: info_data.name.get(),
             description: info_data.description.get(),
             root: info_data.root.get(),
-            shelf_type: self.shelf_type.clone(),
-            shelf_owner: self.shelf_owner.clone(),
-            config: self.config.clone(),
-            filter_tags: self.filter_tags.load_full().as_ref().clone(),
+            shelf_type: shelf.shelf_type.clone(),
+            shelf_owner: shelf.shelf_owner.clone(),
+            config: shelf.config.clone(),
+            filter_tags: shelf.filter_tags.load_full().as_ref().clone(),
         })
     }
 }

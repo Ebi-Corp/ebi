@@ -32,7 +32,7 @@ impl StateService {
         let db = Database::create(db_path)?;
 
         Ok(Self {
-            state: Arc::new(History::new(GroupState::new(), lock.clone())),
+            state: Arc::new(History::new(GroupState::new())),
             lock: lock.clone(),
             db: Arc::new(db),
         })
@@ -109,6 +109,7 @@ impl StateService {
     }
 }
 
+#[derive(Debug)]
 pub struct GroupState {
     pub workspaces: StatefulMap<WorkspaceId, Arc<StatefulRef<Workspace>>>,
     pub shelf_assignment: StatefulMap<ShelfId, Vec<Weak<StatefulRef<Workspace>>>>,
@@ -167,21 +168,21 @@ impl Service<CreateWorkspace> for StateService {
         Box::pin(async move {
             let w_state = SwapRef::new(()); // [TODO] Spawn bloom filters
             let workspace = Workspace {
-                info: StatefulRef::new_ref(
-                    WorkspaceInfo::new(Some(req.name), Some(req.description)),
-                    lock.clone(),
-                ),
+                info: StatefulRef::new_ref(WorkspaceInfo::new(
+                    Some(req.name),
+                    Some(req.description),
+                )),
                 shelves: StatefulMap::new(w_state.clone()), // Placeholder for local shelves
                 tags: StatefulMap::new(w_state.clone()),
                 lookup: StatefulMap::new(w_state.clone()),
             };
-            let w_ref = StatefulRef::new_ref(workspace, lock.clone());
+            let w_ref = StatefulRef::new_ref(workspace);
             let w_id = w_ref.id;
 
             state
                 .staged
                 .stateful_rcu(|s| {
-                    let (u_m, u_s) = s.workspaces.insert(w_id, w_ref.clone().into());
+                    let (u_m, u_s) = s.workspaces.insert(w_id, w_ref.clone_inner().into());
                     let u_w = GroupState {
                         workspaces: u_m,
                         shelf_assignment: s.shelf_assignment.clone(),
@@ -259,7 +260,7 @@ impl Service<GetWorkspaces> for StateService {
                         parent_id,
                     });
                 }
-                let workspace_id = workspace.id();
+                let workspace_id = workspace.id;
                 let workspace = workspace.load();
                 let wk_info = workspace.info.load();
                 let ws = ebi_proto::rpc::Workspace {
@@ -300,17 +301,16 @@ impl Service<UnassignShelf> for StateService {
                 return Err(ReturnCode::WorkspaceNotFound);
             };
 
-            wk.stateful_rcu(|w| {
+            wk.rcu(|w| {
                 let (u_m, u_s) = w.shelves.remove(&req.shelf_id);
                 let u_w = Workspace {
-                    info: w.info.clone(),
+                    info: w.info.clone_inner(),
                     shelves: u_m,
                     tags: w.tags.clone(),
                     lookup: w.lookup.clone(),
                 };
-                (u_w, u_s)
-            })
-            .await;
+                u_w
+            });
 
             Ok(())
         })
@@ -392,7 +392,6 @@ impl Service<AssignShelf> for StateService {
                     ShelfType::Remote
                 };
                 let Ok(shelf) = Shelf::new(
-                    lock,
                     path,
                     req.name.unwrap_or_else(|| {
                         req.path
@@ -418,18 +417,18 @@ impl Service<AssignShelf> for StateService {
 
             let shelf_id = shelf_ref.id;
 
-            workspace
-                .stateful_rcu(|w| {
-                    let (u_m, u_s) = w.shelves.insert(shelf_id, shelf_ref.clone());
-                    let u_w = Workspace {
-                        info: w.info.clone(),
-                        shelves: u_m,
-                        tags: w.tags.clone(),
-                        lookup: w.lookup.clone(),
-                    };
-                    (u_w, u_s)
-                })
-                .await;
+            let mut to_call: Option<Pin<Box<dyn Future<Output = ()> + Send>>> = None;
+            workspace.rcu(|w| {
+                let (u_m, u_s) = w.shelves.insert(shelf_id, shelf_ref.clone());
+                let u_w = Workspace {
+                    info: w.info.clone_inner(),
+                    shelves: u_m,
+                    tags: w.tags.clone(),
+                    lookup: w.lookup.clone(),
+                };
+                to_call = Some(u_s);
+                u_w
+            });
 
             let w_ref = Arc::downgrade(workspace);
 
