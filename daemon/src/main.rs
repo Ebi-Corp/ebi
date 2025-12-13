@@ -121,11 +121,11 @@ async fn main() -> Result<()> {
     //[/] The Peer service subscribes to the ResponseHandler when a request is sent.
     //[/] It is then notified when a response is received so it can acquire the read lock on the Response map.
     let daemon_info = Arc::new(DaemonInfo::new(id, "".to_string()));
-    let db_path = PathBuf::from("fs-save.redb");
+    let fs_db_path = PathBuf::from("fs-save.redb");
+    let db_path = PathBuf::from("db-save.redb");
 
-    let filesys = FileSystem::new(&db_path).unwrap();
-
-    let state_srv = StateService::new();
+    let filesys = FileSystem::new(&fs_db_path).unwrap();
+    let state_srv = StateService::new(&db_path).unwrap();
 
     let network = Network {
         peers: peers.clone(),

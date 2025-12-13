@@ -4,9 +4,11 @@ use crate::watcher::{ShelfWatcher, Signal};
 use crossbeam_channel::Sender;
 use ebi_types::tag::{Tag, TagId};
 use ebi_types::{FileId, ImmutRef, SharedRef, Uuid, WithPath};
+use rand_chacha::rand_core::{CryptoRng, RngCore};
 use rand_chacha::{ChaCha12Rng, rand_core::SeedableRng};
 use scalable_cuckoo_filter::{ScalableCuckooFilter, ScalableCuckooFilterBuilder};
 use seize::Collector;
+use serde::{Deserialize, Serialize};
 use std::io;
 use std::path::PathBuf;
 use std::result::Result;
@@ -17,16 +19,39 @@ pub type TagRef = SharedRef<Tag>;
 
 const SEED: u64 = 0; // [TODO] Move seed to proper initialization
 
-pub type ShelfDataRef = ImmutRef<ShelfData>;
 #[derive(Debug, Clone)]
+pub struct SeededChaCha12Rng(pub ChaCha12Rng);
+
+impl Default for SeededChaCha12Rng {
+    fn default() -> Self {
+        Self(ChaCha12Rng::seed_from_u64(SEED))
+    }
+}
+
+impl RngCore for SeededChaCha12Rng {
+    fn next_u32(&mut self) -> u32 {
+        self.0.next_u32()
+    }
+    fn next_u64(&mut self) -> u64 {
+        self.0.next_u64()
+    }
+    fn fill_bytes(&mut self, dest: &mut [u8]) {
+        self.0.fill_bytes(dest)
+    }
+}
+
+impl CryptoRng for SeededChaCha12Rng {}
+
+pub type ShelfDataRef = ImmutRef<ShelfData>;
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TagFilter(
-    pub ScalableCuckooFilter<TagId, scalable_cuckoo_filter::DefaultHasher, ChaCha12Rng>,
+    pub ScalableCuckooFilter<TagId, scalable_cuckoo_filter::DefaultHasher, SeededChaCha12Rng>,
 );
 
 impl Default for TagFilter {
     fn default() -> Self {
         let builder = ScalableCuckooFilterBuilder::new();
-        let rng = ChaCha12Rng::seed_from_u64(SEED);
+        let rng = SeededChaCha12Rng::default();
         let builder = builder.rng(rng);
         TagFilter(builder.finish::<TagId>())
     }
