@@ -61,7 +61,7 @@ pub enum WorkspaceInfoField {
 impl<TagFilter> Clone for Workspace<TagFilter> {
     fn clone(&self) -> Self {
         Workspace {
-            info: self.info.clone(),
+            info: self.info.clone_inner(),
             shelves: self.shelves.clone(),
             tags: self.tags.clone(),
             lookup: self.lookup.clone(),
