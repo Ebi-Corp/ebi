@@ -17,7 +17,7 @@ use ebi_types::{
 use bincode::{serde::borrow_decode_from_slice, serde::encode_to_vec};
 use ebi_proto::rpc::{
     ClientQuery, ClientQueryData, Data, ErrorData, File, PeerQuery, Request, RequestMetadata,
-    Response, ResponseMetadata, ReturnCode, parse_code,
+    Response, ReturnCode, Status, parse_code,
 };
 use im::{HashMap, HashSet};
 use rayon::prelude::*;
@@ -618,7 +618,7 @@ impl Service<ClientQuery> for QueryService {
                                 metadata: Some(f.file_summary.metadata.into()),
                             })
                             .collect(),
-                        metadata: Some(ResponseMetadata {
+                        metadata: Some(Status {
                             request_uuid: Into::<Vec<u8>>::into(Uuid::now_v7()),
                             return_code: ReturnCode::Success as u32, // [?] Should this always be success ??
                             error_data: Some(ErrorData { error_data: errors }),
@@ -641,7 +641,7 @@ impl Service<ClientQuery> for QueryService {
                                             //[!] ClientQueryData is the only (used) Data-type RPC
                                             token: ser_token.clone(),
                                             files: Vec::new(),
-                                            metadata: Some(ResponseMetadata {
+                                            metadata: Some(Status {
                                                 request_uuid: Into::<Vec<u8>>::into(Uuid::now_v7()),
                                                 return_code: ReturnCode::PeerServiceError as u32,
                                                 error_data: Some(ErrorData {
@@ -677,7 +677,7 @@ impl Service<ClientQuery> for QueryService {
                                                     ),
                                                 })
                                                 .collect(),
-                                            metadata: Some(ResponseMetadata {
+                                            metadata: Some(Status {
                                                 return_code: t_res.ret_code as u32,
                                                 error_data: Some(ErrorData {
                                                     error_data: t_res.errors,

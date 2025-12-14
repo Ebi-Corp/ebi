@@ -5,6 +5,7 @@ use paste::paste;
 use prost::EncodeError;
 pub use prost::Message;
 use std::convert::TryFrom;
+use uuid::Uuid;
 
 macro_rules! impl_try_from {
     ($enum_name:ident, $( $variant:ident ),* $(,)?) => {
@@ -28,7 +29,7 @@ macro_rules! impl_res_metadata {
         paste! {
             $(
                 impl ResMetadata for $variant {
-                    fn metadata(&self) -> Option<ResponseMetadata> {
+                    fn metadata(&self) -> Option<Status> {
                         self.metadata.clone()
                     }
                 }
@@ -87,6 +88,16 @@ pub enum ReturnCode {
     DbTableOpenError = 602,
     DbCommitError = 603,
     ParseError = i32::MAX as isize,
+}
+
+impl From<ReturnCode> for Status {
+    fn from(value: ReturnCode) -> Self {
+        Status {
+            request_uuid: Into::<Vec<u8>>::into(Uuid::new_v4()),
+            return_code: value as u32,
+            error_data: None,
+        }
+    }
 }
 
 pub fn parse_code(code: u32) -> ReturnCode {
@@ -150,9 +161,10 @@ impl ReturnCode {
 pub enum MessageType {
     Request = 1,
     Response = 2,
-    Data = 3,
-    Notification = 4,
-    Sync = 5,
+    ResponseErr = 3,
+    Data = 4,
+    Notification = 5,
+    Sync = 6,
 }
 
 #[derive(Debug)]
@@ -177,7 +189,7 @@ pub enum RequestCode {
 
 #[enum_dispatch]
 pub trait ResMetadata {
-    fn metadata(&self) -> Option<ResponseMetadata>;
+    fn metadata(&self) -> Option<Status>;
 }
 
 #[enum_dispatch]

@@ -7,10 +7,10 @@ message RequestMetadata {
   bool relayed = 3;
 }
 
-message ResponseMetadata {
+message Status {
   bytes request_uuid = 1;
   uint32 return_code = 2;
-  optional ErrorData error_data = 3; //[!] Only used for queries, move into Response/Data ??
+  optional ErrorData error_data = 3;
 }
 
 message ErrorData {
@@ -36,19 +36,19 @@ message PeerQuery { //[x]
 
 message PeerQueryResponse { //[x] 
   bytes files = 1;
-  ResponseMetadata metadata = 2;
+  Status metadata = 2;
 }
 
 message ClientQueryResponse { //[x] 
   bytes token = 1;
   uint32 packets = 2;
-  ResponseMetadata metadata = 3;
+  Status metadata = 3;
 }
 
 message ClientQueryData { //[x] 
   bytes token = 1;
   repeated File files = 2;
-  ResponseMetadata metadata = 3;
+  Status metadata = 3;
 
 }
 
@@ -69,12 +69,12 @@ message EditWorkspace { //[x] //[?] Fields are Option<String> ??
 } 
 
 message EditWorkspaceResponse { //[x] 
-  ResponseMetadata metadata = 1;
+  Status metadata = 1;
 }
 
 message CreateWorkspaceResponse { //[x] 
   bytes workspace_id = 1;
-  ResponseMetadata metadata = 2;
+  Status metadata = 2;
 }
 
 message DeleteWorkspace { //[x] 
@@ -83,7 +83,7 @@ message DeleteWorkspace { //[x]
 } 
 
 message DeleteWorkspaceResponse { //[x] 
-  ResponseMetadata metadata = 1;
+  Status metadata = 1;
 }
 
 message GetWorkspaces { //[x] 
@@ -92,7 +92,7 @@ message GetWorkspaces { //[x]
 
 message GetWorkspacesResponse { //[x] 
   repeated Workspace workspaces = 1;
-  ResponseMetadata metadata = 2;
+  Status metadata = 2;
 }
 
 message Workspace {
@@ -122,12 +122,12 @@ message EditShelf { //[x] //[?] Fields are Option<String> ??
 } 
 
 message EditShelfResponse { //[x] 
-  ResponseMetadata metadata = 1;
+  Status metadata = 1;
 }
 
 message AddShelfResponse { //[x] 
   optional bytes shelf_id = 1;
-  ResponseMetadata metadata = 2;
+  Status metadata = 2;
 }
 
 message GetShelves { //[x] 
@@ -137,7 +137,7 @@ message GetShelves { //[x]
 
 message GetShelvesResponse { //[x] 
   repeated Shelf shelves = 1;
-  ResponseMetadata metadata = 2;
+  Status metadata = 2;
 }
 
 message RemoveShelf { //[x] 
@@ -147,7 +147,7 @@ message RemoveShelf { //[x]
 } 
 
 message RemoveShelfResponse { //[x] 
-  ResponseMetadata metadata = 1;
+  Status metadata = 1;
 }
 
 message Shelf {
@@ -173,7 +173,7 @@ message CreateTag { //[x]
 
 message CreateTagResponse { //[x] 
   optional bytes tag_id = 1;
-  ResponseMetadata metadata = 2;
+  Status metadata = 2;
 }
 
 message EditTag { //[x] 
@@ -186,7 +186,7 @@ message EditTag { //[x]
 } 
 
 message EditTagResponse { //[x] 
-  ResponseMetadata metadata = 1;
+  Status metadata = 1;
 }
 
 message AttachTag { //[x] 
@@ -198,7 +198,7 @@ message AttachTag { //[x]
 } 
 
 message AttachTagResponse { //[x] 
-  ResponseMetadata metadata = 1;
+  Status metadata = 1;
 }
 
 message DetachTag { //[x] 
@@ -218,11 +218,11 @@ message StripTag { //[x]
 } 
 
 message DetachTagResponse { //[x] 
-  ResponseMetadata metadata = 1;
+  Status metadata = 1;
 }
 
 message StripTagResponse { //[x] 
-  ResponseMetadata metadata = 1;
+  Status metadata = 1;
 }
 
 message DeleteTag { //[x] 
@@ -232,7 +232,7 @@ message DeleteTag { //[x]
 } 
 
 message DeleteTagResponse { //[x] 
-  ResponseMetadata metadata = 1;
+  Status metadata = 1;
 }
 
 message Tag {

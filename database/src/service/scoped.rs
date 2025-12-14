@@ -1,6 +1,6 @@
 use crate::service::state::{GroupState, StateDatabase};
 use crate::{Shelf, Workspace};
-use ebi_proto::rpc::{ReturnCode};
+use ebi_proto::rpc::ReturnCode;
 use ebi_types::sharedref::*;
 use ebi_types::shelf::*;
 use ebi_types::tag::TagId;
@@ -81,11 +81,7 @@ impl ScopedDatabase {
         name: String,
         description: String,
     ) -> Result<(), ReturnCode> {
-        self.call(EditWorkspace {
-            name,
-            description,
-        })
-        .await
+        self.call(EditWorkspace { name, description }).await
     }
 }
 
@@ -136,7 +132,7 @@ impl Service<CreateTag> for ScopedDatabase {
             let tag = Tag {
                 priority: req.priority,
                 name: req.name.clone(),
-                parent: parent,
+                parent
             };
             let tag_ref = SharedRef::<Tag>::new_ref(tag);
             workspace_ref
@@ -445,7 +441,6 @@ impl Service<EditShelf> for ScopedDatabase {
     }
 }
 
-
 struct EditWorkspace {
     pub name: String,
     pub description: String,
@@ -467,7 +462,8 @@ impl Service<EditWorkspace> for ScopedDatabase {
         Box::pin(async move {
             let workspace_ref = res_workspace_ref?;
             let workspace = workspace_ref.load();
-            workspace.info
+            workspace
+                .info
                 .stateful_rcu(|info| {
                     let (u_f, u_s) = info.name.set(&req.name);
                     let u_i = WorkspaceInfo {
@@ -477,7 +473,8 @@ impl Service<EditWorkspace> for ScopedDatabase {
                     (u_i, u_s)
                 })
                 .await;
-            workspace.info
+            workspace
+                .info
                 .stateful_rcu(|info| {
                     let (u_f, u_s) = info.description.set(&req.description);
                     let u_i = WorkspaceInfo {

@@ -49,8 +49,17 @@ macro_rules! generate_request_match {
                                 response_buf.extend_from_slice(&payload);
                                 let _ = $socket.write_all(&response_buf).await;
                             },
-                            Err(_res) => {
-                                todo!();
+                            Err(res) => {
+                                let mut payload = Vec::new();
+                                let _ = ebi_proto::rpc::Message::encode(&res, &mut payload);
+                                let mut response_buf = vec![0; HEADER_SIZE];
+                                response_buf[0] = MessageType::ResponseErr as u8;
+                                response_buf[1] = RequestCode::[<$req_ty>]  as u8;
+                                let size = payload.len() as u64;
+                                tracing::trace!("Error response with request code: {:?} and payload size: {}", RequestCode::[<$req_ty>], size);
+                                response_buf[2..HEADER_SIZE].copy_from_slice(&size.to_le_bytes());
+                                response_buf.extend_from_slice(&payload);
+                                let _ = $socket.write_all(&response_buf).await;
                             }
                         }
                     }
@@ -365,6 +374,9 @@ where
                     AttachTag,
                     DetachTag,
                 );
+            }
+            Ok(MessageType::ResponseErr) => {
+                // Handle error
             }
             Ok(MessageType::Data) => {
                 // Handle data messages here
