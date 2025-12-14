@@ -1,30 +1,32 @@
+use std::collections::HashMap;
+
 use crate::service::state::GroupState;
 use crate::{Shelf, Tag, Workspace};
-use ebi_types::StatefulRef;
 use ebi_types::Uuid;
 use ebi_types::redb::*;
-use im::HashMap;
-use redb::{
-    self, Database, Key, ReadableDatabase, ReadableTable, TableDefinition, TypeName, Value,
-};
+use ebi_types::tag::TagId;
+use ebi_types::{ImmutRef, SharedRef, StatefulRef};
+use redb::{self, TableDefinition};
 use serde::{Deserialize, Serialize};
 
-const WKSPC_TABLE: TableDefinition<u128, Bincode<StatefulRef<Workspace>>> =
-    TableDefinition::new("workspace");
-const ASSGN_TABLE: TableDefinition<Uuid, Uuid> = TableDefinition::new("shelf_assignment");
-const SHELF_TABLE: TableDefinition<Uuid, Bincode<StatefulRef<Shelf>>> =
-    TableDefinition::new("shelf");
-const TAG_TABLE: TableDefinition<Uuid, Bincode<Tag>> = TableDefinition::new("tag");
-const HISTORY_TABLE: TableDefinition<u8, Bincode<GroupState>> = TableDefinition::new("history");
+pub type EntityId = Uuid; // does not correspond to ShelfId or WorkspaceId, but db-only Id
+pub type GroupStateId = Uuid;
 
-// needed for edit. find table stored workspace by (state_id, workspace_id) -> db_workspace_id
-const WKSPC_STATE_TABLE: TableDefinition<(u8, Uuid), u128> =
-    TableDefinition::new("workspace_state");
+pub const T_WKSPC: TableDefinition<EntityId, Bincode<StatefulRef<Workspace>>> =
+    TableDefinition::new("workspace");
+pub const T_SHELF: TableDefinition<EntityId, Bincode<ImmutRef<Shelf>>> =
+    TableDefinition::new("shelf");
+pub const T_TAG: TableDefinition<TagId, Bincode<SharedRef<Tag>>> = TableDefinition::new("tag");
+pub const T_HISTORY: TableDefinition<u8, Bincode<GroupState>> = TableDefinition::new("history");
+
+// needed for edit. find table stored workspace or shelf by (state_id, entityId) -> db_workspace_id
+pub const T_ENTITY_STATE: TableDefinition<GroupStateId, Bincode<HashMap<EntityId, (Uuid, bool)>>> =
+    TableDefinition::new("entity_state");
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GroupStateStorable {
-    workspaces: Vec<u128>,
-    shelf_assignment: HashMap<u128, Vec<u128>>,
+    workspaces: Vec<Uuid>,
+    shelves: Vec<Uuid>,
 }
 
 impl Storable for GroupState {
@@ -33,7 +35,7 @@ impl Storable for GroupState {
     fn to_storable(&self) -> Bincode<Self> {
         Bincode(GroupStateStorable {
             workspaces: Vec::new(),
-            shelf_assignment: HashMap::new(),
+            shelves: Vec::new(),
         })
     }
 }

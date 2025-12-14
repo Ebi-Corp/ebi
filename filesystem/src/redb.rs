@@ -1,6 +1,6 @@
 use crate::{dir::ShelfDir, file::File, shelf::ShelfData};
 use ebi_types::{FileId, Uuid, tag::Tag};
-use ebi_types::{WithPath, redb::*};
+use ebi_types::{SharedRef, WithPath, redb::*};
 use redb::TableDefinition;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -12,7 +12,7 @@ pub const T_SHELF_DATA: TableDefinition<FileId, Bincode<ShelfData>> =
 pub const T_SHELF_DIR: TableDefinition<FileId, Bincode<ShelfDir>> =
     TableDefinition::new("shelf_dir");
 pub const T_FILE: TableDefinition<FileId, Bincode<File>> = TableDefinition::new("file");
-pub const T_TAG: TableDefinition<Uuid, Bincode<Tag>> = TableDefinition::new("tag");
+pub const T_TAG: TableDefinition<Uuid, Bincode<SharedRef<Tag>>> = TableDefinition::new("tag");
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ShelfDataStorable {
