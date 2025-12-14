@@ -60,6 +60,15 @@ where
     }
 }
 
+impl<K> Default for InfoState<K>
+where
+    K: Clone + Send + Sync + Hash + Eq,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct StatefulField<K, V>
 where

@@ -1,4 +1,5 @@
 use bincode::serde::Compat;
+use ebi_proto::rpc::ReturnCode;
 pub use iroh_base::NodeId;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
@@ -98,9 +99,9 @@ pub enum NodeIdErr {
     SignatureError,
 }
 
-pub fn parse_peer_id(bytes: &[u8]) -> Result<NodeId, NodeIdErr> {
-    let bytes: &[u8; 32] = bytes.try_into().map_err(|_| NodeIdErr::BytesErr)?;
-    NodeId::from_bytes(bytes).map_err(|_| NodeIdErr::SignatureError)
+pub fn parse_peer_id(bytes: &[u8]) -> Result<NodeId, ReturnCode> {
+    let bytes: &[u8; 32] = bytes.try_into().map_err(|_| ReturnCode::ParseError)?;
+    NodeId::from_bytes(bytes).map_err(|_| ReturnCode::PeerNotFound)
 }
 
 #[derive(Debug)]
@@ -108,12 +109,12 @@ pub enum UuidErr {
     SizeMismatch,
 }
 
-pub fn uuid(bytes: &[u8]) -> Result<Uuid, UuidErr> {
+pub fn uuid(bytes: &[u8]) -> Result<Uuid, ReturnCode> {
     let bytes: Result<[u8; 16], _> = bytes.to_owned().try_into();
     if let Ok(bytes) = bytes {
         Ok(Uuid::from_bytes(bytes))
     } else {
-        Err(UuidErr::SizeMismatch)
+        Err(ReturnCode::ParseError)
     }
 }
 

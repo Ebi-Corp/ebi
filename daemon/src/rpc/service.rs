@@ -17,21 +17,6 @@ use tokio::sync::watch::{Receiver, Sender};
 use tokio::task::JoinHandle;
 use tower::Service;
 
-//[!] Potentially, we could have a validation
-macro_rules! return_error {
-    ($return_code:path, $response:ident, $request_uuid:expr, $error_data:ident) => {
-        let return_code = $return_code;
-        let metadata = ResponseMetadata {
-            request_uuid: $request_uuid,
-            return_code: return_code as u32,
-            $error_data,
-        };
-        let mut res = $response::default();
-        res.metadata = Some(metadata);
-        return Ok(res);
-    };
-}
-
 #[derive(Clone)]
 pub struct RpcService {
     pub daemon_info: Arc<DaemonInfo>,
@@ -108,7 +93,7 @@ impl Service<Response> for RpcService {
 
 impl Service<ClientQuery> for RpcService {
     type Response = ClientQueryResponse;
-    type Error = ReturnCode;
+    type Error = Status;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -119,27 +104,23 @@ impl Service<ClientQuery> for RpcService {
         let mut query_srv = self.query_srv.clone();
         Box::pin(async move {
             let Some(metadata) = req.clone().metadata else {
-                return Err(ReturnCode::MalformedRequest);
+                return Err(ReturnCode::MalformedRequest)?;
             };
 
             match query_srv.call(req).await {
                 Ok((token, packets)) => Ok(ClientQueryResponse {
                     token: token.as_bytes().to_vec(),
                     packets,
-                    metadata: Some(ResponseMetadata {
+                    metadata: Some(Status {
                         request_uuid: metadata.request_uuid,
                         return_code: ReturnCode::Success as u32,
                         error_data: None,
                     }),
                 }),
-                Err(ret_code) => Ok(ClientQueryResponse {
-                    token: vec![0],
-                    packets: 0,
-                    metadata: Some(ResponseMetadata {
-                        request_uuid: metadata.request_uuid,
-                        return_code: ret_code as u32,
-                        error_data: None,
-                    }),
+                Err(ret_code) => Err(Status {
+                    request_uuid: metadata.request_uuid,
+                    return_code: ret_code as u32,
+                    error_data: None,
                 }),
             }
         })
@@ -148,7 +129,7 @@ impl Service<ClientQuery> for RpcService {
 
 impl Service<PeerQuery> for RpcService {
     type Response = PeerQueryResponse;
-    type Error = ReturnCode;
+    type Error = Status;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -159,38 +140,22 @@ impl Service<PeerQuery> for RpcService {
         let mut query_srv = self.query_srv.clone();
         Box::pin(async move {
             let config = bincode::config::standard(); // [TODO] this should be set globally
-            match query_srv.call(req).await {
-                Ok((files, errors)) => {
-                    if let Ok(files) =
-                        encode_to_vec(&files, config).map_err(|_| ReturnCode::ParseError)
-                    {
-                        Ok(PeerQueryResponse {
-                            files,
-                            metadata: Some(ResponseMetadata {
-                                request_uuid: Into::<Vec<u8>>::into(Uuid::new_v4()),
-                                return_code: ReturnCode::Success as u32, // [?] Should this always be success ??
-                                error_data: Some(ErrorData { error_data: errors }),
-                            }),
-                        })
-                    } else {
-                        Ok(PeerQueryResponse {
-                            files: Vec::<u8>::new(),
-                            metadata: Some(ResponseMetadata {
-                                request_uuid: Into::<Vec<u8>>::into(Uuid::new_v4()),
-                                return_code: ReturnCode::PeerServiceError as u32, // [!] Encode Error
-                                error_data: Some(ErrorData { error_data: errors }),
-                            }),
-                        })
-                    }
-                }
-                Err(ret_code) => Ok(PeerQueryResponse {
-                    files: Vec::<u8>::new(),
-                    metadata: Some(ResponseMetadata {
+            let (files, errors) = query_srv.call(req).await?;
+            if let Ok(files) = encode_to_vec(&files, config).map_err(|_| ReturnCode::ParseError) {
+                Ok(PeerQueryResponse {
+                    files,
+                    metadata: Some(Status {
                         request_uuid: Into::<Vec<u8>>::into(Uuid::new_v4()),
-                        return_code: ret_code as u32,
-                        error_data: None,
+                        return_code: ReturnCode::Success as u32, // [?] Should this always be success ??
+                        error_data: Some(ErrorData { error_data: errors }),
                     }),
-                }),
+                })
+            } else {
+                Err(Status {
+                    request_uuid: Into::<Vec<u8>>::into(Uuid::new_v4()),
+                    return_code: ReturnCode::PeerServiceError as u32, // [!] Encode Error
+                    error_data: Some(ErrorData { error_data: errors }),
+                })
             }
         })
     }
@@ -198,7 +163,7 @@ impl Service<PeerQuery> for RpcService {
 
 impl Service<DeleteTag> for RpcService {
     type Response = DeleteTagResponse;
-    type Error = ();
+    type Error = Status;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -212,38 +177,11 @@ impl Service<DeleteTag> for RpcService {
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
-            let (Ok(workspace_id), Ok(tag_id)) = (uuid(&req.workspace_id), uuid(&req.tag_id))
-            else {
-                return_error!(
-                    ReturnCode::ParseError,
-                    DeleteTagResponse,
-                    metadata.request_uuid,
-                    error_data
-                );
-            };
+            let (workspace_id, tag_id) = (uuid(&req.workspace_id)?, uuid(&req.tag_id)?);
 
-            let Ok(workspace) = state_db.get_workspace(workspace_id).await else {
-                return_error!(
-                    ReturnCode::WorkspaceNotFound,
-                    DeleteTagResponse,
-                    metadata.request_uuid,
-                    error_data
-                );
-            };
+            let workspace = state_db.get_workspace(workspace_id).await?;
 
-            let tag_ref = state_db.workspace(workspace_id).delete_tag(tag_id).await;
-
-            let tag_ref = match tag_ref {
-                Ok(t_ref) => t_ref,
-                Err(ret_code) => {
-                    return_error!(
-                        ret_code,
-                        DeleteTagResponse,
-                        metadata.request_uuid,
-                        error_data
-                    );
-                }
-            };
+            let tag_ref = state_db.workspace(workspace_id).delete_tag(tag_id).await?;
 
             for (_id, shelf) in workspace.shelves.iter() {
                 match &shelf.shelf_type {
@@ -262,7 +200,7 @@ impl Service<DeleteTag> for RpcService {
                 }
             }
 
-            let metadata = ResponseMetadata {
+            let metadata = Status {
                 request_uuid: metadata.request_uuid,
                 return_code: ReturnCode::Success as u32,
                 error_data,
@@ -276,7 +214,7 @@ impl Service<DeleteTag> for RpcService {
 
 impl Service<StripTag> for RpcService {
     type Response = StripTagResponse;
-    type Error = ();
+    type Error = Status;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -291,45 +229,20 @@ impl Service<StripTag> for RpcService {
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
-            let (Ok(shelf_id), Ok(tag_id), Ok(workspace_id)) = (
-                uuid(&req.shelf_id),
-                uuid(&req.tag_id),
-                uuid(&req.workspace_id),
-            ) else {
-                return_error!(
-                    ReturnCode::ParseError,
-                    StripTagResponse,
-                    metadata.request_uuid,
-                    error_data
-                );
-            };
+            let (shelf_id, tag_id, workspace_id) = (
+                uuid(&req.shelf_id)?,
+                uuid(&req.tag_id)?,
+                uuid(&req.workspace_id)?,
+            );
 
-            let Ok(workspace) = state_db.get_workspace(workspace_id).await else {
-                return_error!(
-                    ReturnCode::WorkspaceNotFound,
-                    StripTagResponse,
-                    metadata.request_uuid,
-                    error_data
-                );
-            };
+            let workspace = state_db.get_workspace(workspace_id).await?;
 
-            let Some(shelf) = workspace.shelves.get(&shelf_id) else {
-                return_error!(
-                    ReturnCode::ShelfNotFound,
-                    StripTagResponse,
-                    metadata.request_uuid,
-                    error_data
-                );
-            };
+            let shelf = workspace
+                .shelves
+                .get(&shelf_id)
+                .ok_or(ReturnCode::ShelfNotFound)?;
 
-            let Some(tag) = workspace.tags.get(&tag_id) else {
-                return_error!(
-                    ReturnCode::TagNotFound,
-                    StripTagResponse,
-                    metadata.request_uuid,
-                    error_data
-                );
-            };
+            let tag = workspace.tags.get(&tag_id).ok_or(ReturnCode::TagNotFound)?;
 
             let return_code = match &shelf.shelf_type {
                 ShelfType::Local => {
@@ -338,17 +251,10 @@ impl Service<StripTag> for RpcService {
                         .await
                         .unwrap();
                     let path = match req.path {
-                        Some(path) => {
-                            let Ok(path) = std::path::absolute(PathBuf::from(path)) else {
-                                return_error!(
-                                    ReturnCode::PathNotFound,
-                                    StripTagResponse,
-                                    metadata.request_uuid,
-                                    error_data
-                                );
-                            };
-                            Some(path)
-                        }
+                        Some(path) => Some(
+                            std::path::absolute(PathBuf::from(path))
+                                .map_err(|_| ReturnCode::PathNotFound)?,
+                        ),
                         None => None,
                     };
 
@@ -380,7 +286,7 @@ impl Service<StripTag> for RpcService {
                 }
             };
 
-            let metadata = ResponseMetadata {
+            let metadata = Status {
                 request_uuid: metadata.request_uuid,
                 return_code: return_code as u32,
                 error_data,
@@ -394,7 +300,7 @@ impl Service<StripTag> for RpcService {
 
 impl Service<DetachTag> for RpcService {
     type Response = DetachTagResponse;
-    type Error = ();
+    type Error = Status;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -409,45 +315,20 @@ impl Service<DetachTag> for RpcService {
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
-            let (Ok(shelf_id), Ok(tag_id), Ok(workspace_id)) = (
-                uuid(&req.shelf_id),
-                uuid(&req.tag_id),
-                uuid(&req.workspace_id),
-            ) else {
-                return_error!(
-                    ReturnCode::ParseError,
-                    DetachTagResponse,
-                    metadata.request_uuid,
-                    error_data
-                );
-            };
+            let (shelf_id, tag_id, workspace_id) = (
+                uuid(&req.shelf_id)?,
+                uuid(&req.tag_id)?,
+                uuid(&req.workspace_id)?,
+            );
 
-            let Ok(workspace) = state_db.get_workspace(workspace_id).await else {
-                return_error!(
-                    ReturnCode::WorkspaceNotFound,
-                    DetachTagResponse,
-                    metadata.request_uuid,
-                    error_data
-                );
-            };
+            let workspace = state_db.get_workspace(workspace_id).await?;
 
-            let Some(shelf) = workspace.shelves.get(&shelf_id) else {
-                return_error!(
-                    ReturnCode::ShelfNotFound,
-                    DetachTagResponse,
-                    metadata.request_uuid,
-                    error_data
-                );
-            };
+            let shelf = workspace
+                .shelves
+                .get(&shelf_id)
+                .ok_or(ReturnCode::ShelfNotFound)?;
 
-            let Some(tag) = workspace.tags.get(&tag_id) else {
-                return_error!(
-                    ReturnCode::TagNotFound,
-                    DetachTagResponse,
-                    metadata.request_uuid,
-                    error_data
-                );
-            };
+            let tag = workspace.tags.get(&tag_id).ok_or(ReturnCode::TagNotFound)?;
 
             //[/] Business Logic
             let return_code = {
@@ -455,14 +336,8 @@ impl Service<DetachTag> for RpcService {
                     ShelfType::Local => {
                         let shelf_key = ShelfDirKey::Path(shelf.info.load().root.to_path_buf());
 
-                        let Ok(path) = std::path::absolute(PathBuf::from(&req.path)) else {
-                            return_error!(
-                                ReturnCode::PathNotFound,
-                                DetachTagResponse,
-                                metadata.request_uuid,
-                                error_data
-                            );
-                        };
+                        let path = std::path::absolute(PathBuf::from(&req.path))
+                            .map_err(|_| ReturnCode::PathNotFound)?;
 
                         let result = if path.is_file() {
                             filesys.detach_tag(shelf_key, path, tag.clone()).await
@@ -482,7 +357,7 @@ impl Service<DetachTag> for RpcService {
                             }
                             Ok((false, true)) => ReturnCode::Success,
                             Ok((_, false)) => ReturnCode::NotTagged, // File not tagged
-                            Err(e) => e,
+                            Err(e) => return Err(e.into()),
                         }
                     }
                     ShelfType::Remote => {
@@ -501,7 +376,7 @@ impl Service<DetachTag> for RpcService {
                 }
             };
 
-            let metadata = ResponseMetadata {
+            let metadata = Status {
                 request_uuid: metadata.request_uuid,
                 return_code: return_code as u32,
                 error_data,
@@ -515,7 +390,7 @@ impl Service<DetachTag> for RpcService {
 
 impl Service<AttachTag> for RpcService {
     type Response = AttachTagResponse;
-    type Error = ();
+    type Error = Status;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -530,45 +405,21 @@ impl Service<AttachTag> for RpcService {
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
-            let (Ok(shelf_id), Ok(tag_id), Ok(workspace_id)) = (
-                uuid(&req.shelf_id),
-                uuid(&req.tag_id),
-                uuid(&req.workspace_id),
-            ) else {
-                return_error!(
-                    ReturnCode::ParseError,
-                    AttachTagResponse,
-                    metadata.request_uuid,
-                    error_data
-                );
-            };
+            let (shelf_id, tag_id, workspace_id) = (
+                uuid(&req.shelf_id)?,
+                uuid(&req.tag_id)?,
+                uuid(&req.workspace_id)?,
+            );
 
-            let Ok(workspace) = state_db.get_workspace(workspace_id).await else {
-                return_error!(
-                    ReturnCode::WorkspaceNotFound,
-                    AttachTagResponse,
-                    metadata.request_uuid,
-                    error_data
-                );
-            };
+            let workspace = state_db.get_workspace(workspace_id).await?;
 
-            let Some(shelf) = workspace.shelves.get(&shelf_id) else {
-                return_error!(
-                    ReturnCode::ShelfNotFound,
-                    AttachTagResponse,
-                    metadata.request_uuid,
-                    error_data
-                );
-            };
+            let shelf = workspace
+                .shelves
+                .get(&shelf_id)
+                .ok_or(ReturnCode::ShelfNotFound)?;
 
-            let Some(tag) = workspace.tags.get(&tag_id) else {
-                return_error!(
-                    ReturnCode::TagNotFound,
-                    AttachTagResponse,
-                    metadata.request_uuid,
-                    error_data
-                );
-            };
+            let tag = workspace.tags.get(&tag_id).ok_or(ReturnCode::TagNotFound)?;
+
             //[/] Business Logic
             let return_code = {
                 match &shelf.shelf_type {
@@ -580,14 +431,8 @@ impl Service<AttachTag> for RpcService {
                             .await
                             .unwrap();
 
-                        let Ok(path) = std::path::absolute(PathBuf::from(&req.path)) else {
-                            return_error!(
-                                ReturnCode::PathNotFound,
-                                AttachTagResponse,
-                                metadata.request_uuid,
-                                error_data
-                            );
-                        };
+                        let path = std::path::absolute(PathBuf::from(&req.path))
+                            .map_err(|_| ReturnCode::PathNotFound)?;
 
                         let result = if path.is_file() {
                             filesys
@@ -598,12 +443,7 @@ impl Service<AttachTag> for RpcService {
                                 .attach_dtag(ShelfDirKey::Id(shelf_data.id), path, tag.clone())
                                 .await
                         } else {
-                            return_error!(
-                                ReturnCode::PathNotDir, // [TODO] should be invalid path (e.g symlink)
-                                AttachTagResponse,
-                                metadata.request_uuid,
-                                error_data
-                            );
+                            return Err(ReturnCode::PathNotDir.into());
                         };
                         if let ShelfOwner::Sync(_sync_id) = shelf.shelf_owner {
                             //[TODO] Sync Notification
@@ -617,7 +457,7 @@ impl Service<AttachTag> for RpcService {
                             } // Success
                             Ok((false, true)) => ReturnCode::Success, // File not tagged
                             Ok((_, false)) => ReturnCode::TagAlreadyAttached,
-                            Err(e) => e,
+                            Err(e) => return Err(e.into()),
                         }
                     }
                     ShelfType::Remote => {
@@ -636,7 +476,7 @@ impl Service<AttachTag> for RpcService {
                 }
             };
 
-            let metadata = ResponseMetadata {
+            let metadata = Status {
                 request_uuid: metadata.request_uuid,
                 return_code: return_code as u32,
                 error_data,
@@ -650,7 +490,7 @@ impl Service<AttachTag> for RpcService {
 
 impl Service<RemoveShelf> for RpcService {
     type Response = RemoveShelfResponse;
-    type Error = ();
+    type Error = Status;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -663,25 +503,14 @@ impl Service<RemoveShelf> for RpcService {
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
-            let (Ok(shelf_id), Ok(workspace_id)) = (uuid(&req.shelf_id), uuid(&req.shelf_id))
-            else {
-                return_error!(
-                    ReturnCode::ParseError,
-                    RemoveShelfResponse,
-                    metadata.request_uuid,
-                    error_data
-                );
-            };
+            let (shelf_id, workspace_id) = (uuid(&req.shelf_id)?, uuid(&req.shelf_id)?);
 
-            if let Err(res) = state_db
+            state_db
                 .workspace(workspace_id)
                 .unassign_shelf(shelf_id)
-                .await
-            {
-                return_error!(res, RemoveShelfResponse, metadata.request_uuid, error_data);
-            };
+                .await?;
 
-            let metadata = ResponseMetadata {
+            let metadata = Status {
                 request_uuid: metadata.request_uuid,
                 return_code: ReturnCode::Success as u32,
                 error_data,
@@ -695,7 +524,7 @@ impl Service<RemoveShelf> for RpcService {
 
 impl Service<EditShelf> for RpcService {
     type Response = EditShelfResponse;
-    type Error = ();
+    type Error = Status;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -709,30 +538,14 @@ impl Service<EditShelf> for RpcService {
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
-            let (Ok(shelf_id), Ok(workspace_id)) = (uuid(&req.shelf_id), uuid(&req.workspace_id))
-            else {
-                return_error!(
-                    ReturnCode::ParseError,
-                    EditShelfResponse,
-                    metadata.request_uuid,
-                    error_data
-                );
-            };
-            let ret_code = state_db
+            let (shelf_id, workspace_id) = (uuid(&req.shelf_id)?, uuid(&req.workspace_id)?);
+
+            state_db
                 .workspace(workspace_id)
                 .edit_shelf_info(shelf_id, req.name, req.description)
-                .await;
+                .await?;
 
-            if let Err(ret_code) = ret_code {
-                return_error!(
-                    ret_code,
-                    EditShelfResponse,
-                    metadata.request_uuid,
-                    error_data
-                );
-            }
-
-            let metadata = ResponseMetadata {
+            let metadata = Status {
                 request_uuid: metadata.request_uuid,
                 return_code: ReturnCode::Success as u32,
                 error_data,
@@ -747,7 +560,7 @@ impl Service<EditShelf> for RpcService {
 
 impl Service<AddShelf> for RpcService {
     type Response = AddShelfResponse;
-    type Error = ();
+    type Error = Status;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -765,33 +578,12 @@ impl Service<AddShelf> for RpcService {
             let error_data: Option<ErrorData> = None;
             let mut shelf_id: Option<ShelfId> = None;
 
-            let Ok(workspace_id) = uuid(&req.workspace_id) else {
-                return_error!(
-                    ReturnCode::ParseError,
-                    AddShelfResponse,
-                    metadata.request_uuid,
-                    error_data
-                );
-            };
+            let workspace_id = uuid(&req.workspace_id)?;
 
-            let Ok(peer_id) = parse_peer_id(&req.peer_id) else {
-                return_error!(
-                    ReturnCode::PeerNotFound, //[!] Change to UuidParseErr, peer validation is done
-                    //in StateDatabase
-                    AddShelfResponse,
-                    metadata.request_uuid,
-                    error_data
-                );
-            };
+            let peer_id = parse_peer_id(&req.peer_id)?;
 
-            let Ok(path) = std::path::absolute(PathBuf::from(&req.path)) else {
-                return_error!(
-                    ReturnCode::PathNotFound,
-                    AddShelfResponse,
-                    metadata.request_uuid,
-                    error_data
-                );
-            };
+            let path = std::path::absolute(PathBuf::from(&req.path))
+                .map_err(|_| ReturnCode::PathNotFound)?;
 
             //[/] Business Logic
             let return_code = {
@@ -810,14 +602,14 @@ impl Service<AddShelf> for RpcService {
                             shelf_id = Some(id);
                             ReturnCode::Success
                         }
-                        Err(e) => e,
+                        Err(e) => return Err(e.into()),
                     }
                 }
             };
 
             let encoded_shelf_id = shelf_id.map(|shelf_id| shelf_id.as_bytes().to_vec());
 
-            let metadata = ResponseMetadata {
+            let metadata = Status {
                 request_uuid: metadata.request_uuid,
                 return_code: return_code as u32,
                 error_data,
@@ -832,7 +624,7 @@ impl Service<AddShelf> for RpcService {
 
 impl Service<DeleteWorkspace> for RpcService {
     type Response = DeleteWorkspaceResponse;
-    type Error = ();
+    type Error = Status;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -843,27 +635,10 @@ impl Service<DeleteWorkspace> for RpcService {
         let mut state_db = self.state_db.clone();
         let metadata = req.metadata.unwrap();
         Box::pin(async move {
-            let error_data: Option<ErrorData> = None;
+            let workspace_id = uuid(&req.workspace_id)?;
+            state_db.remove_workspace(workspace_id).await?;
 
-            let Ok(workspace_id) = uuid(&req.workspace_id) else {
-                return_error!(
-                    ReturnCode::WorkspaceNotFound,
-                    DeleteWorkspaceResponse,
-                    metadata.request_uuid,
-                    error_data
-                );
-            };
-
-            let Ok(()) = state_db.remove_workspace(workspace_id).await else {
-                return_error!(
-                    ReturnCode::WorkspaceNotFound,
-                    DeleteWorkspaceResponse,
-                    metadata.request_uuid,
-                    error_data
-                );
-            };
-
-            let metadata = ResponseMetadata {
+            let metadata = Status {
                 request_uuid: metadata.request_uuid,
                 return_code: ReturnCode::Success as u32,
                 error_data: None,
@@ -877,7 +652,7 @@ impl Service<DeleteWorkspace> for RpcService {
 
 impl Service<EditTag> for RpcService {
     type Response = EditTagResponse;
-    type Error = ();
+    type Error = Status;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -888,55 +663,19 @@ impl Service<EditTag> for RpcService {
         let mut state_db = self.state_db.clone();
         let metadata = req.metadata.unwrap();
         Box::pin(async move {
-            let error_data: Option<ErrorData> = None;
+            let (tag_id, workspace_id) = (uuid(&req.tag_id)?, uuid(&req.workspace_id)?);
 
-            let (Ok(tag_id), Ok(workspace_id)) = (uuid(&req.tag_id), uuid(&req.workspace_id))
-            else {
-                return_error!(
-                    ReturnCode::ParseError,
-                    EditTagResponse,
-                    metadata.request_uuid,
-                    error_data
-                );
-            };
+            let workspace = state_db.get_workspace(workspace_id).await?;
 
-            let Ok(workspace) = state_db.get_workspace(workspace_id).await else {
-                return_error!(
-                    ReturnCode::WorkspaceNotFound,
-                    EditTagResponse,
-                    metadata.request_uuid,
-                    error_data
-                );
-            };
-
-            let Some(tag) = workspace.tags.get(&tag_id) else {
-                return_error!(
-                    ReturnCode::TagNotFound,
-                    EditTagResponse,
-                    metadata.request_uuid,
-                    error_data
-                );
-            };
+            let tag = workspace.tags.get(&tag_id).ok_or(ReturnCode::TagNotFound)?;
 
             let parent = {
                 if let Some(id) = req.parent_id.clone() {
-                    let Ok(parent_id) = uuid(&id) else {
-                        return_error!(
-                            ReturnCode::ParseError,
-                            EditTagResponse,
-                            metadata.request_uuid,
-                            error_data
-                        );
-                    };
-
-                    let Some(parent_tag) = workspace.tags.get(&parent_id) else {
-                        return_error!(
-                            ReturnCode::ParentNotFound,
-                            EditTagResponse,
-                            metadata.request_uuid,
-                            error_data
-                        );
-                    };
+                    let p_id = uuid(&id)?;
+                    let parent_tag = workspace
+                        .tags
+                        .get(&p_id)
+                        .ok_or(ReturnCode::ParentNotFound)?;
                     Some(parent_tag.clone())
                 } else {
                     None
@@ -945,12 +684,7 @@ impl Service<EditTag> for RpcService {
 
             //[/] Tag Name Validation
             if req.name.clone().is_empty() {
-                return_error!(
-                    ReturnCode::TagNameEmpty,
-                    EditTagResponse,
-                    metadata.request_uuid,
-                    error_data
-                );
+                return Err(ReturnCode::TagNameEmpty.into());
             }
 
             let return_code = {
@@ -964,7 +698,7 @@ impl Service<EditTag> for RpcService {
                 ReturnCode::Success
             };
 
-            let metadata = ResponseMetadata {
+            let metadata = Status {
                 request_uuid: metadata.request_uuid,
                 return_code: return_code as u32,
                 error_data: None,
@@ -978,7 +712,7 @@ impl Service<EditTag> for RpcService {
 
 impl Service<EditWorkspace> for RpcService {
     type Response = EditWorkspaceResponse;
-    type Error = ();
+    type Error = Status;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -989,38 +723,18 @@ impl Service<EditWorkspace> for RpcService {
         let mut state_db = self.state_db.clone();
         let metadata = req.metadata.unwrap();
         Box::pin(async move {
-            let error_data: Option<ErrorData> = None;
-            let Ok(workspace_id) = uuid(&req.workspace_id) else {
-                return_error!(
-                    ReturnCode::ParseError,
-                    EditWorkspaceResponse,
-                    metadata.request_uuid,
-                    error_data
-                );
-            };
+            let workspace_id = uuid(&req.workspace_id)?;
 
             if req.name.clone().is_empty() {
-                let return_code = ReturnCode::WorkspaceNameEmpty;
-                let metadata = ResponseMetadata {
-                    request_uuid: metadata.request_uuid,
-                    return_code: return_code as u32,
-                    error_data,
-                };
-                return Ok(EditWorkspaceResponse {
-                    metadata: Some(metadata),
-                });
+                return Err(ReturnCode::WorkspaceNameEmpty.into());
             }
 
-            if let Err(ret) = state_db.workspace(workspace_id).edit_workspace_info(req.name, req.description).await {
-                return_error!(
-                    ret,
-                    EditWorkspaceResponse,
-                    metadata.request_uuid,
-                    error_data
-                );
-            }
+            state_db
+                .workspace(workspace_id)
+                .edit_workspace_info(req.name, req.description)
+                .await?;
 
-            let metadata = ResponseMetadata {
+            let metadata = Status {
                 request_uuid: metadata.request_uuid,
                 return_code: ReturnCode::Success as u32,
                 error_data: None,
@@ -1034,7 +748,7 @@ impl Service<EditWorkspace> for RpcService {
 
 impl Service<GetShelves> for RpcService {
     type Response = GetShelvesResponse;
-    type Error = ();
+    type Error = Status;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -1045,25 +759,8 @@ impl Service<GetShelves> for RpcService {
         let mut state_db = self.state_db.clone();
         let metadata = req.metadata.unwrap();
         Box::pin(async move {
-            let error_data: Option<ErrorData> = None;
-
-            let Ok(workspace_id) = uuid(&req.workspace_id) else {
-                return_error!(
-                    ReturnCode::ParseError,
-                    GetShelvesResponse,
-                    metadata.request_uuid,
-                    error_data
-                );
-            };
-
-            let Ok(workspace) = state_db.get_workspace(workspace_id).await else {
-                return_error!(
-                    ReturnCode::WorkspaceNotFound,
-                    GetShelvesResponse,
-                    metadata.request_uuid,
-                    error_data
-                );
-            };
+            let workspace_id = uuid(&req.workspace_id)?;
+            let workspace = state_db.get_workspace(workspace_id).await?;
 
             let mut shelves = Vec::new();
             // [!] Can be changed with iter mut + impl Into<rpc::Shelf> for shelf
@@ -1085,7 +782,7 @@ impl Service<GetShelves> for RpcService {
                     path: shelf.info.load().root.get().to_string_lossy().into_owned(),
                 });
             }
-            let metadata = ResponseMetadata {
+            let metadata = Status {
                 request_uuid: metadata.request_uuid,
                 return_code: ReturnCode::Success as u32,
                 error_data: None,
@@ -1100,7 +797,7 @@ impl Service<GetShelves> for RpcService {
 
 impl Service<GetWorkspaces> for RpcService {
     type Response = GetWorkspacesResponse;
-    type Error = ();
+    type Error = Status;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -1113,7 +810,7 @@ impl Service<GetWorkspaces> for RpcService {
         Box::pin(async move {
             let workspace_ls = state_db.get_workspaces().await.unwrap();
 
-            let metadata = ResponseMetadata {
+            let metadata = Status {
                 request_uuid: metadata.request_uuid,
                 return_code: ReturnCode::Success as u32,
                 error_data: None,
@@ -1128,7 +825,7 @@ impl Service<GetWorkspaces> for RpcService {
 
 impl Service<CreateWorkspace> for RpcService {
     type Response = CreateWorkspaceResponse;
-    type Error = ();
+    type Error = Status;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -1144,7 +841,7 @@ impl Service<CreateWorkspace> for RpcService {
                 .await
                 .unwrap();
 
-            let metadata = ResponseMetadata {
+            let metadata = Status {
                 request_uuid: metadata.request_uuid,
                 return_code: ReturnCode::Success as u32,
                 error_data: None,
@@ -1159,7 +856,7 @@ impl Service<CreateWorkspace> for RpcService {
 
 impl Service<CreateTag> for RpcService {
     type Response = CreateTagResponse;
-    type Error = ();
+    type Error = Status;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -1170,48 +867,20 @@ impl Service<CreateTag> for RpcService {
         let mut state_db = self.state_db.clone();
         let metadata = req.metadata.clone().unwrap();
         Box::pin(async move {
-            let error_data: Option<ErrorData> = None;
-
-            let Ok(workspace_id) = uuid(&req.workspace_id) else {
-                return_error!(
-                    ReturnCode::ParseError,
-                    CreateTagResponse,
-                    metadata.request_uuid,
-                    error_data
-                );
-            };
+            let workspace_id = uuid(&req.workspace_id)?;
 
             let parent_id = match req.parent_id {
-                Some(parent_id) => {
-                    let Ok(parent_id) = uuid(&parent_id) else {
-                        return_error!(
-                            ReturnCode::ParseError,
-                            CreateTagResponse,
-                            metadata.request_uuid,
-                            error_data
-                        );
-                    };
-                    Some(parent_id)
-                }
+                Some(parent_id) => Some(uuid(&parent_id)?),
                 None => None,
             };
 
-            let ret = state_db
+            let tag_id = state_db
                 .workspace(workspace_id)
                 .create_tag(req.priority, req.name, parent_id)
-                .await;
-            let Ok(tag_id) = ret else {
-                let ret_code = ret.unwrap_err();
-                return_error!(
-                    ret_code,
-                    CreateTagResponse,
-                    metadata.request_uuid,
-                    error_data
-                );
-            };
+                .await?;
 
             // If the tag was created successfully, return the response with the tag ID
-            let metadata = ResponseMetadata {
+            let metadata = Status {
                 request_uuid: metadata.request_uuid,
                 return_code: ReturnCode::Success as u32, // Success
                 error_data: None,
