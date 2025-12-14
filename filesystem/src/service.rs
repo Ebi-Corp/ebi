@@ -513,7 +513,7 @@ impl Service<AttachTag> for FileSystem {
                     .open_table(T_TAG)
                     .map_err(|_| ReturnCode::InternalStateError)?;
                 tag_table
-                    .insert(tag.id, tag.load().to_storable())
+                    .insert(tag.id, tag.to_storable())
                     .map_err(|_| ReturnCode::InternalStateError)?;
             }
             write_txn.commit().map_err(|_| ReturnCode::DbCommitError)?;
@@ -643,7 +643,7 @@ impl Service<AttachDTag> for FileSystem {
                         .open_table(T_TAG)
                         .map_err(|_| ReturnCode::InternalStateError)?;
                     tag_table
-                        .insert(dtag.id, dtag.load().to_storable())
+                        .insert(dtag.id, dtag.to_storable())
                         .map_err(|_| ReturnCode::InternalStateError)?;
                 }
             }

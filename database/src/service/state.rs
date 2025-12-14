@@ -1,11 +1,13 @@
+use crate::redb::*;
 use crate::service::scoped::ScopedDatabase;
 use crate::{Shelf, Workspace};
 use ::redb::Database;
 use ebi_proto::rpc::ReturnCode;
+use ebi_types::redb::Storable;
+use ebi_types::shelf::*;
 use ebi_types::workspace::{WorkspaceId, WorkspaceInfo};
-use ebi_types::{sharedref::*, stateful::*};
-use ebi_types::{shelf::*, workspace};
-use redb::Error;
+use ebi_types::{Uuid, sharedref::*, stateful::*};
+use redb::{Error, ReadableTable};
 use std::path::PathBuf;
 use std::{
     future::Future,
@@ -121,6 +123,7 @@ impl Service<CreateWorkspace> for StateDatabase {
 
     fn call(&mut self, req: CreateWorkspace) -> Self::Future {
         let state = self.state.clone();
+        let db = self.db.clone();
         Box::pin(async move {
             let w_state = SwapRef::new_ref(()); // [TODO] Spawn bloom filters
             let workspace = Workspace {
@@ -146,6 +149,22 @@ impl Service<CreateWorkspace> for StateDatabase {
                     (u_w, u_s)
                 })
                 .await;
+            let staged_id = state.staged.id;
+            let write_txn = db.begin_write().map_err(|_| ReturnCode::DbOpenError)?;
+            {
+                let mut wk_t = write_txn
+                    .open_table(T_WKSPC)
+                    .map_err(|_| ReturnCode::DbTableOpenError)?;
+                let mut entity_state_t = write_txn
+                    .open_table(T_ENTITY_STATE)
+                    .map_err(|_| ReturnCode::DbTableOpenError)?;
+                let mut state_hmap = entity_state_t.get(staged_id).unwrap().unwrap().value();
+                let db_id = Uuid::new_v4();
+                wk_t.insert(db_id, w_ref.to_storable()).unwrap();
+                state_hmap.0.insert(w_id, (db_id, true)).unwrap();
+                entity_state_t.insert(staged_id, state_hmap).unwrap();
+            }
+            write_txn.commit().map_err(|_| ReturnCode::DbCommitError)?;
 
             Ok(w_id)
         })
@@ -216,6 +235,7 @@ impl Service<RemoveWorkspace> for StateDatabase {
 
     fn call(&mut self, req: RemoveWorkspace) -> Self::Future {
         let g_state = self.state.clone();
+        let db = self.db.clone();
         Box::pin(async move {
             g_state
                 .staged
@@ -228,6 +248,26 @@ impl Service<RemoveWorkspace> for StateDatabase {
                     (u_g, u_s)
                 })
                 .await;
+            let staged_id = g_state.staged.id;
+            let write_txn = db.begin_write().map_err(|_| ReturnCode::DbOpenError)?;
+            {
+                let mut wk_t = write_txn
+                    .open_table(T_WKSPC)
+                    .map_err(|_| ReturnCode::DbTableOpenError)?;
+                let mut entity_state_t = write_txn
+                    .open_table(T_ENTITY_STATE)
+                    .map_err(|_| ReturnCode::DbTableOpenError)?;
+                let mut state_hmap = entity_state_t.get(staged_id).unwrap().unwrap().value();
+                let (db_id, _) = state_hmap
+                    .0
+                    .get(&req.workspace_id)
+                    .ok_or(ReturnCode::InternalStateError)?;
+                wk_t.remove(db_id)
+                    .map_err(|_| ReturnCode::InternalStateError)?;
+                state_hmap.0.remove(&req.workspace_id).unwrap();
+                entity_state_t.insert(staged_id, state_hmap).unwrap();
+            }
+            write_txn.commit().map_err(|_| ReturnCode::DbCommitError)?;
             Ok(())
         })
     }

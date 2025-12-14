@@ -1,11 +1,14 @@
+use crate::redb::*;
 use crate::service::state::{GroupState, StateDatabase};
 use crate::{Shelf, Workspace};
 use ebi_proto::rpc::ReturnCode;
+use ebi_types::redb::Storable;
 use ebi_types::sharedref::*;
 use ebi_types::shelf::*;
 use ebi_types::tag::TagId;
 use ebi_types::workspace::{WorkspaceId, WorkspaceInfo};
 use ebi_types::{NodeId, Uuid, tag::Tag};
+use redb::ReadableTable;
 use std::path::PathBuf;
 use std::{
     future::Future,
@@ -115,6 +118,8 @@ impl Service<CreateTag> for ScopedDatabase {
 
     fn call(&mut self, req: CreateTag) -> Self::Future {
         let res_workspace_ref = self.set_workspace();
+        let db = self.service.db.clone();
+        let staged_id = self.service.state.staged.id;
         Box::pin(async move {
             let workspace_ref = res_workspace_ref?;
             let workspace = workspace_ref.load_full();
@@ -132,7 +137,7 @@ impl Service<CreateTag> for ScopedDatabase {
             let tag = Tag {
                 priority: req.priority,
                 name: req.name.clone(),
-                parent
+                parent,
             };
             let tag_ref = SharedRef::<Tag>::new_ref(tag);
             workspace_ref
@@ -148,6 +153,43 @@ impl Service<CreateTag> for ScopedDatabase {
                     (u_w, u_s)
                 })
                 .await;
+            let write_txn = db.begin_write().map_err(|_| ReturnCode::DbOpenError)?;
+            {
+                let mut tag_t = write_txn
+                    .open_table(T_TAG)
+                    .map_err(|_| ReturnCode::DbTableOpenError)?;
+                let mut wk_t = write_txn
+                    .open_table(T_WKSPC)
+                    .map_err(|_| ReturnCode::DbTableOpenError)?;
+                let mut entity_state_t = write_txn
+                    .open_table(T_ENTITY_STATE)
+                    .map_err(|_| ReturnCode::DbTableOpenError)?;
+
+                let mut state_hmap = entity_state_t.get(staged_id).unwrap().unwrap().value();
+                let (wk_db_id, modified) = state_hmap
+                    .0
+                    .get(&workspace_ref.id)
+                    .ok_or(ReturnCode::InternalStateError)?;
+                let mut wk = wk_t
+                    .get(wk_db_id)
+                    .unwrap()
+                    .ok_or(ReturnCode::InternalStateError)?
+                    .value();
+
+                tag_t
+                    .insert(tag_ref.id, tag_ref.to_storable())
+                    .map_err(|_| ReturnCode::DbCommitError)?;
+                wk.0.tags.push(tag_ref.id);
+                if *modified {
+                    wk_t.insert(wk_db_id, wk).unwrap();
+                } else {
+                    let new_wk_db = Uuid::new_v4();
+                    wk_t.insert(new_wk_db, wk).unwrap();
+                    state_hmap.0.insert(workspace_ref.id, (new_wk_db, true));
+                    entity_state_t.insert(staged_id, state_hmap).unwrap();
+                }
+            }
+            write_txn.commit().map_err(|_| ReturnCode::DbCommitError)?;
 
             Ok(tag_ref.id)
         })
@@ -169,6 +211,8 @@ impl Service<DeleteTag> for ScopedDatabase {
 
     fn call(&mut self, req: DeleteTag) -> Self::Future {
         let res_workspace_ref = self.set_workspace();
+        let db = self.service.db.clone();
+        let staged_id = self.service.state.staged.id;
         Box::pin(async move {
             let workspace_ref = res_workspace_ref?;
             let workspace = workspace_ref.load();
@@ -189,6 +233,44 @@ impl Service<DeleteTag> for ScopedDatabase {
                     (u_w, u_s)
                 })
                 .await;
+            let write_txn = db.begin_write().map_err(|_| ReturnCode::DbOpenError)?;
+            {
+                let mut tag_t = write_txn
+                    .open_table(T_TAG)
+                    .map_err(|_| ReturnCode::DbTableOpenError)?;
+                let mut wk_t = write_txn
+                    .open_table(T_WKSPC)
+                    .map_err(|_| ReturnCode::DbTableOpenError)?;
+                let mut entity_state_t = write_txn
+                    .open_table(T_ENTITY_STATE)
+                    .map_err(|_| ReturnCode::DbTableOpenError)?;
+
+                let mut state_hmap = entity_state_t.get(staged_id).unwrap().unwrap().value();
+                let (wk_db_id, modified) = state_hmap
+                    .0
+                    .get(&workspace_ref.id)
+                    .ok_or(ReturnCode::InternalStateError)?;
+                let mut wk = wk_t
+                    .get(wk_db_id)
+                    .unwrap()
+                    .ok_or(ReturnCode::InternalStateError)?
+                    .value();
+
+                wk.0.tags.retain(|id| *id != tag_ref.id);
+                tag_t
+                    .remove(tag_ref.id)
+                    .map_err(|_| ReturnCode::DbCommitError)?;
+
+                if *modified {
+                    wk_t.insert(wk_db_id, wk).unwrap();
+                } else {
+                    let new_wk_db = Uuid::new_v4();
+                    wk_t.insert(new_wk_db, wk).unwrap();
+                    state_hmap.0.insert(workspace_ref.id, (new_wk_db, true));
+                    entity_state_t.insert(staged_id, state_hmap).unwrap();
+                }
+            }
+            write_txn.commit().map_err(|_| ReturnCode::DbCommitError)?;
 
             Ok(tag_ref.clone())
         })
@@ -211,6 +293,8 @@ impl Service<UnassignShelf> for ScopedDatabase {
     fn call(&mut self, req: UnassignShelf) -> Self::Future {
         let g_state = self.service.state.clone();
         let res_workspace_ref = self.set_workspace();
+        let db = self.service.db.clone();
+        let staged_id = self.service.state.staged.id;
         Box::pin(async move {
             let workspace_ref = res_workspace_ref?;
             let state = g_state.staged.load();
@@ -230,6 +314,49 @@ impl Service<UnassignShelf> for ScopedDatabase {
                     (u_w, u_s)
                 })
                 .await;
+
+            let write_txn = db.begin_write().map_err(|_| ReturnCode::DbOpenError)?;
+            {
+                let mut shelf_t = write_txn
+                    .open_table(T_SHELF)
+                    .map_err(|_| ReturnCode::DbTableOpenError)?;
+                let mut wk_t = write_txn
+                    .open_table(T_WKSPC)
+                    .map_err(|_| ReturnCode::DbTableOpenError)?;
+                let mut entity_state_t = write_txn
+                    .open_table(T_ENTITY_STATE)
+                    .map_err(|_| ReturnCode::DbTableOpenError)?;
+
+                let mut state_hmap = entity_state_t.get(staged_id).unwrap().unwrap().value();
+                let (wk_db_id, modified) = state_hmap
+                    .0
+                    .get(&workspace_ref.id)
+                    .ok_or(ReturnCode::InternalStateError)
+                    .cloned()?;
+                let (sk_db_id, _) = state_hmap
+                    .0
+                    .get(&req.shelf_id)
+                    .ok_or(ReturnCode::InternalStateError)?;
+                let mut wk = wk_t
+                    .get(wk_db_id)
+                    .unwrap()
+                    .ok_or(ReturnCode::InternalStateError)?
+                    .value();
+
+                wk.0.shelves.retain(|id| *id != req.shelf_id);
+                shelf_t.remove(sk_db_id).unwrap();
+                state_hmap.0.remove(&req.shelf_id);
+
+                if modified {
+                    wk_t.insert(wk_db_id, wk).unwrap();
+                } else {
+                    let new_wk_db = Uuid::new_v4();
+                    wk_t.insert(new_wk_db, wk).unwrap();
+                    state_hmap.0.insert(workspace_ref.id, (new_wk_db, true));
+                }
+                entity_state_t.insert(staged_id, state_hmap).unwrap();
+            }
+            write_txn.commit().map_err(|_| ReturnCode::DbCommitError)?;
 
             Ok(())
         })
@@ -255,8 +382,10 @@ impl Service<AssignShelf> for ScopedDatabase {
 
     fn call(&mut self, req: AssignShelf) -> Self::Future {
         let g_state = self.service.state.clone();
-        let lock = self.service.lock.clone();
+        let _lock = self.service.lock.clone();
         let res_workspace_ref = self.set_workspace();
+        let db = self.service.db.clone();
+        let staged_id = self.service.state.staged.id;
 
         Box::pin(async move {
             let workspace_ref = res_workspace_ref?;
@@ -355,6 +484,50 @@ impl Service<AssignShelf> for ScopedDatabase {
                     .await;
             }
 
+            let write_txn = db.begin_write().map_err(|_| ReturnCode::DbOpenError)?;
+            {
+                let mut shelf_t = write_txn
+                    .open_table(T_SHELF)
+                    .map_err(|_| ReturnCode::DbTableOpenError)?;
+                let mut wk_t = write_txn
+                    .open_table(T_WKSPC)
+                    .map_err(|_| ReturnCode::DbTableOpenError)?;
+                let mut entity_state_t = write_txn
+                    .open_table(T_ENTITY_STATE)
+                    .map_err(|_| ReturnCode::DbTableOpenError)?;
+
+                let mut state_hmap = entity_state_t.get(staged_id).unwrap().unwrap().value();
+                let (wk_db_id, modified) = state_hmap
+                    .0
+                    .get(&workspace_ref.id)
+                    .ok_or(ReturnCode::InternalStateError)
+                    .cloned()?;
+                let mut wk = wk_t
+                    .get(wk_db_id)
+                    .unwrap()
+                    .ok_or(ReturnCode::InternalStateError)?
+                    .value();
+
+                if new_shelf {
+                    let shelf_db_id = Uuid::new_v4();
+                    state_hmap.0.insert(shelf_id, (shelf_db_id, true)).unwrap();
+                    shelf_t
+                        .insert(shelf_db_id, shelf_ref.to_storable())
+                        .unwrap();
+                }
+                wk.0.shelves.push(shelf_id);
+                if modified {
+                    wk_t.insert(wk_db_id, wk).unwrap();
+                } else {
+                    let new_wk_db = Uuid::new_v4();
+                    wk_t.insert(new_wk_db, wk).unwrap();
+                    state_hmap.0.insert(workspace_ref.id, (new_wk_db, true));
+                }
+
+                entity_state_t.insert(staged_id, state_hmap).unwrap();
+            }
+            write_txn.commit().map_err(|_| ReturnCode::DbCommitError)?;
+
             Ok(shelf_id)
         })
     }
@@ -376,18 +549,20 @@ impl Service<EditShelf> for ScopedDatabase {
     }
 
     fn call(&mut self, req: EditShelf) -> Self::Future {
-        let lock = self.service.lock.clone();
+        let _lock = self.service.lock.clone();
         let res_workspace_ref = self.set_workspace();
+        let db = self.service.db.clone();
+        let staged_id = self.service.state.staged.id;
 
         Box::pin(async move {
             let workspace_ref = res_workspace_ref?;
             let workspace = workspace_ref.load();
-            let Some(shelf) = workspace.shelves.get(&req.shelf_id) else {
+            let Some(shelf_ref) = workspace.shelves.get(&req.shelf_id) else {
                 return Err(ReturnCode::ShelfNotFound);
             };
-            match shelf.shelf_type {
+            match shelf_ref.shelf_type {
                 ShelfType::Local => {
-                    let s = (***shelf).clone();
+                    let s = (***shelf_ref).clone();
                     s.info
                         .stateful_rcu(|info| {
                             let (u_f, u_s) = info.name.set(&req.name);
@@ -413,7 +588,7 @@ impl Service<EditShelf> for ScopedDatabase {
                     workspace_ref
                         .stateful_rcu(|w| {
                             let (u_m, u_s) =
-                                w.shelves.insert(shelf.id, ImmutRef::new_ref(s.clone()));
+                                w.shelves.insert(shelf_ref.id, ImmutRef::new_ref(s.clone()));
                             let u_w = Workspace {
                                 shelves: u_m,
                                 tags: w.tags.clone(),
@@ -423,12 +598,12 @@ impl Service<EditShelf> for ScopedDatabase {
                             (u_w, u_s)
                         })
                         .await;
-                    if let ShelfOwner::Sync(_sync_id) = shelf.shelf_owner {
+                    if let ShelfOwner::Sync(_sync_id) = shelf_ref.shelf_owner {
                         todo!();
                     }
                 }
-                ShelfType::Remote => match shelf.shelf_owner {
-                    ShelfOwner::Node(peer_id) => {
+                ShelfType::Remote => match shelf_ref.shelf_owner {
+                    ShelfOwner::Node(_peer_id) => {
                         todo!();
                     }
                     ShelfOwner::Sync(_sync_id) => {
@@ -436,6 +611,57 @@ impl Service<EditShelf> for ScopedDatabase {
                     }
                 },
             }
+
+            let write_txn = db.begin_write().map_err(|_| ReturnCode::DbOpenError)?;
+            {
+                let mut shelf_t = write_txn
+                    .open_table(T_SHELF)
+                    .map_err(|_| ReturnCode::DbTableOpenError)?;
+                let mut wk_t = write_txn
+                    .open_table(T_WKSPC)
+                    .map_err(|_| ReturnCode::DbTableOpenError)?;
+                let mut entity_state_t = write_txn
+                    .open_table(T_ENTITY_STATE)
+                    .map_err(|_| ReturnCode::DbTableOpenError)?;
+
+                let mut state_hmap = entity_state_t.get(staged_id).unwrap().unwrap().value();
+                let (wk_db_id, w_modified) = state_hmap
+                    .0
+                    .get(&workspace_ref.id)
+                    .ok_or(ReturnCode::InternalStateError)
+                    .cloned()?;
+                let (sk_db_id, s_modified) = state_hmap
+                    .0
+                    .get(&shelf_ref.id)
+                    .ok_or(ReturnCode::InternalStateError)
+                    .cloned()?;
+                let mut wk = wk_t
+                    .get(wk_db_id)
+                    .unwrap()
+                    .ok_or(ReturnCode::InternalStateError)?
+                    .value();
+
+                if s_modified {
+                    shelf_t.insert(sk_db_id, shelf_ref.to_storable()).unwrap();
+                } else {
+                    let new_shelf_db_id = Uuid::new_v4();
+                    shelf_t
+                        .insert(new_shelf_db_id, shelf_ref.to_storable())
+                        .unwrap();
+                    state_hmap.0.insert(shelf_ref.id, (new_shelf_db_id, true));
+                }
+
+                wk.0.shelves.push(shelf_ref.id);
+                if w_modified {
+                    wk_t.insert(wk_db_id, wk).unwrap();
+                } else {
+                    let new_wk_db = Uuid::new_v4();
+                    wk_t.insert(new_wk_db, wk).unwrap();
+                    state_hmap.0.insert(workspace_ref.id, (new_wk_db, true));
+                }
+                entity_state_t.insert(staged_id, state_hmap).unwrap();
+            }
+            write_txn.commit().map_err(|_| ReturnCode::DbCommitError)?;
             Ok(())
         })
     }
@@ -456,8 +682,10 @@ impl Service<EditWorkspace> for ScopedDatabase {
     }
 
     fn call(&mut self, req: EditWorkspace) -> Self::Future {
-        let lock = self.service.lock.clone();
+        let _lock = self.service.lock.clone();
         let res_workspace_ref = self.set_workspace();
+        let db = self.service.db.clone();
+        let staged_id = self.service.state.staged.id;
 
         Box::pin(async move {
             let workspace_ref = res_workspace_ref?;
@@ -484,6 +712,39 @@ impl Service<EditWorkspace> for ScopedDatabase {
                     (u_i, u_s)
                 })
                 .await;
+            let write_txn = db.begin_write().map_err(|_| ReturnCode::DbOpenError)?;
+            {
+                let mut wk_t = write_txn
+                    .open_table(T_WKSPC)
+                    .map_err(|_| ReturnCode::DbTableOpenError)?;
+                let mut entity_state_t = write_txn
+                    .open_table(T_ENTITY_STATE)
+                    .map_err(|_| ReturnCode::DbTableOpenError)?;
+
+                let mut state_hmap = entity_state_t.get(staged_id).unwrap().unwrap().value();
+                let (wk_db_id, w_modified) = state_hmap
+                    .0
+                    .get(&workspace_ref.id)
+                    .ok_or(ReturnCode::InternalStateError)?;
+                let mut wk = wk_t
+                    .get(wk_db_id)
+                    .unwrap()
+                    .ok_or(ReturnCode::InternalStateError)?
+                    .value();
+                let info = workspace_ref.load().info.load();
+                wk.0.name = info.name.get();
+                wk.0.description = info.description.get();
+
+                if *w_modified {
+                    wk_t.insert(wk_db_id, wk).unwrap();
+                } else {
+                    let new_wk_db = Uuid::new_v4();
+                    wk_t.insert(new_wk_db, wk).unwrap();
+                    state_hmap.0.insert(workspace_ref.id, (new_wk_db, true));
+                    entity_state_t.insert(staged_id, state_hmap).unwrap();
+                }
+            }
+            write_txn.commit().map_err(|_| ReturnCode::DbCommitError)?;
             Ok(())
         })
     }
