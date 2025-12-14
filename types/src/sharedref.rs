@@ -79,12 +79,40 @@ impl<T> Ref<T, Uuid> for SharedRef<T, Uuid> {
     }
 }
 
+impl<T> Ref<T, ()> for SharedRef<T, ()> {
+    fn new_ref(data: T) -> Self {
+        let data = ArcSwap::new(Arc::new(data));
+        Inner {
+            id: (),
+            data: Arc::new(data),
+        }
+    }
+    fn new_ref_id(id: (), data: T) -> Self {
+        let data = ArcSwap::new(Arc::new(data));
+        Inner {
+            id,
+            data: Arc::new(data),
+        }
+    }
+
+    fn inner_ptr(&self) -> *const T {
+        Arc::as_ptr(&self.data.load_full())
+    }
+}
+
 impl<T, I: Copy> ImmutRef<T, I> {
     pub fn downgrade(&self) -> WeakRef<T, I> {
         Inner {
             id: self.id,
             data: Arc::downgrade(&self.data),
         }
+    }
+}
+
+impl<T, I: Copy> WeakRef<T, I> {
+    pub fn to_upgraded(&self) -> Option<ImmutRef<T, I>> {
+        let data = self.data.upgrade()?;
+        Some(Inner { id: self.id, data })
     }
 }
 

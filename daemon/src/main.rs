@@ -3,7 +3,7 @@ mod rpc;
 
 use crate::rpc::service::{DaemonInfo, RpcService, TaskID};
 use anyhow::Result;
-use ebi_database::{cache::CacheService, state::StateService};
+use ebi_database::{cache::CacheService, service::state::StateDatabase};
 use ebi_filesystem::service::FileSystem;
 use ebi_network::service::{Client, Network, Peer};
 use ebi_proto::rpc::*;
@@ -36,17 +36,22 @@ macro_rules! generate_request_match {
                 $(
                     Ok(RequestCode::[<$req_ty>]) => {
                         let req = <$req_ty>::decode(&$buffer[..]).unwrap();
-                        if let Ok(response) = $service.call(req).await {
-                            let mut payload = Vec::new();
-                            let _ = ebi_proto::rpc::Message::encode(&response, &mut payload);
-                            let mut response_buf = vec![0; HEADER_SIZE];
-                            response_buf[0] = MessageType::Response as u8;
-                            response_buf[1] = RequestCode::[<$req_ty>]  as u8;
-                            let size = payload.len() as u64;
-                            tracing::trace!("Response with request code: {:?} and payload size: {}", RequestCode::[<$req_ty>], size);
-                            response_buf[2..HEADER_SIZE].copy_from_slice(&size.to_le_bytes());
-                            response_buf.extend_from_slice(&payload);
-                            let _ = $socket.write_all(&response_buf).await;
+                         match $service.call(req).await {
+                            Ok(res) =>  {
+                                let mut payload = Vec::new();
+                                let _ = ebi_proto::rpc::Message::encode(&res, &mut payload);
+                                let mut response_buf = vec![0; HEADER_SIZE];
+                                response_buf[0] = MessageType::Response as u8;
+                                response_buf[1] = RequestCode::[<$req_ty>]  as u8;
+                                let size = payload.len() as u64;
+                                tracing::trace!("Response with request code: {:?} and payload size: {}", RequestCode::[<$req_ty>], size);
+                                response_buf[2..HEADER_SIZE].copy_from_slice(&size.to_le_bytes());
+                                response_buf.extend_from_slice(&payload);
+                                let _ = $socket.write_all(&response_buf).await;
+                            },
+                            Err(_res) => {
+                                todo!();
+                            }
                         }
                     }
                 )*
@@ -125,7 +130,7 @@ async fn main() -> Result<()> {
     let db_path = PathBuf::from("db-save.redb");
 
     let filesys = FileSystem::new(&fs_db_path).unwrap();
-    let state_srv = StateService::new(&db_path).unwrap();
+    let state_db = StateDatabase::new(&db_path).unwrap();
 
     let network = Network {
         peers: peers.clone(),
@@ -137,13 +142,13 @@ async fn main() -> Result<()> {
         network: network.clone(),
         cache: CacheService {},
         filesys: filesys.clone(),
-        state_srv: state_srv.clone(),
+        state_db: state_db.clone(),
         daemon_id: daemon_info.id.clone(),
     };
     let service = ServiceBuilder::new().service(RpcService {
         daemon_info: daemon_info.clone(),
         network: network.clone(),
-        state_srv: state_srv.clone(),
+        state_db: state_db.clone(),
         filesys,
         query_srv,
         responses: responses.clone(),
@@ -152,7 +157,7 @@ async fn main() -> Result<()> {
         watcher: watcher.clone(),
     });
     let mut client_streams = 0;
-    //let state = state_srv.state.clone();
+    //let state = state_db.state.clone();
 
     loop {
         tokio::select! {

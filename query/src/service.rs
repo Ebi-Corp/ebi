@@ -1,12 +1,12 @@
 use crate::{Query, QueryErr};
-use ebi_database::{cache::CacheService, state::StateService};
+use ebi_database::{cache::CacheService, service::state::StateDatabase};
 use ebi_filesystem::service::ShelfDirKey;
 use ebi_filesystem::shelf::TagFilter;
 use ebi_filesystem::{file::gen_summary, service::FileSystem, shelf::ShelfData, shelf::merge};
 use ebi_network::service::Network;
 use ebi_types::file::{FileOrder, OrderedFileSummary};
 use ebi_types::shelf::Shelf;
-use ebi_types::{FileId, ImmutRef, NodeId, Uuid, parse_peer_id};
+use ebi_types::{FileId, ImmutRef, NodeId, Uuid, parse_peer_id, uuid};
 use ebi_types::{
     WithPath,
     shelf::{ShelfOwner, ShelfType},
@@ -14,7 +14,6 @@ use ebi_types::{
     workspace::Workspace,
 };
 
-use arc_swap::Guard;
 use bincode::{serde::borrow_decode_from_slice, serde::encode_to_vec};
 use ebi_proto::rpc::{
     ClientQuery, ClientQueryData, Data, ErrorData, File, PeerQuery, Request, RequestMetadata,
@@ -38,13 +37,13 @@ pub type TokenId = Uuid;
 pub struct QueryService {
     pub network: Network,
     pub cache: CacheService,
-    pub state_srv: StateService,
+    pub state_db: StateDatabase,
     pub filesys: FileSystem,
     pub daemon_id: Arc<NodeId>,
 }
 
 pub struct Retriever {
-    workspace: Guard<Arc<Workspace<TagFilter>>>,
+    workspace: Arc<Workspace<TagFilter>>,
     cache: CacheService,
     filesys: FileSystem,
     shelf_owner: ShelfOwner,
@@ -55,7 +54,7 @@ pub struct Retriever {
 
 impl Retriever {
     pub fn new(
-        workspace: Guard<Arc<Workspace<TagFilter>>>,
+        workspace: Arc<Workspace<TagFilter>>,
         cache: CacheService,
         filesys: FileSystem,
         shelf_owner: ShelfOwner,
@@ -174,12 +173,15 @@ impl Service<PeerQuery> for QueryService {
     }
 
     fn call(&mut self, req: PeerQuery) -> Self::Future {
-        let mut state_srv = self.state_srv.clone();
+        let mut state_db = self.state_db.clone();
         let mut filesys = self.filesys.clone();
         let node_id = self.daemon_id.clone();
         let cache = self.cache.clone();
         Box::pin(async move {
-            let Ok(workspace_ref) = state_srv.get_workspace(&req.workspace_id).await else {
+            let Ok(workspace_id) = uuid(&req.workspace_id) else {
+                return Err(ReturnCode::ParseError);
+            };
+            let Ok(workspace) = state_db.get_workspace(workspace_id).await else {
                 return Err(ReturnCode::WorkspaceNotFound);
             };
 
@@ -191,7 +193,6 @@ impl Service<PeerQuery> for QueryService {
             let file_order = query.order.clone();
             let mut q_dir_id: Option<FileId> = None;
 
-            let workspace = workspace_ref.load();
             let mut local_shelves = HashSet::<ImmutRef<Shelf<TagFilter>>>::new();
             for (_, shelf) in workspace.shelves.iter() {
                 match shelf.shelf_owner {
@@ -239,12 +240,12 @@ impl Service<PeerQuery> for QueryService {
                 let file_order = file_order.clone();
                 let mut filesys = filesys.clone();
                 let mut query = query.clone();
+                let workspace = workspace.data_ref().clone();
                 match &shelf.shelf_type {
                     ShelfType::Remote => {
                         continue;
                     }
                     ShelfType::Local => {
-                        let workspace = workspace_ref.load();
                         let data = filesys
                             .get_or_init_shelf(ShelfDirKey::Path(
                                 shelf.info.load().root.to_path_buf(),
@@ -314,7 +315,7 @@ impl Service<ClientQuery> for QueryService {
     }
 
     fn call(&mut self, req: ClientQuery) -> Self::Future {
-        let mut state_srv = self.state_srv.clone();
+        let mut state_db = self.state_db.clone();
         let network = self.network.clone();
         let node_id = self.daemon_id.clone();
         let cache = self.cache.clone();
@@ -322,7 +323,10 @@ impl Service<ClientQuery> for QueryService {
         Box::pin(async move {
             let query_str = req.query;
 
-            let Ok(workspace_ref) = state_srv.get_workspace(&req.workspace_id).await else {
+            let Ok(workspace_id) = uuid(&req.workspace_id) else {
+                return Err(ReturnCode::ParseError);
+            };
+            let Ok(workspace_ref) = state_db.get_workspace(workspace_id).await else {
                 return Err(ReturnCode::WorkspaceNotFound);
             };
 
@@ -339,7 +343,7 @@ impl Service<ClientQuery> for QueryService {
             let mut local_shelves = HashSet::<ImmutRef<Shelf<TagFilter>>>::new();
 
             if let Some(ref dir_path) = req.path {
-                for (_, shelf) in workspace_ref.load().shelves.iter() {
+                for (_, shelf) in workspace_ref.shelves.iter() {
                     let shelf_root = &shelf.info.load().root;
                     if dir_path
                         .to_string()
@@ -377,7 +381,7 @@ impl Service<ClientQuery> for QueryService {
             )
             .map_err(|_| ReturnCode::InternalStateError)?;
 
-            let workspace = workspace_ref.load();
+            let workspace = workspace_ref;
             if to_query.is_none() {
                 for (_, shelf) in workspace.shelves.iter() {
                     let filter = shelf.filter_tags.load();
@@ -510,13 +514,12 @@ impl Service<ClientQuery> for QueryService {
             for shelf in local_shelves {
                 let shelf_owner = shelf.shelf_owner.clone();
                 let mut query = query.clone();
-                let workspace_ref = workspace_ref.clone();
                 match &shelf.shelf_type {
                     ShelfType::Remote => {
                         continue;
                     }
                     ShelfType::Local => {
-                        let workspace = workspace_ref.load();
+                        let workspace = workspace.data_ref().clone();
                         let data = filesys
                             .get_or_init_shelf(ShelfDirKey::Path(
                                 shelf.info.load().root.to_path_buf(),

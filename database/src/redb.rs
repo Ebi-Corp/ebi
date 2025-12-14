@@ -1,4 +1,4 @@
-use crate::state::GroupState;
+use crate::service::state::GroupState;
 use crate::{Shelf, Tag, Workspace};
 use ebi_types::StatefulRef;
 use ebi_types::Uuid;
