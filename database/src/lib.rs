@@ -1,6 +1,6 @@
 pub mod cache;
 pub mod redb;
-pub mod state;
+pub mod service;
 use ebi_filesystem::shelf::TagFilter;
 
 pub use ebi_types::tag::Tag;

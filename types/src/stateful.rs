@@ -1,4 +1,3 @@
-use arc_swap::ArcSwap;
 use chrono::{DateTime, Utc};
 use im::HashMap;
 use std::fmt::Debug;
@@ -8,28 +7,9 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::{any::Any, hash::Hash};
 
-#[derive(Debug, Clone)]
-pub struct SwapRef<T>(Arc<ArcSwap<T>>);
+use crate::{Ref, SharedRef};
 
-impl<T> SwapRef<T> {
-    pub fn new(data: T) -> Self {
-        SwapRef(Arc::new(ArcSwap::new(Arc::new(data))))
-    }
-}
-
-impl<T: Default> Default for SwapRef<T> {
-    fn default() -> Self {
-        SwapRef::new(T::default())
-    }
-}
-
-impl<T> std::ops::Deref for SwapRef<T> {
-    type Target = ArcSwap<T>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
+pub type SwapRef<T> = SharedRef<T, ()>;
 
 pub trait GenericValue: Any + Send + Sync + Debug {
     fn clone_box(&self) -> Box<dyn GenericValue>;
@@ -51,7 +31,7 @@ pub struct InfoState<K>
 where
     K: Clone + Send + Sync + Hash + Eq,
 {
-    state: SwapRef<HashMap<K, TimedFieldValue>>,
+    state: SharedRef<HashMap<K, TimedFieldValue>, ()>,
 }
 
 impl<K> InfoState<K>
@@ -60,7 +40,7 @@ where
 {
     pub fn new() -> Self {
         InfoState {
-            state: SwapRef::new(HashMap::new()),
+            state: SharedRef::new_ref(HashMap::new()),
         }
     }
 
@@ -77,15 +57,6 @@ where
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect()
-    }
-}
-
-impl<K> Default for InfoState<K>
-where
-    K: Clone + Send + Sync + Hash + Eq,
-{
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -159,7 +130,7 @@ where
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct StatefulMap<K, V>
 where
     K: Hash + std::cmp::Eq + Clone,
