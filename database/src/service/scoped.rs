@@ -180,6 +180,7 @@ impl Service<CreateTag> for ScopedDatabase {
                     .insert(tag_ref.id, tag_ref.to_storable())
                     .map_err(|_| ReturnCode::DbCommitError)?;
                 wk.0.tags.push(tag_ref.id);
+                wk.0.lookup.insert(req.name.clone(), tag_ref.id);
                 if *modified {
                     wk_t.insert(wk_db_id, wk).unwrap();
                 } else {
@@ -431,7 +432,7 @@ impl Service<AssignShelf> for ScopedDatabase {
                 } else {
                     ShelfType::Remote
                 };
-                let Ok(shelf) = Shelf::new(
+                let shelf = Shelf::new(
                     path,
                     req.name.unwrap_or_else(|| {
                         req.path
@@ -446,9 +447,7 @@ impl Service<AssignShelf> for ScopedDatabase {
                     ShelfOwner::Node(req.node_id),
                     None,
                     req.description.unwrap_or_default(),
-                ) else {
-                    return Err(ReturnCode::ShelfCreationIOError);
-                };
+                );
 
                 shelf_ref = Some(ImmutRef::new_ref_id(shelf_id, shelf))
             }
@@ -510,7 +509,7 @@ impl Service<AssignShelf> for ScopedDatabase {
 
                 if new_shelf {
                     let shelf_db_id = Uuid::new_v4();
-                    state_hmap.0.insert(shelf_id, (shelf_db_id, true)).unwrap();
+                    state_hmap.0.insert(shelf_id, (shelf_db_id, true));
                     shelf_t
                         .insert(shelf_db_id, shelf_ref.to_storable())
                         .unwrap();

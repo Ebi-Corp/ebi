@@ -139,7 +139,7 @@ where
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct StatefulMap<K, V>
 where
     K: Hash + std::cmp::Eq + Clone,
@@ -171,6 +171,9 @@ where
             map: HashMap::new(),
             state,
         }
+    }
+    pub fn from_hmap(map: HashMap<K, V>, state: SwapRef<()>) -> Self {
+        StatefulMap { map, state }
     }
 
     pub fn insert(&self, key: K, value: V) -> (Self, Pin<Box<dyn Future<Output = ()> + Send>>) {
