@@ -24,8 +24,14 @@ pub struct GroupState {
     pub shelves: StatefulMap<ShelfId, WeakRef<Shelf>>,
 }
 
+impl Default for GroupState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GroupState {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             workspaces: StatefulMap::new(SwapRef::new_ref(())),
             shelves: StatefulMap::new(SwapRef::new_ref(())),
@@ -44,9 +50,19 @@ impl StateDatabase {
     pub fn new(db_path: &PathBuf) -> Result<Self, Error> {
         let lock = Arc::new(RwLock::new(()));
         let db = Database::create(db_path)?;
+        let state = Arc::new(History::new(GroupState::new()));
+        let write_txn = db.begin_write()?;
+        write_txn.open_table(T_ENTITY_STATE)?.insert(
+            state.staged.id,
+            std::collections::HashMap::new().to_storable(),
+        )?;
+        write_txn
+            .open_table(T_STATE_STATUS)?
+            .insert(state.staged.id, StateStatus::Staged.to_storable())?;
+        write_txn.commit()?;
 
         Ok(Self {
-            state: Arc::new(History::new(GroupState::new())),
+            state,
             lock: lock.clone(),
             db: Arc::new(db),
         })
@@ -161,7 +177,7 @@ impl Service<CreateWorkspace> for StateDatabase {
                 let mut state_hmap = entity_state_t.get(staged_id).unwrap().unwrap().value();
                 let db_id = Uuid::new_v4();
                 wk_t.insert(db_id, w_ref.to_storable()).unwrap();
-                state_hmap.0.insert(w_id, (db_id, true)).unwrap();
+                state_hmap.0.insert(w_id, (db_id, true));
                 entity_state_t.insert(staged_id, state_hmap).unwrap();
             }
             write_txn.commit().map_err(|_| ReturnCode::DbCommitError)?;

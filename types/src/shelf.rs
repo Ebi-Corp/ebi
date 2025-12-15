@@ -1,5 +1,4 @@
 use std::ffi::OsStr;
-use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -15,7 +14,7 @@ use serde::{Deserialize, Serialize};
 pub type ShelfId = Uuid;
 pub type TagRef = SharedRef<Tag>;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub enum ShelfType {
     Local,
     Remote,
@@ -31,7 +30,7 @@ pub enum ShelfOwner {
 
 pub type SyncId = Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
 pub struct SyncConfig {
     //[!] Placeholder for sync configuration
     pub interval: Option<Duration>, // Auto-Sync Interval
@@ -40,7 +39,7 @@ pub struct SyncConfig {
 
 //[#] Sync
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Eq, PartialEq)]
 pub struct ShelfConfig {
     //[TODO] Define a configuration for the shelf
     pub sync_config: Option<SyncConfig>,
@@ -75,7 +74,7 @@ impl<TagFilter: Default> Shelf<TagFilter> {
         shelf_owner: ShelfOwner,
         config: Option<ShelfConfig>,
         description: String,
-    ) -> Result<Self, io::Error> {
+    ) -> Self {
         let shelf = Shelf {
             shelf_type,
             shelf_owner,
@@ -83,7 +82,7 @@ impl<TagFilter: Default> Shelf<TagFilter> {
             filter_tags: ArcSwap::new(Arc::new(TagFilter::default())), // [TODO] Filter parameters (size, ...) should be configurable
             info: StatefulRef::new_ref(ShelfInfo::new(Some(name), Some(description), path)),
         };
-        Ok(shelf)
+        shelf
     }
 }
 
