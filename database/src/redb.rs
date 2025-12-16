@@ -237,9 +237,8 @@ mod tests {
         for (w_l, w_r) in wkspc_zipped {
             let w_l = w_l.load();
             let w_r = w_r.load();
-            // [TODO] impl Eq for info
-            //assert_eq!(w_l.info, w_r.info);
-            // this asserts keys only
+            assert_eq!(w_l.info.load_full(), w_r.info.load_full());
+            // first assert keys only (statefulref eq impl)
             assert_eq!(w_l.lookup, w_r.lookup);
             assert_eq!(w_l.shelves, w_r.shelves);
             assert_eq!(w_l.tags, w_r.tags);
@@ -253,10 +252,10 @@ mod tests {
                 let s_r = s_r.1;
                 assert_eq!(s_l.shelf_type, s_r.shelf_type);
                 assert_eq!(s_l.shelf_owner, s_r.shelf_owner);
-                // [TODO] impl Eq for TagFiler
-                //assert_eq!(s_l.filter_tags, s_r.filter_tags);
+                // filter tags is not checked, as it is simply (de)serialized
+                // and encoded to bytes
                 assert_eq!(s_l.config, s_r.config);
-                //assert_eq!(s_l.info, s_r.info);
+                assert_eq!(s_l.info.load_full(), s_r.info.load_full());
             }
             let mut l_tags: Vec<_> = w_l.tags.iter().collect();
             let mut r_tags: Vec<_> = w_r.tags.iter().collect();
