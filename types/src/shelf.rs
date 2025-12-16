@@ -100,6 +100,16 @@ pub struct ShelfInfo {
     pub root: StatefulField<ShelfInfoField, PathBuf>,
 }
 
+impl PartialEq for ShelfInfo {
+    fn eq(&self, other: &Self) -> bool {
+        self.name.get() == other.name.get() &&
+            self.description.get() == other.description.get() &&
+            self.root.get() == other.root.get()
+    }
+}
+
+impl Eq for ShelfInfo {}
+
 impl ShelfInfo {
     pub fn new(name: Option<String>, description: Option<String>, root_path: PathBuf) -> Self {
         let default_name = root_path

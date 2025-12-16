@@ -22,6 +22,15 @@ pub struct WorkspaceInfo {
     pub description: StatefulField<WorkspaceInfoField, String>,
 }
 
+impl PartialEq for WorkspaceInfo {
+    fn eq(&self, other: &Self) -> bool {
+        self.name.get() == other.name.get() &&
+            self.description.get() == other.description.get()
+    }
+}
+
+impl Eq for WorkspaceInfo {}
+
 impl WorkspaceInfo {
     pub fn new(name: Option<String>, description: Option<String>) -> Self {
         let default_name = "Workspace".to_string();
