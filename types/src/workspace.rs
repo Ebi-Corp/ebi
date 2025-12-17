@@ -24,8 +24,7 @@ pub struct WorkspaceInfo {
 
 impl PartialEq for WorkspaceInfo {
     fn eq(&self, other: &Self) -> bool {
-        self.name.get() == other.name.get() &&
-            self.description.get() == other.description.get()
+        self.name.get() == other.name.get() && self.description.get() == other.description.get()
     }
 }
 

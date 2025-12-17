@@ -203,23 +203,25 @@ impl<T> History<T> {
         }
     }
 
-    pub fn next(&self) -> Self {
-        let mut hist: VecDeque<StatefulRef<T>> =
+    pub fn next(&self) -> (Self, Option<Uuid>) {
+        let mut past: VecDeque<StatefulRef<T>> =
             self.hist.iter().map(|r| r.clone_inner()).collect();
-        if hist.len() == HIST_L {
-            hist.pop_back();
+        let mut removed_state = None;
+        if past.len() == HIST_L {
+            removed_state = Some(past.pop_back().unwrap().id);
         }
         if let Some(synced) = &self.synced {
-            hist.push_front(synced.clone_inner());
+            past.push_front(synced.clone_inner());
         }
-        History {
+        let new_hist = History {
             staged: StatefulRef {
                 id: Uuid::new_v4(),
                 data: ArcSwap::new(self.staged.load_full()),
             },
             synced: Some(self.staged.clone_inner()),
-            hist,
-        }
+            hist: past,
+        };
+        (new_hist, removed_state)
     }
 
     pub fn from(

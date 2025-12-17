@@ -92,6 +92,7 @@ impl ScopedDatabase {
     fn set_workspace(&self) -> Result<Arc<StatefulRef<Workspace>>, ReturnCode> {
         self.service
             .state
+            .load()
             .staged
             .load()
             .workspaces
@@ -119,7 +120,7 @@ impl Service<CreateTag> for ScopedDatabase {
     fn call(&mut self, req: CreateTag) -> Self::Future {
         let res_workspace_ref = self.set_workspace();
         let db = self.service.db.clone();
-        let staged_id = self.service.state.staged.id;
+        let staged_id = self.service.state.load().staged.id;
         Box::pin(async move {
             let workspace_ref = res_workspace_ref?;
             let workspace = workspace_ref.load_full();
@@ -213,7 +214,7 @@ impl Service<DeleteTag> for ScopedDatabase {
     fn call(&mut self, req: DeleteTag) -> Self::Future {
         let res_workspace_ref = self.set_workspace();
         let db = self.service.db.clone();
-        let staged_id = self.service.state.staged.id;
+        let staged_id = self.service.state.load().staged.id;
         Box::pin(async move {
             let workspace_ref = res_workspace_ref?;
             let workspace = workspace_ref.load();
@@ -292,10 +293,10 @@ impl Service<UnassignShelf> for ScopedDatabase {
     }
 
     fn call(&mut self, req: UnassignShelf) -> Self::Future {
-        let g_state = self.service.state.clone();
+        let g_state = self.service.state.load().clone();
         let res_workspace_ref = self.set_workspace();
         let db = self.service.db.clone();
-        let staged_id = self.service.state.staged.id;
+        let staged_id = self.service.state.load().staged.id;
         Box::pin(async move {
             let workspace_ref = res_workspace_ref?;
             let state = g_state.staged.load();
@@ -382,11 +383,11 @@ impl Service<AssignShelf> for ScopedDatabase {
     }
 
     fn call(&mut self, req: AssignShelf) -> Self::Future {
-        let g_state = self.service.state.clone();
+        let g_state = self.service.state.load().clone();
         let _lock = self.service.lock.clone();
         let res_workspace_ref = self.set_workspace();
         let db = self.service.db.clone();
-        let staged_id = self.service.state.staged.id;
+        let staged_id = self.service.state.load().staged.id;
 
         Box::pin(async move {
             let workspace_ref = res_workspace_ref?;
@@ -551,7 +552,7 @@ impl Service<EditShelf> for ScopedDatabase {
         let _lock = self.service.lock.clone();
         let res_workspace_ref = self.set_workspace();
         let db = self.service.db.clone();
-        let staged_id = self.service.state.staged.id;
+        let staged_id = self.service.state.load().staged.id;
 
         Box::pin(async move {
             let workspace_ref = res_workspace_ref?;
@@ -684,7 +685,7 @@ impl Service<EditWorkspace> for ScopedDatabase {
         let _lock = self.service.lock.clone();
         let res_workspace_ref = self.set_workspace();
         let db = self.service.db.clone();
-        let staged_id = self.service.state.staged.id;
+        let staged_id = self.service.state.load().staged.id;
 
         Box::pin(async move {
             let workspace_ref = res_workspace_ref?;

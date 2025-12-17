@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use crate::service::state::{GroupState, StateDatabase};
 use crate::{Shelf, Tag, Workspace};
+use arc_swap::ArcSwap;
 use ebi_proto::rpc::ReturnCode;
 use ebi_types::redb::*;
 use ebi_types::tag::TagId;
@@ -209,7 +210,7 @@ impl StateDatabase {
         }
 
         Ok(Self {
-            state: Arc::new(hist),
+            state: Arc::new(ArcSwap::new(hist.into())),
             lock: Arc::new(RwLock::new(())),
             db: Arc::new(db),
         })
@@ -227,14 +228,16 @@ mod tests {
     const TEST_PKEY: &str = "ae58ff8833241ac82d6ff7611046ed67b5072d142c588d0063e942d9a75502b6";
 
     fn equal_state(gs_left: &GroupState, gs_right: &GroupState) {
-        let mut left_wkspcs: Vec<_> = gs_left.workspaces.values().into_iter().collect();
-        let mut right_wkspcs: Vec<_> = gs_right.workspaces.values().into_iter().collect();
+        let mut left_wkspcs: Vec<_> = gs_left.workspaces.values().collect();
+        let mut right_wkspcs: Vec<_> = gs_right.workspaces.values().collect();
         left_wkspcs.sort_by_key(|w| w.id);
         right_wkspcs.sort_by_key(|w| w.id);
 
+        assert_eq!(left_wkspcs, right_wkspcs);
         let wkspc_zipped = left_wkspcs.iter().zip(right_wkspcs.iter());
 
         for (w_l, w_r) in wkspc_zipped {
+            assert_eq!(w_l.id, w_r.id);
             let w_l = w_l.load();
             let w_r = w_r.load();
             assert_eq!(w_l.info.load_full(), w_r.info.load_full());
@@ -277,26 +280,29 @@ mod tests {
         let _ = std::fs::create_dir_all(test_path.clone());
         let db_path = test_path.join("database.redb");
         let _ = std::fs::remove_file(&db_path);
-        let mut state_db = StateDatabase::new(&db_path).unwrap();
+        let mut state_service = StateDatabase::new(&db_path).unwrap();
 
         let node_id = NodeId::from_str(TEST_PKEY).unwrap();
-        let wk0_name = "workspace0".to_string();
+        let wk_0_name = "workspace0".to_string();
         let wk_desc = "none".to_string();
 
-        let w_0 = state_db
-            .create_workspace(wk0_name, wk_desc.clone())
+        let wk_0_id = state_service
+            .create_workspace(wk_0_name, wk_desc.clone())
             .await
             .unwrap();
-        let wk1_name = "workspace1".to_string();
-        let w_1 = state_db.create_workspace(wk1_name, wk_desc).await.unwrap();
-        let mut w_0 = state_db.workspace(w_0);
-        let mut w_1 = state_db.workspace(w_1);
+        let wk_1_name = "workspace1".to_string();
+        let wk_1_id = state_service
+            .create_workspace(wk_1_name, wk_desc)
+            .await
+            .unwrap();
+        let mut wk_0 = state_service.workspace(wk_0_id);
+        let mut wk_1 = state_service.workspace(wk_1_id);
 
-        let _ = w_0
+        let s_0_id = wk_0
             .assign_shelf(test_path.clone(), node_id, false, None, None)
             .await
             .unwrap();
-        let _ = w_1
+        let _s_1_id = wk_1
             .assign_shelf(
                 test_path.parent().unwrap().to_path_buf(),
                 node_id,
@@ -308,23 +314,73 @@ mod tests {
             .unwrap();
 
         let tag_name = "tag_name".to_string();
-        let t_1 = w_0.create_tag(12, tag_name.clone(), None).await.unwrap();
-        let _ = w_0
+        let t_1 = wk_0.create_tag(12, tag_name.clone(), None).await.unwrap();
+        let _ = wk_0
             .create_tag(2, tag_name.clone(), Some(t_1))
             .await
             .unwrap();
-        let _ = w_1.create_tag(0, tag_name.clone(), None).await.unwrap();
+        let _ = wk_1.create_tag(0, tag_name.clone(), None).await.unwrap();
 
-        let hist = state_db.state.clone();
-        drop(state_db);
-        drop(w_0);
-        drop(w_1);
+        let mem_state = state_service.state.clone();
+        drop(state_service);
+        drop(wk_0);
+        drop(wk_1);
 
-        let loaded_state_db = StateDatabase::full_load(&db_path).unwrap();
+        let mut state_service = StateDatabase::full_load(&db_path).unwrap();
+        let saved_state = state_service.state.clone();
 
         equal_state(
-            loaded_state_db.state.staged.load().as_ref(),
-            hist.staged.load().as_ref(),
+            saved_state.load().staged.load().as_ref(),
+            mem_state.load().staged.load().as_ref(),
+        );
+
+        state_service.sync_state().await;
+        state_service.remove_workspace(wk_1_id).await.unwrap();
+        state_service
+            .workspace(wk_0_id)
+            .unassign_shelf(s_0_id)
+            .await
+            .unwrap();
+        state_service
+            .workspace(wk_0_id)
+            .edit_workspace_info("new_name".to_string(), "new_desc".to_string())
+            .await
+            .unwrap();
+
+        let mem_state = state_service.state.clone();
+        drop(state_service);
+
+        let mut state_service = StateDatabase::full_load(&db_path).unwrap();
+        let saved_state = state_service.state.clone();
+
+        equal_state(
+            saved_state.load().staged.load().as_ref(),
+            mem_state.load().staged.load().as_ref(),
+        );
+        equal_state(
+            saved_state.load().synced.as_ref().unwrap().load().as_ref(),
+            mem_state.load().synced.as_ref().unwrap().load().as_ref(),
+        );
+
+        state_service.sync_state().await;
+
+        let mem_state = state_service.state.clone();
+        drop(state_service);
+
+        let state_service = StateDatabase::full_load(&db_path).unwrap();
+        let saved_state = state_service.state.clone();
+
+        equal_state(
+            saved_state.load().staged.load().as_ref(),
+            mem_state.load().staged.load().as_ref(),
+        );
+        equal_state(
+            saved_state.load().synced.as_ref().unwrap().load().as_ref(),
+            mem_state.load().synced.as_ref().unwrap().load().as_ref(),
+        );
+        equal_state(
+            saved_state.load().hist.front().unwrap().load().as_ref(),
+            mem_state.load().hist.front().unwrap().load().as_ref(),
         );
 
         let _ = std::fs::remove_file(&db_path);

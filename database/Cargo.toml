@@ -8,6 +8,7 @@ ebi-filesystem = { workspace = true }
 ebi-proto = { workspace = true }
 ebi-types = { workspace = true }
 
+arc-swap = { workspace = true }
 tokio = { workspace = true }
 tower = { workspace = true }
 im = { workspace = true }
