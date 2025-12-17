@@ -2,6 +2,7 @@ use crate::redb::*;
 use crate::service::scoped::ScopedDatabase;
 use crate::{Shelf, Workspace};
 use ::redb::Database;
+use arc_swap::ArcSwap;
 use ebi_proto::rpc::ReturnCode;
 use ebi_types::redb::Storable;
 use ebi_types::shelf::*;
@@ -41,7 +42,7 @@ impl GroupState {
 
 #[derive(Clone)]
 pub struct StateDatabase {
-    pub state: Arc<History<GroupState>>,
+    pub state: Arc<ArcSwap<History<GroupState>>>,
     pub lock: Arc<RwLock<()>>,
     pub db: Arc<Database>,
 }
@@ -50,15 +51,16 @@ impl StateDatabase {
     pub fn new(db_path: &PathBuf) -> Result<Self, Error> {
         let lock = Arc::new(RwLock::new(()));
         let db = Database::create(db_path)?;
-        let state = Arc::new(History::new(GroupState::new()));
+        let state = Arc::new(ArcSwap::new(History::new(GroupState::new()).into()));
         let write_txn = db.begin_write()?;
+        let loaded_state = state.load();
         write_txn.open_table(T_ENTITY_STATE)?.insert(
-            state.staged.id,
+            loaded_state.staged.id,
             std::collections::HashMap::new().to_storable(),
         )?;
         write_txn
             .open_table(T_STATE_STATUS)?
-            .insert(state.staged.id, StateStatus::Staged.to_storable())?;
+            .insert(loaded_state.staged.id, StateStatus::Staged.to_storable())?;
         write_txn.commit()?;
 
         Ok(Self {
@@ -66,6 +68,61 @@ impl StateDatabase {
             lock: lock.clone(),
             db: Arc::new(db),
         })
+    }
+
+    pub async fn sync_state(&mut self) {
+        let lock = self.lock.write().await;
+        let hist = self.state.load();
+        let (new_hist, rem_state) = hist.next();
+        let write_txn = self.db.begin_write().unwrap();
+        let prev_staged = &hist.staged;
+        let new_staged = &new_hist.staged;
+        {
+            let mut state_t = write_txn.open_table(T_STATE_STATUS).unwrap();
+            state_t
+                .insert(new_staged.id, StateStatus::Staged.to_storable())
+                .unwrap();
+            state_t
+                .insert(prev_staged.id, StateStatus::Synced.to_storable())
+                .unwrap();
+
+            if let Some(synced) = &hist.synced {
+                let ord = {
+                    if let Some(past_state) = hist.hist.front() {
+                        match state_t.get(past_state.id).unwrap().unwrap().value().0 {
+                            StateStatus::History(val) => val - 1,
+                            _ => unreachable!(),
+                        }
+                    } else {
+                        std::u64::MAX
+                    }
+                };
+                state_t
+                    .insert(synced.id, StateStatus::History(ord).to_storable())
+                    .unwrap();
+            }
+            let mut entity_t = write_txn.open_table(T_ENTITY_STATE).unwrap();
+            let staged = entity_t
+                .get(prev_staged.id)
+                .unwrap()
+                .unwrap()
+                .value()
+                .0
+                .clone();
+            entity_t
+                .insert(new_staged.id, staged.to_storable())
+                .unwrap();
+
+            if let Some(rem_id) = rem_state {
+                state_t.remove(rem_id).unwrap();
+                let _old_map = entity_t.remove(rem_id).unwrap();
+                // [TODO] delete elements that are in old map but
+                // not contained in next state
+            }
+        }
+        write_txn.commit().unwrap();
+        self.state.store(Arc::new(new_hist));
+        drop(lock);
     }
 
     pub fn workspace(&mut self, id: WorkspaceId) -> ScopedDatabase {
@@ -111,7 +168,7 @@ impl Service<GetWorkspace> for StateDatabase {
     }
 
     fn call(&mut self, req: GetWorkspace) -> Self::Future {
-        let state = self.state.staged.load();
+        let state = self.state.load().staged.load();
         Box::pin(async move {
             if let Some(workspace) = state.workspaces.get(&req.id) {
                 let immut_ref = ImmutRef::new(workspace.id, workspace.load_full());
@@ -138,7 +195,7 @@ impl Service<CreateWorkspace> for StateDatabase {
     }
 
     fn call(&mut self, req: CreateWorkspace) -> Self::Future {
-        let state = self.state.clone();
+        let state = self.state.load_full();
         let db = self.db.clone();
         Box::pin(async move {
             let w_state = SwapRef::new_ref(()); // [TODO] Spawn bloom filters
@@ -199,7 +256,7 @@ impl Service<GetWorkspaces> for StateDatabase {
     }
 
     fn call(&mut self, _req: GetWorkspaces) -> Self::Future {
-        let state = self.state.staged.load();
+        let state = self.state.load().staged.load();
         Box::pin(async move {
             let mut workspace_ls = Vec::new();
             for (_, workspace) in state.workspaces.iter() {
@@ -250,7 +307,7 @@ impl Service<RemoveWorkspace> for StateDatabase {
     }
 
     fn call(&mut self, req: RemoveWorkspace) -> Self::Future {
-        let g_state = self.state.clone();
+        let g_state = self.state.load_full();
         let db = self.db.clone();
         Box::pin(async move {
             g_state
@@ -267,19 +324,22 @@ impl Service<RemoveWorkspace> for StateDatabase {
             let staged_id = g_state.staged.id;
             let write_txn = db.begin_write().map_err(|_| ReturnCode::DbOpenError)?;
             {
-                let mut wk_t = write_txn
+                let mut _wk_t = write_txn
                     .open_table(T_WKSPC)
                     .map_err(|_| ReturnCode::DbTableOpenError)?;
                 let mut entity_state_t = write_txn
                     .open_table(T_ENTITY_STATE)
                     .map_err(|_| ReturnCode::DbTableOpenError)?;
                 let mut state_hmap = entity_state_t.get(staged_id).unwrap().unwrap().value();
-                let (db_id, _) = state_hmap
+                let (_db_id, _) = state_hmap
                     .0
                     .get(&req.workspace_id)
                     .ok_or(ReturnCode::InternalStateError)?;
+                // in order to delete, need to check if any state contains the wk
+                /*
                 wk_t.remove(db_id)
                     .map_err(|_| ReturnCode::InternalStateError)?;
+                */
                 state_hmap.0.remove(&req.workspace_id).unwrap();
                 entity_state_t.insert(staged_id, state_hmap).unwrap();
             }

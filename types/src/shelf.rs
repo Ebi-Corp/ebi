@@ -75,14 +75,13 @@ impl<TagFilter: Default> Shelf<TagFilter> {
         config: Option<ShelfConfig>,
         description: String,
     ) -> Self {
-        let shelf = Shelf {
+        Shelf {
             shelf_type,
             shelf_owner,
             config: config.unwrap_or_default(),
             filter_tags: ArcSwap::new(Arc::new(TagFilter::default())), // [TODO] Filter parameters (size, ...) should be configurable
             info: StatefulRef::new_ref(ShelfInfo::new(Some(name), Some(description), path)),
-        };
-        shelf
+        }
     }
 }
 
@@ -102,9 +101,9 @@ pub struct ShelfInfo {
 
 impl PartialEq for ShelfInfo {
     fn eq(&self, other: &Self) -> bool {
-        self.name.get() == other.name.get() &&
-            self.description.get() == other.description.get() &&
-            self.root.get() == other.root.get()
+        self.name.get() == other.name.get()
+            && self.description.get() == other.description.get()
+            && self.root.get() == other.root.get()
     }
 }
 
