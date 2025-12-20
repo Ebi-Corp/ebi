@@ -348,3 +348,55 @@ impl Service<RemoveWorkspace> for StateDatabase {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn create_workspace() {
+        let test_path = std::env::temp_dir().join("ebi-database");
+        let test_path = test_path.join("create-workspace");
+        let _ = std::fs::create_dir_all(test_path.clone());
+        let db_path = test_path.join("database.redb");
+        let _ = std::fs::remove_file(&db_path);
+        let mut state_db = StateDatabase::new(&db_path).unwrap();
+
+        let wk_name = "workspace".to_string();
+        let wk_desc = "none".to_string();
+
+        let wk_id = state_db.create_workspace(wk_name, wk_desc).await.unwrap();
+
+        let staged = state_db.state.load().staged.load();
+
+        let wk = staged.workspaces.get(&wk_id);
+
+        assert!(&wk.is_some());
+        let wk = wk.unwrap();
+        assert_eq!(wk.load().info.load().name.get(), "workspace");
+        assert_eq!(wk.load().info.load().description.get(), "none");
+    }
+
+    #[tokio::test]
+    async fn remove_workspace() {
+        let test_path = std::env::temp_dir().join("ebi-database");
+        let test_path = test_path.join("remove-workspace");
+        let _ = std::fs::create_dir_all(test_path.clone());
+        let db_path = test_path.join("database.redb");
+        let _ = std::fs::remove_file(&db_path);
+        let mut state_db = StateDatabase::new(&db_path).unwrap();
+
+        let wk_name = "workspace".to_string();
+        let wk_desc = "none".to_string();
+
+        let wk_id = state_db.create_workspace(wk_name, wk_desc).await.unwrap();
+
+        let _ = state_db.remove_workspace(wk_id).await.unwrap();
+
+        let staged = state_db.state.load().staged.load();
+
+        let wk = staged.workspaces.get(&wk_id);
+
+        assert!(&wk.is_none());
+    }
+}

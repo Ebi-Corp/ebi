@@ -52,15 +52,15 @@ impl ScopedDatabase {
         path: PathBuf,
         node_id: NodeId,
         remote: bool,
-        description: Option<String>,
         name: Option<String>,
+        description: Option<String>,
     ) -> Result<ShelfId, ReturnCode> {
         self.call(AssignShelf {
             path,
             node_id,
             remote,
-            description,
             name,
+            description,
         })
         .await
     }
@@ -747,5 +747,213 @@ impl Service<EditWorkspace> for ScopedDatabase {
             write_txn.commit().map_err(|_| ReturnCode::DbCommitError)?;
             Ok(())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ebi_types::NodeId;
+    use ebi_types::shelf::{ShelfOwner, ShelfType};
+    use std::str::FromStr;
+
+    const TEST_PKEY: &str = "ae58ff8833241ac82d6ff7611046ed67b5072d142c588d0063e942d9a75502b6";
+
+    async fn setup_state_db(test_name: &str) -> (StateDatabase, Uuid) {
+        let test_path = std::env::temp_dir().join("ebi-database");
+        let test_path = test_path.join(test_name);
+        let _ = std::fs::create_dir_all(test_path.clone());
+        let db_path = test_path.join("database.redb");
+        let _ = std::fs::remove_file(&db_path);
+        let mut state_db = StateDatabase::new(&db_path).unwrap();
+
+        let wk_name = "workspace".to_string();
+        let wk_desc = "none".to_string();
+
+        let wk_id = state_db.create_workspace(wk_name, wk_desc).await.unwrap();
+        (state_db, wk_id)
+    }
+
+    #[tokio::test]
+    async fn create_tag() {
+        let (mut state_db, wk_id) = setup_state_db("create-tag").await;
+
+        let t_priority: u64 = 16;
+        let t_name = "tag_name".to_string();
+
+        let t_id = state_db
+            .workspace(wk_id)
+            .create_tag(t_priority, t_name.clone(), None)
+            .await
+            .unwrap();
+
+        let wk = state_db
+            .state
+            .load()
+            .staged
+            .load()
+            .workspaces
+            .get(&wk_id)
+            .unwrap()
+            .load();
+
+        let tag = wk.tags.get(&t_id);
+
+        assert!(tag.is_some());
+
+        let tag = tag.unwrap().load();
+        assert_eq!(tag.name.as_str(), t_name.as_str());
+        assert_eq!(tag.priority, t_priority);
+        assert_eq!(tag.parent, None);
+        let prev_tag = tag;
+
+        let parent = Some(t_id);
+        let t_priority = 10;
+        let t_id = state_db
+            .workspace(wk_id)
+            .create_tag(t_priority, t_name.clone(), parent)
+            .await
+            .unwrap();
+
+        let wk = state_db
+            .state
+            .load()
+            .staged
+            .load()
+            .workspaces
+            .get(&wk_id)
+            .unwrap()
+            .load();
+
+        let tag = wk.tags.get(&t_id);
+        assert!(tag.is_some());
+        let tag = tag.unwrap().load();
+        assert_eq!(tag.name.as_str(), t_name.as_str());
+        assert_eq!(tag.priority, t_priority);
+        assert!(tag.parent.is_some());
+        let tag_p_id = tag.parent.as_ref().unwrap().id;
+        assert_eq!(Some(tag_p_id), parent);
+        assert_eq!(
+            tag.parent.as_ref().unwrap().load().as_ref(),
+            prev_tag.as_ref()
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_tag() {
+        let (mut state_db, wk_id) = setup_state_db("delete-tag").await;
+
+        let t_priority: u64 = 16;
+        let t_name = "tag_name".to_string();
+
+        let t_id = state_db
+            .workspace(wk_id)
+            .create_tag(t_priority, t_name.clone(), None)
+            .await
+            .unwrap();
+
+        let _ = state_db.workspace(wk_id).delete_tag(t_id).await.unwrap();
+
+        let wk = state_db
+            .state
+            .load()
+            .staged
+            .load()
+            .workspaces
+            .get(&wk_id)
+            .unwrap()
+            .load();
+
+        let tag = wk.tags.get(&t_id);
+
+        assert!(tag.is_none());
+
+        // [TODO] handle parents
+    }
+
+    #[tokio::test]
+    async fn assign_shelf() {
+        let (mut state_db, wk_id) = setup_state_db("assign-shelf").await;
+        let node_id = NodeId::from_str(TEST_PKEY).unwrap();
+        let test_path = std::env::temp_dir().join("ebi-database");
+
+        let shelf_name = "shelf_name".to_string();
+        let shelf_description = "shelf_description".to_string();
+        let remote = false;
+
+        let s_0_id = state_db
+            .workspace(wk_id)
+            .assign_shelf(
+                test_path.clone(),
+                node_id,
+                remote,
+                Some(shelf_name.clone()),
+                Some(shelf_description.clone()),
+            )
+            .await
+            .unwrap();
+
+        let state = state_db.state.load().staged.load();
+        let wk = state.workspaces.get(&wk_id).unwrap().load();
+        let s = wk.shelves.get(&s_0_id);
+
+        assert!(s.is_some());
+        let s = s.unwrap();
+        assert_eq!(s.info.load().name.get(), shelf_name);
+        assert_eq!(s.info.load().description.get(), shelf_description);
+        assert_eq!(s.shelf_type, ShelfType::Local);
+        assert_eq!(s.shelf_owner, ShelfOwner::Node(node_id));
+
+        let s_ref = state.shelves.get(&s_0_id).unwrap();
+
+        let s_ref = s_ref.to_upgraded().unwrap();
+        assert!(ptr_eq(s_ref.data_ref(), s.data_ref()));
+        assert_eq!(s_ref.id, s.id);
+    }
+
+    #[tokio::test]
+    async fn unassign_shelf() {
+        let (mut state_db, wk_id) = setup_state_db("unassign-shelf").await;
+        let node_id = NodeId::from_str(TEST_PKEY).unwrap();
+        let test_path = std::env::temp_dir().join("ebi-database");
+
+        let shelf_name = "shelf_name".to_string();
+        let shelf_description = "shelf_description".to_string();
+        let remote = false;
+
+        let s_0_id = state_db
+            .workspace(wk_id)
+            .assign_shelf(
+                test_path.clone(),
+                node_id,
+                remote,
+                Some(shelf_name.clone()),
+                Some(shelf_description.clone()),
+            )
+            .await
+            .unwrap();
+
+        let _ = state_db
+            .workspace(wk_id)
+            .unassign_shelf(s_0_id)
+            .await
+            .unwrap();
+
+        let state = state_db.state.load().staged.load();
+        let wk = state.workspaces.get(&wk_id).unwrap().load();
+        let s = wk.shelves.get(&s_0_id);
+        assert!(s.is_none());
+        let s_ref = state.shelves.get(&s_0_id).unwrap();
+        assert!(s_ref.to_upgraded().is_none());
+    }
+
+    #[tokio::test]
+    async fn edit_workspace_info() {
+        todo!();
+    }
+
+    #[tokio::test]
+    async fn edit_shelf_info() {
+        todo!();
     }
 }
