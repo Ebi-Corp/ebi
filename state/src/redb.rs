@@ -386,7 +386,7 @@ mod tests {
         assert_eq!(saved_chain.load().received, mem_chain.load().received,);
         equal_state(
             saved_chain.load().synced.front().unwrap().load().as_ref(),
-            mem_chain.load().synced.front().unwrap().load().as_ref(),
+            mem_chain.load().synced.get(1).unwrap().load().as_ref(),
         );
 
         let _ = std::fs::remove_file(&db_path);

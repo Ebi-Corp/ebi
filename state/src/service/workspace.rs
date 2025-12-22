@@ -957,11 +957,62 @@ mod tests {
 
     #[tokio::test]
     async fn edit_workspace_info() {
-        todo!();
+        let (mut state_service, wk_id) = setup_state_service("edit-workspace-info").await;
+        let up_name = "updated_name".to_string();
+        let up_desc = "updated_desc".to_string();
+        state_service
+            .workspace(wk_id)
+            .edit_workspace_info(up_name.clone(), up_desc.clone())
+            .await
+            .unwrap();
+        let wk = state_service
+            .chain
+            .load()
+            .staged
+            .load()
+            .workspaces
+            .get(&wk_id)
+            .unwrap()
+            .load();
+
+        assert_eq!(wk.info.load().name.get(), up_name);
+        assert_eq!(wk.info.load().description.get(), up_desc);
     }
 
     #[tokio::test]
     async fn edit_shelf_info() {
-        todo!();
+        let (mut state_service, wk_id) = setup_state_service("edit-shelf-info").await;
+        let node_id = NodeId::from_str(TEST_PKEY).unwrap();
+        let test_path = std::env::temp_dir().join("ebi-state");
+        let shelf_name = "shelf_name".to_string();
+        let shelf_description = "shelf_description".to_string();
+        let remote = false;
+
+        let s_id = state_service
+            .workspace(wk_id)
+            .assign_shelf(
+                test_path.clone(),
+                node_id,
+                remote,
+                Some(shelf_name),
+                Some(shelf_description),
+            )
+            .await
+            .unwrap();
+
+        let up_name = "updated_name".to_string();
+        let up_desc = "updated_desc".to_string();
+
+        let _ = state_service
+            .workspace(wk_id)
+            .edit_shelf_info(s_id, up_name.clone(), up_desc.clone())
+            .await
+            .unwrap();
+
+        let chain = state_service.chain.load().staged.load();
+        let wk = chain.workspaces.get(&wk_id).unwrap().load();
+        let s = wk.shelves.get(&s_id).unwrap();
+        assert_eq!(s.info.load().name.get(), up_name);
+        assert_eq!(s.info.load().description.get(), up_desc);
     }
 }
