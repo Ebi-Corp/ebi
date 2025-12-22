@@ -1,8 +1,8 @@
-use crate::redb::*;
-use crate::{StateChain, StateView};
-use crate::service::WorkspaceState;
-use crate::Workspace;
 use crate::CRDT;
+use crate::Workspace;
+use crate::redb::*;
+use crate::service::WorkspaceState;
+use crate::{StateChain, StateView};
 use ::redb::Database;
 use arc_swap::ArcSwap;
 use ebi_proto::rpc::ReturnCode;
@@ -68,14 +68,13 @@ impl State {
                 if let Some(past_state) = chain.synced.front() {
                     match state_t.get(past_state.id).unwrap().unwrap().value().0 {
                         StateStatus::Synced(val) => {
-
                             // [TODO] apply new ops to past_state
                             (val - 1, past_state)
                         }
                         _ => unreachable!(),
                     }
                 } else {
-                    (std::u64::MAX, prev_staged)
+                    (u64::MAX, prev_staged)
                 }
             };
 
@@ -347,7 +346,10 @@ mod tests {
         let wk_name = "workspace".to_string();
         let wk_desc = "none".to_string();
 
-        let wk_id = state_service.create_workspace(wk_name, wk_desc).await.unwrap();
+        let wk_id = state_service
+            .create_workspace(wk_name, wk_desc)
+            .await
+            .unwrap();
 
         let staged = state_service.chain.load().staged.load();
 
@@ -371,7 +373,10 @@ mod tests {
         let wk_name = "workspace".to_string();
         let wk_desc = "none".to_string();
 
-        let wk_id = state_service.create_workspace(wk_name, wk_desc).await.unwrap();
+        let wk_id = state_service
+            .create_workspace(wk_name, wk_desc)
+            .await
+            .unwrap();
 
         let _ = state_service.remove_workspace(wk_id).await.unwrap();
 

@@ -1,5 +1,5 @@
-use crate::redb::*;
 use crate::StateView;
+use crate::redb::*;
 use crate::service::State;
 use crate::{Shelf, Workspace};
 use ebi_proto::rpc::ReturnCode;
@@ -771,7 +771,10 @@ mod tests {
         let wk_name = "workspace".to_string();
         let wk_desc = "none".to_string();
 
-        let wk_id = state_service.create_workspace(wk_name, wk_desc).await.unwrap();
+        let wk_id = state_service
+            .create_workspace(wk_name, wk_desc)
+            .await
+            .unwrap();
         (state_service, wk_id)
     }
 
@@ -853,7 +856,11 @@ mod tests {
             .await
             .unwrap();
 
-        let _ = state_service.workspace(wk_id).delete_tag(t_id).await.unwrap();
+        let _ = state_service
+            .workspace(wk_id)
+            .delete_tag(t_id)
+            .await
+            .unwrap();
 
         let wk = state_service
             .chain

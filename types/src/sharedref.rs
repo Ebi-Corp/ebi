@@ -129,10 +129,7 @@ impl<T, I: Copy> StatefulRef<T, I> {
         }
     }
     pub fn from_arcswap(id: I, data: ArcSwap<T>) -> Self {
-        Self {
-            id,
-            data
-        }
+        Self { id, data }
     }
 }
 
