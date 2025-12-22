@@ -3,7 +3,7 @@ mod rpc;
 
 use crate::rpc::service::{DaemonInfo, RpcService, TaskID};
 use anyhow::Result;
-use ebi_database::{cache::CacheService, service::state::StateDatabase};
+use ebi_gstate::{cache::CacheService, service::state::StateDatabase};
 use ebi_filesystem::service::FileSystem;
 use ebi_network::service::{Client, Network, Peer};
 use ebi_proto::rpc::*;

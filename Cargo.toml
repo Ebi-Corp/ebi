@@ -1,12 +1,12 @@
 [workspace]
 resolver = "3"
-members = [ "daemon", "query", "filesystem", "macro", "proto" , "types", "network", "database"]
+members = [ "daemon", "query", "filesystem", "macro", "proto" , "types", "network", "state"]
 [workspace.dependencies]
 ebi-proto = { path = "proto" }
 ebi-filesystem = { path = "filesystem" }
 ebi-query = { path = "query" }
 ebi-network = { path = "network" }
-ebi-database = { path = "database" }
+ebi-state = { path = "state" }
 ebi-types = { path = "types", features = ["redb"] }
 
 rayon = "1.10.0" # 1 disabled feature flag

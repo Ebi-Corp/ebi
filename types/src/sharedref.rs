@@ -1,7 +1,6 @@
 use crate::Uuid;
 use arc_swap::{ArcSwap, AsRaw};
 use std::borrow::Borrow;
-use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Weak;
@@ -129,6 +128,12 @@ impl<T, I: Copy> StatefulRef<T, I> {
             data: ArcSwap::new(self.data.load_full()),
         }
     }
+    pub fn from_arcswap(id: I, data: ArcSwap<T>) -> Self {
+        Self {
+            id,
+            data
+        }
+    }
 }
 
 impl<T, I> Inner<T, I> {
@@ -181,59 +186,6 @@ impl<T, I> Deref for Inner<T, I> {
 
     fn deref(&self) -> &Self::Target {
         &self.data
-    }
-}
-
-#[derive(Debug)]
-pub struct History<T, I = Uuid> {
-    pub staged: StatefulRef<T, I>, // Locally modified - Not yet committed
-    pub synced: Option<StatefulRef<T, I>>, // Committed (Broadcasted) but not yet Approved by OpChain
-    pub hist: VecDeque<StatefulRef<T, I>>, // Approved by OpChain, not seen by all - Clears once every Daemon views the changes
-}
-
-const HIST_L: usize = 3;
-
-impl<T> History<T> {
-    pub fn new(val: T) -> Self {
-        let first = StatefulRef::new_ref(val);
-        History {
-            staged: first,
-            synced: None,
-            hist: VecDeque::new(),
-        }
-    }
-
-    pub fn next(&self) -> (Self, Option<Uuid>) {
-        let mut past: VecDeque<StatefulRef<T>> =
-            self.hist.iter().map(|r| r.clone_inner()).collect();
-        let mut removed_state = None;
-        if past.len() == HIST_L {
-            removed_state = Some(past.pop_back().unwrap().id);
-        }
-        if let Some(synced) = &self.synced {
-            past.push_front(synced.clone_inner());
-        }
-        let new_hist = History {
-            staged: StatefulRef {
-                id: Uuid::new_v4(),
-                data: ArcSwap::new(self.staged.load_full()),
-            },
-            synced: Some(self.staged.clone_inner()),
-            hist: past,
-        };
-        (new_hist, removed_state)
-    }
-
-    pub fn from(
-        staged: StatefulRef<T>,
-        synced: Option<StatefulRef<T>>,
-        hist: VecDeque<StatefulRef<T>>,
-    ) -> Self {
-        History {
-            staged,
-            synced,
-            hist,
-        }
     }
 }
 

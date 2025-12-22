@@ -1,5 +1,5 @@
 use crate::{Query, QueryErr};
-use ebi_database::{cache::CacheService, service::state::StateDatabase};
+use ebi_state::{cache::CacheService, service::state::StateChain};
 use ebi_filesystem::service::ShelfDirKey;
 use ebi_filesystem::shelf::TagFilter;
 use ebi_filesystem::{file::gen_summary, service::FileSystem, shelf::ShelfData, shelf::merge};
@@ -37,7 +37,7 @@ pub type TokenId = Uuid;
 pub struct QueryService {
     pub network: Network,
     pub cache: CacheService,
-    pub state_db: StateDatabase,
+    pub state_db: StateChain,
     pub filesys: FileSystem,
     pub daemon_id: Arc<NodeId>,
 }

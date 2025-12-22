@@ -8,7 +8,7 @@ ebi-filesystem = { workspace = true }
 ebi-proto = { workspace = true }
 ebi-types = { workspace = true }
 ebi-network = { workspace = true }
-ebi-database = { workspace = true }
+ebi-state = { workspace = true }
 ebi-query = { workspace = true }
 
 tokio = { workspace = true }
