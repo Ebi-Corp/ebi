@@ -8,7 +8,7 @@ ebi-proto = { workspace = true }
 ebi-types = { workspace = true }
 ebi-filesystem = { workspace = true }
 ebi-network = { workspace = true }
-ebi-database = { workspace = true }
+ebi-state = { workspace = true }
 
 im = { workspace = true }
 peg = { workspace = true }

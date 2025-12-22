@@ -1,5 +1,5 @@
 [package]
-name = "ebi-database"
+name = "ebi-state"
 version = "0.1.0"
 edition = "2024"
 

@@ -706,11 +706,11 @@ dependencies = [
  "anyhow",
  "arc-swap",
  "bincode",
- "ebi-database",
  "ebi-filesystem",
  "ebi-network",
  "ebi-proto",
  "ebi-query",
+ "ebi-state",
  "ebi-types",
  "iroh",
  "iroh-base",
@@ -723,21 +723,6 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "ebi-database"
-version = "0.1.0"
-dependencies = [
- "arc-swap",
- "ebi-filesystem",
- "ebi-proto",
- "ebi-types",
- "im",
- "redb",
- "serde",
- "tokio",
- "tower",
 ]
 
 [[package]]
@@ -802,10 +787,10 @@ version = "0.1.0"
 dependencies = [
  "arc-swap",
  "bincode",
- "ebi-database",
  "ebi-filesystem",
  "ebi-network",
  "ebi-proto",
+ "ebi-state",
  "ebi-types",
  "file-id",
  "im",
@@ -816,6 +801,21 @@ dependencies = [
  "tokio",
  "tower",
  "uuid",
+]
+
+[[package]]
+name = "ebi-state"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "ebi-filesystem",
+ "ebi-proto",
+ "ebi-types",
+ "im",
+ "redb",
+ "serde",
+ "tokio",
+ "tower",
 ]
 
 [[package]]

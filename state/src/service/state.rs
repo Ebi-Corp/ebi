@@ -1,11 +1,12 @@
 use crate::redb::*;
-use crate::service::scoped::ScopedDatabase;
-use crate::{Shelf, Workspace};
+use crate::{StateChain, StateView};
+use crate::service::WorkspaceState;
+use crate::Workspace;
+use crate::CRDT;
 use ::redb::Database;
 use arc_swap::ArcSwap;
 use ebi_proto::rpc::ReturnCode;
 use ebi_types::redb::Storable;
-use ebi_types::shelf::*;
 use ebi_types::workspace::{WorkspaceId, WorkspaceInfo};
 use ebi_types::{Uuid, sharedref::*, stateful::*};
 use redb::{Error, ReadableTable};
@@ -19,88 +20,69 @@ use std::{
 use tokio::sync::RwLock;
 use tower::Service;
 
-#[derive(Debug)]
-pub struct GroupState {
-    pub workspaces: StatefulMap<WorkspaceId, Arc<StatefulRef<Workspace>>>,
-    pub shelves: StatefulMap<ShelfId, WeakRef<Shelf>>,
-}
-
-impl Default for GroupState {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl GroupState {
-    pub fn new() -> Self {
-        Self {
-            workspaces: StatefulMap::new(SwapRef::new_ref(())),
-            shelves: StatefulMap::new(SwapRef::new_ref(())),
-        }
-    }
-}
-
 #[derive(Clone)]
-pub struct StateDatabase {
-    pub state: Arc<ArcSwap<History<GroupState>>>,
+pub struct State {
+    pub chain: Arc<ArcSwap<StateChain>>,
     pub lock: Arc<RwLock<()>>,
     pub db: Arc<Database>,
 }
 
-impl StateDatabase {
+impl State {
     pub fn new(db_path: &PathBuf) -> Result<Self, Error> {
         let lock = Arc::new(RwLock::new(()));
         let db = Database::create(db_path)?;
-        let state = Arc::new(ArcSwap::new(History::new(GroupState::new()).into()));
+        let chain = Arc::new(ArcSwap::new(StateChain::new(StateView::new()).into()));
         let write_txn = db.begin_write()?;
-        let loaded_state = state.load();
+        let loaded_chain = chain.load();
         write_txn.open_table(T_ENTITY_STATE)?.insert(
-            loaded_state.staged.id,
+            loaded_chain.staged.id,
             std::collections::HashMap::new().to_storable(),
         )?;
         write_txn
             .open_table(T_STATE_STATUS)?
-            .insert(loaded_state.staged.id, StateStatus::Staged.to_storable())?;
+            .insert(loaded_chain.staged.id, StateStatus::Staged.to_storable())?;
         write_txn.commit()?;
 
         Ok(Self {
-            state,
+            chain,
             lock: lock.clone(),
             db: Arc::new(db),
         })
     }
 
-    pub async fn sync_state(&mut self) {
+    pub async fn sync_state(&mut self, _new_ops: CRDT) {
         let lock = self.lock.write().await;
-        let hist = self.state.load();
-        let (new_hist, rem_state) = hist.next();
+        let chain = self.chain.load();
+        let (new_chain, rem_state) = chain.next();
         let write_txn = self.db.begin_write().unwrap();
-        let prev_staged = &hist.staged;
-        let new_staged = &new_hist.staged;
+        let prev_staged = &chain.staged;
+        let new_staged = &new_chain.staged;
         {
             let mut state_t = write_txn.open_table(T_STATE_STATUS).unwrap();
             state_t
                 .insert(new_staged.id, StateStatus::Staged.to_storable())
                 .unwrap();
+
+            // [TODO] apply new ops to staged
+            let (ord, prev_state) = {
+                if let Some(past_state) = chain.synced.front() {
+                    match state_t.get(past_state.id).unwrap().unwrap().value().0 {
+                        StateStatus::Synced(val) => {
+
+                            // [TODO] apply new ops to past_state
+                            (val - 1, past_state)
+                        }
+                        _ => unreachable!(),
+                    }
+                } else {
+                    (std::u64::MAX, prev_staged)
+                }
+            };
+
             state_t
-                .insert(prev_staged.id, StateStatus::Synced.to_storable())
+                .insert(prev_state.id, StateStatus::Synced(ord).to_storable())
                 .unwrap();
 
-            if let Some(synced) = &hist.synced {
-                let ord = {
-                    if let Some(past_state) = hist.hist.front() {
-                        match state_t.get(past_state.id).unwrap().unwrap().value().0 {
-                            StateStatus::History(val) => val - 1,
-                            _ => unreachable!(),
-                        }
-                    } else {
-                        std::u64::MAX
-                    }
-                };
-                state_t
-                    .insert(synced.id, StateStatus::History(ord).to_storable())
-                    .unwrap();
-            }
             let mut entity_t = write_txn.open_table(T_ENTITY_STATE).unwrap();
             let staged = entity_t
                 .get(prev_staged.id)
@@ -121,12 +103,12 @@ impl StateDatabase {
             }
         }
         write_txn.commit().unwrap();
-        self.state.store(Arc::new(new_hist));
+        self.chain.store(Arc::new(new_chain));
         drop(lock);
     }
 
-    pub fn workspace(&mut self, id: WorkspaceId) -> ScopedDatabase {
-        ScopedDatabase {
+    pub fn workspace(&mut self, id: WorkspaceId) -> WorkspaceState {
+        WorkspaceState {
             service: self.clone(),
             workspace_scope: id,
         }
@@ -158,7 +140,7 @@ struct GetWorkspace {
     id: WorkspaceId,
 }
 
-impl Service<GetWorkspace> for StateDatabase {
+impl Service<GetWorkspace> for State {
     type Response = ImmutRef<Workspace>;
     type Error = ReturnCode;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
@@ -168,7 +150,7 @@ impl Service<GetWorkspace> for StateDatabase {
     }
 
     fn call(&mut self, req: GetWorkspace) -> Self::Future {
-        let state = self.state.load().staged.load();
+        let state = self.chain.load().staged.load();
         Box::pin(async move {
             if let Some(workspace) = state.workspaces.get(&req.id) {
                 let immut_ref = ImmutRef::new(workspace.id, workspace.load_full());
@@ -185,7 +167,7 @@ struct CreateWorkspace {
     pub description: String,
 }
 
-impl Service<CreateWorkspace> for StateDatabase {
+impl Service<CreateWorkspace> for State {
     type Response = WorkspaceId;
     type Error = ReturnCode;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
@@ -195,7 +177,7 @@ impl Service<CreateWorkspace> for StateDatabase {
     }
 
     fn call(&mut self, req: CreateWorkspace) -> Self::Future {
-        let state = self.state.load_full();
+        let state = self.chain.load_full();
         let db = self.db.clone();
         Box::pin(async move {
             let w_state = SwapRef::new_ref(()); // [TODO] Spawn bloom filters
@@ -215,7 +197,7 @@ impl Service<CreateWorkspace> for StateDatabase {
                 .staged
                 .stateful_rcu(|s| {
                     let (u_m, u_s) = s.workspaces.insert(w_id, w_ref.clone_inner().into());
-                    let u_w = GroupState {
+                    let u_w = StateView {
                         workspaces: u_m,
                         shelves: s.shelves.clone(),
                     };
@@ -246,7 +228,7 @@ impl Service<CreateWorkspace> for StateDatabase {
 
 struct GetWorkspaces {}
 
-impl Service<GetWorkspaces> for StateDatabase {
+impl Service<GetWorkspaces> for State {
     type Response = Vec<ebi_proto::rpc::Workspace>;
     type Error = ReturnCode;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
@@ -256,7 +238,7 @@ impl Service<GetWorkspaces> for StateDatabase {
     }
 
     fn call(&mut self, _req: GetWorkspaces) -> Self::Future {
-        let state = self.state.load().staged.load();
+        let state = self.chain.load().staged.load();
         Box::pin(async move {
             let mut workspace_ls = Vec::new();
             for (_, workspace) in state.workspaces.iter() {
@@ -297,7 +279,7 @@ struct RemoveWorkspace {
     pub workspace_id: WorkspaceId,
 }
 
-impl Service<RemoveWorkspace> for StateDatabase {
+impl Service<RemoveWorkspace> for State {
     type Response = ();
     type Error = ReturnCode;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
@@ -307,21 +289,21 @@ impl Service<RemoveWorkspace> for StateDatabase {
     }
 
     fn call(&mut self, req: RemoveWorkspace) -> Self::Future {
-        let g_state = self.state.load_full();
+        let chain = self.chain.load_full();
         let db = self.db.clone();
         Box::pin(async move {
-            g_state
+            chain
                 .staged
                 .stateful_rcu(|s| {
                     let (u_m, u_s) = s.workspaces.remove(&req.workspace_id);
-                    let u_g = GroupState {
+                    let u_g = StateView {
                         shelves: s.shelves.clone(),
                         workspaces: u_m,
                     };
                     (u_g, u_s)
                 })
                 .await;
-            let staged_id = g_state.staged.id;
+            let staged_id = chain.staged.id;
             let write_txn = db.begin_write().map_err(|_| ReturnCode::DbOpenError)?;
             {
                 let mut _wk_t = write_txn
@@ -355,19 +337,19 @@ mod tests {
 
     #[tokio::test]
     async fn create_workspace() {
-        let test_path = std::env::temp_dir().join("ebi-database");
+        let test_path = std::env::temp_dir().join("ebi-state");
         let test_path = test_path.join("create-workspace");
         let _ = std::fs::create_dir_all(test_path.clone());
         let db_path = test_path.join("database.redb");
         let _ = std::fs::remove_file(&db_path);
-        let mut state_db = StateDatabase::new(&db_path).unwrap();
+        let mut state_service = State::new(&db_path).unwrap();
 
         let wk_name = "workspace".to_string();
         let wk_desc = "none".to_string();
 
-        let wk_id = state_db.create_workspace(wk_name, wk_desc).await.unwrap();
+        let wk_id = state_service.create_workspace(wk_name, wk_desc).await.unwrap();
 
-        let staged = state_db.state.load().staged.load();
+        let staged = state_service.chain.load().staged.load();
 
         let wk = staged.workspaces.get(&wk_id);
 
@@ -379,21 +361,21 @@ mod tests {
 
     #[tokio::test]
     async fn remove_workspace() {
-        let test_path = std::env::temp_dir().join("ebi-database");
+        let test_path = std::env::temp_dir().join("ebi-state");
         let test_path = test_path.join("remove-workspace");
         let _ = std::fs::create_dir_all(test_path.clone());
         let db_path = test_path.join("database.redb");
         let _ = std::fs::remove_file(&db_path);
-        let mut state_db = StateDatabase::new(&db_path).unwrap();
+        let mut state_service = State::new(&db_path).unwrap();
 
         let wk_name = "workspace".to_string();
         let wk_desc = "none".to_string();
 
-        let wk_id = state_db.create_workspace(wk_name, wk_desc).await.unwrap();
+        let wk_id = state_service.create_workspace(wk_name, wk_desc).await.unwrap();
 
-        let _ = state_db.remove_workspace(wk_id).await.unwrap();
+        let _ = state_service.remove_workspace(wk_id).await.unwrap();
 
-        let staged = state_db.state.load().staged.load();
+        let staged = state_service.chain.load().staged.load();
 
         let wk = staged.workspaces.get(&wk_id);
 

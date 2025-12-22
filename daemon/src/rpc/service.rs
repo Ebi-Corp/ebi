@@ -1,5 +1,5 @@
 use bincode::serde::encode_to_vec;
-use ebi_database::service::state::StateDatabase;
+use ebi_gstate::service::state::StateDatabase;
 use ebi_filesystem::service::{FileSystem, ShelfDirKey};
 use ebi_network::service::Network;
 use ebi_proto::rpc::*;

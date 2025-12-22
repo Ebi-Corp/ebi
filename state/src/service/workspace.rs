@@ -1,5 +1,6 @@
 use crate::redb::*;
-use crate::service::state::{GroupState, StateDatabase};
+use crate::StateView;
+use crate::service::State;
 use crate::{Shelf, Workspace};
 use ebi_proto::rpc::ReturnCode;
 use ebi_types::redb::Storable;
@@ -19,12 +20,12 @@ use std::{
 use tower::Service;
 
 #[derive(Clone)]
-pub struct ScopedDatabase {
-    pub(crate) service: StateDatabase,
+pub struct WorkspaceState {
+    pub(crate) service: State,
     pub(crate) workspace_scope: WorkspaceId,
 }
 
-impl ScopedDatabase {
+impl WorkspaceState {
     pub async fn create_tag(
         &mut self,
         priority: u64,
@@ -88,10 +89,10 @@ impl ScopedDatabase {
     }
 }
 
-impl ScopedDatabase {
+impl WorkspaceState {
     fn set_workspace(&self) -> Result<Arc<StatefulRef<Workspace>>, ReturnCode> {
         self.service
-            .state
+            .chain
             .load()
             .staged
             .load()
@@ -108,7 +109,7 @@ struct CreateTag {
     pub parent: Option<Uuid>,
 }
 
-impl Service<CreateTag> for ScopedDatabase {
+impl Service<CreateTag> for WorkspaceState {
     type Response = TagId;
     type Error = ReturnCode;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
@@ -120,7 +121,7 @@ impl Service<CreateTag> for ScopedDatabase {
     fn call(&mut self, req: CreateTag) -> Self::Future {
         let res_workspace_ref = self.set_workspace();
         let db = self.service.db.clone();
-        let staged_id = self.service.state.load().staged.id;
+        let staged_id = self.service.chain.load().staged.id;
         Box::pin(async move {
             let workspace_ref = res_workspace_ref?;
             let workspace = workspace_ref.load_full();
@@ -202,7 +203,7 @@ struct DeleteTag {
     tag_id: Uuid,
 }
 
-impl Service<DeleteTag> for ScopedDatabase {
+impl Service<DeleteTag> for WorkspaceState {
     type Response = TagRef;
     type Error = ReturnCode;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
@@ -214,7 +215,7 @@ impl Service<DeleteTag> for ScopedDatabase {
     fn call(&mut self, req: DeleteTag) -> Self::Future {
         let res_workspace_ref = self.set_workspace();
         let db = self.service.db.clone();
-        let staged_id = self.service.state.load().staged.id;
+        let staged_id = self.service.chain.load().staged.id;
         Box::pin(async move {
             let workspace_ref = res_workspace_ref?;
             let workspace = workspace_ref.load();
@@ -283,7 +284,7 @@ struct UnassignShelf {
     pub shelf_id: ShelfId,
 }
 
-impl Service<UnassignShelf> for ScopedDatabase {
+impl Service<UnassignShelf> for WorkspaceState {
     type Response = (); // True if the unassgnied workspace was the last
     type Error = ReturnCode;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
@@ -293,10 +294,10 @@ impl Service<UnassignShelf> for ScopedDatabase {
     }
 
     fn call(&mut self, req: UnassignShelf) -> Self::Future {
-        let g_state = self.service.state.load().clone();
+        let g_state = self.service.chain.load().clone();
         let res_workspace_ref = self.set_workspace();
         let db = self.service.db.clone();
-        let staged_id = self.service.state.load().staged.id;
+        let staged_id = self.service.chain.load().staged.id;
         Box::pin(async move {
             let workspace_ref = res_workspace_ref?;
             let state = g_state.staged.load();
@@ -373,7 +374,7 @@ struct AssignShelf {
     pub name: Option<String>,
 }
 
-impl Service<AssignShelf> for ScopedDatabase {
+impl Service<AssignShelf> for WorkspaceState {
     type Response = ShelfId;
     type Error = ReturnCode;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
@@ -383,11 +384,11 @@ impl Service<AssignShelf> for ScopedDatabase {
     }
 
     fn call(&mut self, req: AssignShelf) -> Self::Future {
-        let g_state = self.service.state.load().clone();
+        let g_state = self.service.chain.load().clone();
         let _lock = self.service.lock.clone();
         let res_workspace_ref = self.set_workspace();
         let db = self.service.db.clone();
-        let staged_id = self.service.state.load().staged.id;
+        let staged_id = self.service.chain.load().staged.id;
 
         Box::pin(async move {
             let workspace_ref = res_workspace_ref?;
@@ -416,7 +417,7 @@ impl Service<AssignShelf> for ScopedDatabase {
                         .staged
                         .stateful_rcu(|w| {
                             let (u_m, u_s) = w.shelves.remove(&shelf_id);
-                            let u_w = GroupState {
+                            let u_w = StateView {
                                 shelves: u_m,
                                 workspaces: w.workspaces.clone(),
                             };
@@ -475,7 +476,7 @@ impl Service<AssignShelf> for ScopedDatabase {
                     .staged
                     .stateful_rcu(|s| {
                         let (u_m, u_s) = s.shelves.insert(shelf_id, shelf_ref.downgrade());
-                        let u_g = GroupState {
+                        let u_g = StateView {
                             shelves: u_m,
                             workspaces: s.workspaces.clone(),
                         };
@@ -539,7 +540,7 @@ struct EditShelf {
     pub description: String,
 }
 
-impl Service<EditShelf> for ScopedDatabase {
+impl Service<EditShelf> for WorkspaceState {
     type Response = ();
     type Error = ReturnCode;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
@@ -552,7 +553,7 @@ impl Service<EditShelf> for ScopedDatabase {
         let _lock = self.service.lock.clone();
         let res_workspace_ref = self.set_workspace();
         let db = self.service.db.clone();
-        let staged_id = self.service.state.load().staged.id;
+        let staged_id = self.service.chain.load().staged.id;
 
         Box::pin(async move {
             let workspace_ref = res_workspace_ref?;
@@ -672,7 +673,7 @@ struct EditWorkspace {
     pub description: String,
 }
 
-impl Service<EditWorkspace> for ScopedDatabase {
+impl Service<EditWorkspace> for WorkspaceState {
     type Response = ();
     type Error = ReturnCode;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
@@ -685,7 +686,7 @@ impl Service<EditWorkspace> for ScopedDatabase {
         let _lock = self.service.lock.clone();
         let res_workspace_ref = self.set_workspace();
         let db = self.service.db.clone();
-        let staged_id = self.service.state.load().staged.id;
+        let staged_id = self.service.chain.load().staged.id;
 
         Box::pin(async move {
             let workspace_ref = res_workspace_ref?;
@@ -759,36 +760,36 @@ mod tests {
 
     const TEST_PKEY: &str = "ae58ff8833241ac82d6ff7611046ed67b5072d142c588d0063e942d9a75502b6";
 
-    async fn setup_state_db(test_name: &str) -> (StateDatabase, Uuid) {
-        let test_path = std::env::temp_dir().join("ebi-database");
+    async fn setup_state_service(test_name: &str) -> (State, Uuid) {
+        let test_path = std::env::temp_dir().join("ebi-state");
         let test_path = test_path.join(test_name);
         let _ = std::fs::create_dir_all(test_path.clone());
         let db_path = test_path.join("database.redb");
         let _ = std::fs::remove_file(&db_path);
-        let mut state_db = StateDatabase::new(&db_path).unwrap();
+        let mut state_service = State::new(&db_path).unwrap();
 
         let wk_name = "workspace".to_string();
         let wk_desc = "none".to_string();
 
-        let wk_id = state_db.create_workspace(wk_name, wk_desc).await.unwrap();
-        (state_db, wk_id)
+        let wk_id = state_service.create_workspace(wk_name, wk_desc).await.unwrap();
+        (state_service, wk_id)
     }
 
     #[tokio::test]
     async fn create_tag() {
-        let (mut state_db, wk_id) = setup_state_db("create-tag").await;
+        let (mut state_service, wk_id) = setup_state_service("create-tag").await;
 
         let t_priority: u64 = 16;
         let t_name = "tag_name".to_string();
 
-        let t_id = state_db
+        let t_id = state_service
             .workspace(wk_id)
             .create_tag(t_priority, t_name.clone(), None)
             .await
             .unwrap();
 
-        let wk = state_db
-            .state
+        let wk = state_service
+            .chain
             .load()
             .staged
             .load()
@@ -809,14 +810,14 @@ mod tests {
 
         let parent = Some(t_id);
         let t_priority = 10;
-        let t_id = state_db
+        let t_id = state_service
             .workspace(wk_id)
             .create_tag(t_priority, t_name.clone(), parent)
             .await
             .unwrap();
 
-        let wk = state_db
-            .state
+        let wk = state_service
+            .chain
             .load()
             .staged
             .load()
@@ -841,21 +842,21 @@ mod tests {
 
     #[tokio::test]
     async fn delete_tag() {
-        let (mut state_db, wk_id) = setup_state_db("delete-tag").await;
+        let (mut state_service, wk_id) = setup_state_service("delete-tag").await;
 
         let t_priority: u64 = 16;
         let t_name = "tag_name".to_string();
 
-        let t_id = state_db
+        let t_id = state_service
             .workspace(wk_id)
             .create_tag(t_priority, t_name.clone(), None)
             .await
             .unwrap();
 
-        let _ = state_db.workspace(wk_id).delete_tag(t_id).await.unwrap();
+        let _ = state_service.workspace(wk_id).delete_tag(t_id).await.unwrap();
 
-        let wk = state_db
-            .state
+        let wk = state_service
+            .chain
             .load()
             .staged
             .load()
@@ -873,15 +874,15 @@ mod tests {
 
     #[tokio::test]
     async fn assign_shelf() {
-        let (mut state_db, wk_id) = setup_state_db("assign-shelf").await;
+        let (mut state_service, wk_id) = setup_state_service("assign-shelf").await;
         let node_id = NodeId::from_str(TEST_PKEY).unwrap();
-        let test_path = std::env::temp_dir().join("ebi-database");
+        let test_path = std::env::temp_dir().join("ebi-state");
 
         let shelf_name = "shelf_name".to_string();
         let shelf_description = "shelf_description".to_string();
         let remote = false;
 
-        let s_0_id = state_db
+        let s_0_id = state_service
             .workspace(wk_id)
             .assign_shelf(
                 test_path.clone(),
@@ -893,8 +894,8 @@ mod tests {
             .await
             .unwrap();
 
-        let state = state_db.state.load().staged.load();
-        let wk = state.workspaces.get(&wk_id).unwrap().load();
+        let chain = state_service.chain.load().staged.load();
+        let wk = chain.workspaces.get(&wk_id).unwrap().load();
         let s = wk.shelves.get(&s_0_id);
 
         assert!(s.is_some());
@@ -904,7 +905,7 @@ mod tests {
         assert_eq!(s.shelf_type, ShelfType::Local);
         assert_eq!(s.shelf_owner, ShelfOwner::Node(node_id));
 
-        let s_ref = state.shelves.get(&s_0_id).unwrap();
+        let s_ref = chain.shelves.get(&s_0_id).unwrap();
 
         let s_ref = s_ref.to_upgraded().unwrap();
         assert!(ptr_eq(s_ref.data_ref(), s.data_ref()));
@@ -913,15 +914,15 @@ mod tests {
 
     #[tokio::test]
     async fn unassign_shelf() {
-        let (mut state_db, wk_id) = setup_state_db("unassign-shelf").await;
+        let (mut state_service, wk_id) = setup_state_service("unassign-shelf").await;
         let node_id = NodeId::from_str(TEST_PKEY).unwrap();
-        let test_path = std::env::temp_dir().join("ebi-database");
+        let test_path = std::env::temp_dir().join("ebi-state");
 
         let shelf_name = "shelf_name".to_string();
         let shelf_description = "shelf_description".to_string();
         let remote = false;
 
-        let s_0_id = state_db
+        let s_0_id = state_service
             .workspace(wk_id)
             .assign_shelf(
                 test_path.clone(),
@@ -933,17 +934,17 @@ mod tests {
             .await
             .unwrap();
 
-        let _ = state_db
+        let _ = state_service
             .workspace(wk_id)
             .unassign_shelf(s_0_id)
             .await
             .unwrap();
 
-        let state = state_db.state.load().staged.load();
-        let wk = state.workspaces.get(&wk_id).unwrap().load();
+        let chain = state_service.chain.load().staged.load();
+        let wk = chain.workspaces.get(&wk_id).unwrap().load();
         let s = wk.shelves.get(&s_0_id);
         assert!(s.is_none());
-        let s_ref = state.shelves.get(&s_0_id).unwrap();
+        let s_ref = chain.shelves.get(&s_0_id).unwrap();
         assert!(s_ref.to_upgraded().is_none());
     }
 
