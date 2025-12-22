@@ -3,11 +3,11 @@ mod rpc;
 
 use crate::rpc::service::{DaemonInfo, RpcService, TaskID};
 use anyhow::Result;
-use ebi_gstate::{cache::CacheService, service::state::StateDatabase};
 use ebi_filesystem::service::FileSystem;
 use ebi_network::service::{Client, Network, Peer};
 use ebi_proto::rpc::*;
 use ebi_query::service::QueryService;
+use ebi_state::{cache::CacheService, service::State};
 use ebi_types::{RequestId, Uuid};
 use iroh::{Endpoint, NodeId, SecretKey};
 use papaya::{HashMap, HashSet};
@@ -139,7 +139,7 @@ async fn main() -> Result<()> {
     let db_path = PathBuf::from("db-save.redb");
 
     let filesys = FileSystem::new(&fs_db_path).unwrap();
-    let state_db = StateDatabase::new(&db_path).unwrap();
+    let state = State::new(&db_path).unwrap();
 
     let network = Network {
         peers: peers.clone(),
@@ -151,13 +151,13 @@ async fn main() -> Result<()> {
         network: network.clone(),
         cache: CacheService {},
         filesys: filesys.clone(),
-        state_db: state_db.clone(),
+        state: state.clone(),
         daemon_id: daemon_info.id.clone(),
     };
     let service = ServiceBuilder::new().service(RpcService {
         daemon_info: daemon_info.clone(),
         network: network.clone(),
-        state_db: state_db.clone(),
+        state: state.clone(),
         filesys,
         query_srv,
         responses: responses.clone(),
@@ -166,7 +166,7 @@ async fn main() -> Result<()> {
         watcher: watcher.clone(),
     });
     let mut client_streams = 0;
-    //let state = state_db.state.clone();
+    //let state = state.state.clone();
 
     loop {
         tokio::select! {

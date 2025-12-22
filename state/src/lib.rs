@@ -3,12 +3,11 @@ pub mod redb;
 pub mod service;
 
 use ebi_filesystem::shelf::TagFilter;
-use ebi_types::{Uuid, sharedref::*, stateful::*};
-use ebi_types::workspace::WorkspaceId;
 use ebi_types::shelf::*;
+use ebi_types::workspace::WorkspaceId;
+use ebi_types::{Uuid, sharedref::*, stateful::*};
 use std::collections::VecDeque;
 use std::sync::Arc;
-
 
 pub type Workspace = ebi_types::workspace::Workspace<TagFilter>;
 pub type Shelf = ebi_types::shelf::Shelf<TagFilter>;
@@ -42,7 +41,7 @@ pub struct CRDT;
 pub struct StateChain {
     pub staged: StatefulRef<StateView>, // Locally modified state - contains uncommitted changes
     pub committed: CRDT, // Committed ops (Broadcasted) but not yet approved by OpChain
-    pub received: CRDT, // Received ops (as broadcast) but not yet approved by OpChain
+    pub received: CRDT,  // Received ops (as broadcast) but not yet approved by OpChain
     pub synced: VecDeque<StatefulRef<StateView>>, // Approved states by OpChain, not seen by all - Clears once every Daemon views the changes
 }
 
@@ -70,10 +69,7 @@ impl StateChain {
         past.push_front(self.staged.clone_inner());
 
         let new_synced = StateChain {
-            staged: StatefulRef::from_arcswap(
-                Uuid::new_v4(),
-                self.staged.load_full().into()
-            ),
+            staged: StatefulRef::from_arcswap(Uuid::new_v4(), self.staged.load_full().into()),
             committed: CRDT,
             received: CRDT,
             synced: past,

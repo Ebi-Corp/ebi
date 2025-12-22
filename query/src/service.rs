@@ -1,9 +1,9 @@
 use crate::{Query, QueryErr};
-use ebi_state::{cache::CacheService, service::state::StateChain};
 use ebi_filesystem::service::ShelfDirKey;
 use ebi_filesystem::shelf::TagFilter;
 use ebi_filesystem::{file::gen_summary, service::FileSystem, shelf::ShelfData, shelf::merge};
 use ebi_network::service::Network;
+use ebi_state::{cache::CacheService, service::State};
 use ebi_types::file::{FileOrder, OrderedFileSummary};
 use ebi_types::shelf::Shelf;
 use ebi_types::{FileId, ImmutRef, NodeId, Uuid, parse_peer_id, uuid};
@@ -37,7 +37,7 @@ pub type TokenId = Uuid;
 pub struct QueryService {
     pub network: Network,
     pub cache: CacheService,
-    pub state_db: StateChain,
+    pub state: State,
     pub filesys: FileSystem,
     pub daemon_id: Arc<NodeId>,
 }
@@ -173,7 +173,7 @@ impl Service<PeerQuery> for QueryService {
     }
 
     fn call(&mut self, req: PeerQuery) -> Self::Future {
-        let mut state_db = self.state_db.clone();
+        let mut state = self.state.clone();
         let mut filesys = self.filesys.clone();
         let node_id = self.daemon_id.clone();
         let cache = self.cache.clone();
@@ -181,7 +181,7 @@ impl Service<PeerQuery> for QueryService {
             let Ok(workspace_id) = uuid(&req.workspace_id) else {
                 return Err(ReturnCode::ParseError);
             };
-            let Ok(workspace) = state_db.get_workspace(workspace_id).await else {
+            let Ok(workspace) = state.get_workspace(workspace_id).await else {
                 return Err(ReturnCode::WorkspaceNotFound);
             };
 
@@ -315,7 +315,7 @@ impl Service<ClientQuery> for QueryService {
     }
 
     fn call(&mut self, req: ClientQuery) -> Self::Future {
-        let mut state_db = self.state_db.clone();
+        let mut state = self.state.clone();
         let network = self.network.clone();
         let node_id = self.daemon_id.clone();
         let cache = self.cache.clone();
@@ -326,7 +326,7 @@ impl Service<ClientQuery> for QueryService {
             let Ok(workspace_id) = uuid(&req.workspace_id) else {
                 return Err(ReturnCode::ParseError);
             };
-            let Ok(workspace_ref) = state_db.get_workspace(workspace_id).await else {
+            let Ok(workspace_ref) = state.get_workspace(workspace_id).await else {
                 return Err(ReturnCode::WorkspaceNotFound);
             };
 

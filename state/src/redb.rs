@@ -2,17 +2,17 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::service::State;
 use crate::StateChain;
 use crate::StateView;
+use crate::service::State;
 use crate::{Shelf, Workspace};
 use arc_swap::ArcSwap;
 use ebi_proto::rpc::ReturnCode;
 use ebi_types::redb::*;
 use ebi_types::tag::{Tag, TagId};
 use ebi_types::workspace::WorkspaceInfo;
-use ebi_types::{Ref, StatefulMap, SwapRef, Uuid};
 use ebi_types::{ImmutRef, SharedRef, StatefulRef};
+use ebi_types::{Ref, StatefulMap, SwapRef, Uuid};
 use redb::{self, Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
@@ -30,8 +30,9 @@ pub const T_STATE_STATUS: TableDefinition<StateId, Bincode<StateStatus>> =
 
 // Add committed / received changes
 
+type StateMap = HashMap<EntityId, (Uuid, bool)>;
 // needed for edit. find table stored workspace or shelf by (state_id, entityId) -> db_workspace_id
-pub const T_ENTITY_STATE: TableDefinition<StateId, Bincode<HashMap<EntityId, (Uuid, bool)>>> =
+pub const T_ENTITY_STATE: TableDefinition<StateId, Bincode<StateMap>> =
     TableDefinition::new("entity_state");
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -202,7 +203,9 @@ impl State {
             let (s_id, s_type) = entry.unwrap();
             let s_id = s_id.value();
             match s_type.value().0 {
-                StateStatus::Staged => state_chain.staged = states.get(&s_id).unwrap().clone_inner(),
+                StateStatus::Staged => {
+                    state_chain.staged = states.get(&s_id).unwrap().clone_inner()
+                }
                 StateStatus::Synced(v) => ord.push((v, states.get(&s_id).unwrap().clone_inner())),
             }
         }
@@ -236,7 +239,7 @@ mod tests {
         left_wkspcs.sort_by_key(|w| w.id);
         right_wkspcs.sort_by_key(|w| w.id);
 
-        //assert_eq!(left_wkspcs, right_wkspcs);
+        assert_eq!(left_wkspcs, right_wkspcs);
         let wkspc_zipped = left_wkspcs.iter().zip(right_wkspcs.iter());
 
         for (w_l, w_r) in wkspc_zipped {
@@ -360,14 +363,8 @@ mod tests {
             saved_chain.load().staged.load().as_ref(),
             mem_chain.load().staged.load().as_ref(),
         );
-        assert_eq!(
-            saved_chain.load().committed,
-            mem_chain.load().committed,
-        );
-        assert_eq!(
-            saved_chain.load().received,
-            mem_chain.load().received,
-        );
+        assert_eq!(saved_chain.load().committed, mem_chain.load().committed,);
+        assert_eq!(saved_chain.load().received, mem_chain.load().received,);
         equal_state(
             saved_chain.load().synced.front().unwrap().load().as_ref(),
             mem_chain.load().synced.front().unwrap().load().as_ref(),
@@ -385,14 +382,8 @@ mod tests {
             saved_chain.load().staged.load().as_ref(),
             mem_chain.load().staged.load().as_ref(),
         );
-        assert_eq!(
-            saved_chain.load().committed,
-            mem_chain.load().committed,
-        );
-        assert_eq!(
-            saved_chain.load().received,
-            mem_chain.load().received,
-        );
+        assert_eq!(saved_chain.load().committed, mem_chain.load().committed,);
+        assert_eq!(saved_chain.load().received, mem_chain.load().received,);
         equal_state(
             saved_chain.load().synced.front().unwrap().load().as_ref(),
             mem_chain.load().synced.front().unwrap().load().as_ref(),

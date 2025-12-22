@@ -1,9 +1,9 @@
 use bincode::serde::encode_to_vec;
-use ebi_gstate::service::state::StateDatabase;
 use ebi_filesystem::service::{FileSystem, ShelfDirKey};
 use ebi_network::service::Network;
 use ebi_proto::rpc::*;
 use ebi_query::service::QueryService;
+use ebi_state::service::State;
 use ebi_types::shelf::{ShelfId, ShelfOwner, ShelfType};
 use ebi_types::*;
 use iroh::NodeId;
@@ -21,7 +21,7 @@ use tower::Service;
 pub struct RpcService {
     pub daemon_info: Arc<DaemonInfo>,
     pub network: Network,
-    pub state_db: StateDatabase,
+    pub state: State,
     pub filesys: FileSystem,
     pub query_srv: QueryService,
     pub tasks: Arc<HashMap<TaskID, JoinHandle<()>>>,
@@ -172,16 +172,16 @@ impl Service<DeleteTag> for RpcService {
 
     fn call(&mut self, req: DeleteTag) -> Self::Future {
         let metadata = req.metadata.clone().unwrap();
-        let mut state_db = self.state_db.clone();
+        let mut state = self.state.clone();
         let mut filesys = self.filesys.clone();
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
             let (workspace_id, tag_id) = (uuid(&req.workspace_id)?, uuid(&req.tag_id)?);
 
-            let workspace = state_db.get_workspace(workspace_id).await?;
+            let workspace = state.get_workspace(workspace_id).await?;
 
-            let tag_ref = state_db.workspace(workspace_id).delete_tag(tag_id).await?;
+            let tag_ref = state.workspace(workspace_id).delete_tag(tag_id).await?;
 
             for (_id, shelf) in workspace.shelves.iter() {
                 match &shelf.shelf_type {
@@ -224,7 +224,7 @@ impl Service<StripTag> for RpcService {
     fn call(&mut self, req: StripTag) -> Self::Future {
         let metadata = req.metadata.clone().unwrap();
         let mut network = self.network.clone();
-        let mut state_db = self.state_db.clone();
+        let mut state = self.state.clone();
         let mut filesys = self.filesys.clone();
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
@@ -235,7 +235,7 @@ impl Service<StripTag> for RpcService {
                 uuid(&req.workspace_id)?,
             );
 
-            let workspace = state_db.get_workspace(workspace_id).await?;
+            let workspace = state.get_workspace(workspace_id).await?;
 
             let shelf = workspace
                 .shelves
@@ -309,7 +309,7 @@ impl Service<DetachTag> for RpcService {
 
     fn call(&mut self, req: DetachTag) -> Self::Future {
         let metadata = req.metadata.clone().unwrap();
-        let mut state_db = self.state_db.clone();
+        let mut state = self.state.clone();
         let mut network = self.network.clone();
         let mut filesys = self.filesys.clone();
         Box::pin(async move {
@@ -321,7 +321,7 @@ impl Service<DetachTag> for RpcService {
                 uuid(&req.workspace_id)?,
             );
 
-            let workspace = state_db.get_workspace(workspace_id).await?;
+            let workspace = state.get_workspace(workspace_id).await?;
 
             let shelf = workspace
                 .shelves
@@ -400,7 +400,7 @@ impl Service<AttachTag> for RpcService {
     fn call(&mut self, req: AttachTag) -> Self::Future {
         let metadata = req.metadata.clone().unwrap();
         let mut filesys = self.filesys.clone();
-        let mut state_db = self.state_db.clone();
+        let mut state = self.state.clone();
         let mut network = self.network.clone();
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
@@ -411,7 +411,7 @@ impl Service<AttachTag> for RpcService {
                 uuid(&req.workspace_id)?,
             );
 
-            let workspace = state_db.get_workspace(workspace_id).await?;
+            let workspace = state.get_workspace(workspace_id).await?;
 
             let shelf = workspace
                 .shelves
@@ -499,13 +499,13 @@ impl Service<RemoveShelf> for RpcService {
 
     fn call(&mut self, req: RemoveShelf) -> Self::Future {
         let metadata = req.metadata.clone().unwrap();
-        let mut state_db = self.state_db.clone();
+        let mut state = self.state.clone();
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
             let (shelf_id, workspace_id) = (uuid(&req.shelf_id)?, uuid(&req.shelf_id)?);
 
-            state_db
+            state
                 .workspace(workspace_id)
                 .unassign_shelf(shelf_id)
                 .await?;
@@ -534,13 +534,13 @@ impl Service<EditShelf> for RpcService {
     fn call(&mut self, req: EditShelf) -> Self::Future {
         let metadata = req.metadata.clone();
         let metadata = metadata.unwrap();
-        let mut state_db = self.state_db.clone();
+        let mut state = self.state.clone();
         Box::pin(async move {
             let error_data: Option<ErrorData> = None;
 
             let (shelf_id, workspace_id) = (uuid(&req.shelf_id)?, uuid(&req.workspace_id)?);
 
-            state_db
+            state
                 .workspace(workspace_id)
                 .edit_shelf_info(shelf_id, req.name, req.description)
                 .await?;
@@ -568,7 +568,7 @@ impl Service<AddShelf> for RpcService {
     }
 
     fn call(&mut self, req: AddShelf) -> Self::Future {
-        let mut state_db = self.state_db.clone();
+        let mut state = self.state.clone();
         let metadata = req.metadata.clone();
         let metadata = metadata.unwrap();
         let daemon_info = self.daemon_info.clone();
@@ -593,7 +593,7 @@ impl Service<AddShelf> for RpcService {
                         Err(_) => ReturnCode::PeerServiceError, //[!] Generic error, expand with PeerService errors
                     }
                 } else {
-                    match state_db
+                    match state
                         .workspace(workspace_id)
                         .assign_shelf(path, peer_id, false, req.description, req.name)
                         .await
@@ -632,11 +632,11 @@ impl Service<DeleteWorkspace> for RpcService {
     }
 
     fn call(&mut self, req: DeleteWorkspace) -> Self::Future {
-        let mut state_db = self.state_db.clone();
+        let mut state = self.state.clone();
         let metadata = req.metadata.unwrap();
         Box::pin(async move {
             let workspace_id = uuid(&req.workspace_id)?;
-            state_db.remove_workspace(workspace_id).await?;
+            state.remove_workspace(workspace_id).await?;
 
             let metadata = Status {
                 request_uuid: metadata.request_uuid,
@@ -660,12 +660,12 @@ impl Service<EditTag> for RpcService {
     }
 
     fn call(&mut self, req: EditTag) -> Self::Future {
-        let mut state_db = self.state_db.clone();
+        let mut state = self.state.clone();
         let metadata = req.metadata.unwrap();
         Box::pin(async move {
             let (tag_id, workspace_id) = (uuid(&req.tag_id)?, uuid(&req.workspace_id)?);
 
-            let workspace = state_db.get_workspace(workspace_id).await?;
+            let workspace = state.get_workspace(workspace_id).await?;
 
             let tag = workspace.tags.get(&tag_id).ok_or(ReturnCode::TagNotFound)?;
 
@@ -720,7 +720,7 @@ impl Service<EditWorkspace> for RpcService {
     }
 
     fn call(&mut self, req: EditWorkspace) -> Self::Future {
-        let mut state_db = self.state_db.clone();
+        let mut state = self.state.clone();
         let metadata = req.metadata.unwrap();
         Box::pin(async move {
             let workspace_id = uuid(&req.workspace_id)?;
@@ -729,7 +729,7 @@ impl Service<EditWorkspace> for RpcService {
                 return Err(ReturnCode::WorkspaceNameEmpty.into());
             }
 
-            state_db
+            state
                 .workspace(workspace_id)
                 .edit_workspace_info(req.name, req.description)
                 .await?;
@@ -756,11 +756,11 @@ impl Service<GetShelves> for RpcService {
     }
 
     fn call(&mut self, req: GetShelves) -> Self::Future {
-        let mut state_db = self.state_db.clone();
+        let mut state = self.state.clone();
         let metadata = req.metadata.unwrap();
         Box::pin(async move {
             let workspace_id = uuid(&req.workspace_id)?;
-            let workspace = state_db.get_workspace(workspace_id).await?;
+            let workspace = state.get_workspace(workspace_id).await?;
 
             let mut shelves = Vec::new();
             // [!] Can be changed with iter mut + impl Into<rpc::Shelf> for shelf
@@ -805,10 +805,10 @@ impl Service<GetWorkspaces> for RpcService {
     }
 
     fn call(&mut self, req: GetWorkspaces) -> Self::Future {
-        let mut state_db = self.state_db.clone();
+        let mut state = self.state.clone();
         let metadata = req.metadata.unwrap();
         Box::pin(async move {
-            let workspace_ls = state_db.get_workspaces().await.unwrap();
+            let workspace_ls = state.get_workspaces().await.unwrap();
 
             let metadata = Status {
                 request_uuid: metadata.request_uuid,
@@ -833,10 +833,10 @@ impl Service<CreateWorkspace> for RpcService {
     }
 
     fn call(&mut self, req: CreateWorkspace) -> Self::Future {
-        let mut state_db = self.state_db.clone();
+        let mut state = self.state.clone();
         let metadata = req.metadata.clone().unwrap();
         Box::pin(async move {
-            let id = state_db
+            let id = state
                 .create_workspace(req.name, req.description)
                 .await
                 .unwrap();
@@ -864,7 +864,7 @@ impl Service<CreateTag> for RpcService {
     }
 
     fn call(&mut self, req: CreateTag) -> Self::Future {
-        let mut state_db = self.state_db.clone();
+        let mut state = self.state.clone();
         let metadata = req.metadata.clone().unwrap();
         Box::pin(async move {
             let workspace_id = uuid(&req.workspace_id)?;
@@ -874,7 +874,7 @@ impl Service<CreateTag> for RpcService {
                 None => None,
             };
 
-            let tag_id = state_db
+            let tag_id = state
                 .workspace(workspace_id)
                 .create_tag(req.priority, req.name, parent_id)
                 .await?;
