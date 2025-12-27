@@ -8,7 +8,7 @@ pub type WorkspaceId = Uuid;
 #[derive(Debug)]
 pub struct Workspace<TagFilter> {
     // Workspace Info
-    pub info: StatefulRef<WorkspaceInfo>,
+    pub info: StatefulRef<WorkspaceInfo, ()>,
     // Shelf Management
     pub shelves: StatefulMap<ShelfId, ImmutRef<Shelf<TagFilter>>>,
     // Tag Management

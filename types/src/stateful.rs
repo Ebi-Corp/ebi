@@ -40,7 +40,7 @@ where
 {
     pub fn new() -> Self {
         InfoState {
-            state: SharedRef::new_ref(HashMap::new()),
+            state: SharedRef::new_ref((), HashMap::new()),
         }
     }
 

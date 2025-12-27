@@ -16,7 +16,7 @@ use ebi_types::file::{FileOrder, FileSummary, OrderedFileSummary};
 use ebi_types::redb::{Storable, TagStorable};
 use ebi_types::shelf::TagRef;
 use ebi_types::tag::{Tag, TagData};
-use ebi_types::{FileId, ImmutRef, Ref, SharedRef, Uuid, WeakRef, WithPath, get_file_id};
+use ebi_types::{FileId, ImmutRef, Ref, SharedRef, Uuid, WithPath, get_file_id};
 use jwalk::{ClientState, WalkDirGeneric};
 use papaya::HashMap;
 use papaya::HashSet;
@@ -78,7 +78,7 @@ fn setup_tags(raw_tags: HashMap<Uuid, TagStorable>) -> HashSet<SharedRef<Tag>> {
             priority: tag_raw.priority,
             parent,
         };
-        let s_ref = SharedRef::new_ref_id(id, tag);
+        let s_ref = SharedRef::new_ref(id, tag);
         tag_refs.pin().insert(s_ref.clone());
         s_ref
     }
@@ -138,7 +138,7 @@ impl FileSystem {
             raw_files.pin().insert(k, v);
         }
         let tag_refs_pin = tag_refs.pin();
-        let files = HashSet::new();
+        let files: papaya::HashSet<ImmutRef<File, FileId>> = HashSet::new();
         for (id, file) in raw_files.pin().iter() {
             let tags: crate::dir::HashSet<TagRef> = file
                 .tags
@@ -149,7 +149,7 @@ impl FileSystem {
                 path: ModifiablePath::new(file.path.clone()),
                 tags,
             };
-            files.pin().insert(ImmutRef::new_ref_id(*id, file));
+            files.pin().insert(ImmutRef::new_ref(*id, file));
         }
 
         let dir_table = read_txn
@@ -166,7 +166,7 @@ impl FileSystem {
             let k = k.value();
             raw_dirs.pin().insert(k, v);
         }
-        let dirs = HashSet::new();
+        let dirs: papaya::HashSet<ImmutRef<ShelfDir, FileId>> = HashSet::new();
 
         let all_files = files.pin();
         for (id, dir) in raw_dirs.pin().iter() {
@@ -217,7 +217,7 @@ impl FileSystem {
                 parent,
                 subdirs,
             };
-            dirs.pin().insert(ImmutRef::new_ref_id(*id, s_dir));
+            dirs.pin().insert(ImmutRef::new_ref(*id, s_dir));
         }
         let raw_dirs = raw_dirs.pin();
         let all_dirs = dirs.pin();
@@ -230,7 +230,7 @@ impl FileSystem {
                     .iter()
                     .map(|dir_id| {
                         let dir_ref = all_dirs.get(dir_id).unwrap();
-                        dir_ref.downgrade()
+                        dir_ref.downgraded()
                     })
                     .collect();
                 let (dtag_ref, _) = dtag_dir.get_key_value(d_id).unwrap();
@@ -240,11 +240,11 @@ impl FileSystem {
             }
             if let Some(p) = r_dir.parent {
                 let parent = all_dirs.get(&p).unwrap();
-                dir.parent.store(Arc::new(Some(parent.downgrade())));
+                dir.parent.store(Arc::new(Some(parent.downgraded())));
             };
             for d_id in r_dir.subdirs.iter() {
                 let subdir = all_dirs.get(d_id).unwrap();
-                dir.subdirs.pin().insert(subdir.downgrade());
+                dir.subdirs.pin().insert(subdir.downgraded());
             }
         }
         let shelf_table = read_txn
@@ -263,10 +263,10 @@ impl FileSystem {
         let shelves = HashSet::new();
         let channel = Channel::new();
         for (s_id, s_raw) in raw_shelves.pin().iter() {
-            let dirs: crate::dir::HashSet<WeakRef<ShelfDir, FileId>> = s_raw
+            let dirs: crate::dir::HashSet<ShelfDirRef> = s_raw
                 .dirs
                 .iter()
-                .map(|s_id| all_dirs.get(s_id).unwrap().downgrade())
+                .map(|s_id| all_dirs.get(s_id).unwrap().downgraded())
                 .collect();
             let root = all_dirs.get(&s_raw.root).unwrap().clone();
 
@@ -279,7 +279,7 @@ impl FileSystem {
             };
             shelves
                 .pin()
-                .insert(ImmutRef::<ShelfData, FileId>::new_ref_id(*s_id, s_data));
+                .insert(ImmutRef::<ShelfData, FileId>::new_ref(*s_id, s_data));
         }
         drop(all_dirs);
         drop(all_files);
@@ -435,7 +435,7 @@ impl Service<AttachTag> for FileSystem {
                             .shared_collector(collector.clone())
                             .build(),
                     );
-                    let file = ImmutRef::new_ref_id(file_id, file);
+                    let file: ImmutRef<File, FileId> = ImmutRef::new_ref(file_id, file);
                     files.pin().insert(file.clone());
                     (file, true)
                 }
@@ -986,7 +986,7 @@ impl Service<DetachTag> for FileSystem {
                             .shared_collector(collector.clone())
                             .build(),
                     );
-                    let file = ImmutRef::new_ref_id(file_id, file);
+                    let file = ImmutRef::new_ref(file_id, file);
                     (file, true)
                 }
             };
@@ -1260,7 +1260,7 @@ impl Service<GetInitShelf> for FileSystem {
                         let Ok(sdir) = ShelfDir::new(path.clone()) else {
                             return Err(ReturnCode::InternalStateError);
                         };
-                        let sdir_ref = ImmutRef::<ShelfDir, FileId>::new_ref_id(path_id, sdir);
+                        let sdir_ref = ImmutRef::<ShelfDir, FileId>::new_ref(path_id, sdir);
                         dirs.insert(sdir_ref.clone());
                         // [TODO] handle db errors properly
 
@@ -1281,7 +1281,7 @@ impl Service<GetInitShelf> for FileSystem {
                         sdir_ref
                     }
                 };
-                let sdir_wref = sdir.downgrade();
+                let sdir_wref = sdir.downgraded();
 
                 if let Some(prev_subdir) = prev_subdir {
                     let write_txn = db
@@ -1306,7 +1306,7 @@ impl Service<GetInitShelf> for FileSystem {
                             .clone();
 
                         sdir_e.0.subdirs.push(prev_subdir.id);
-                        sdir.subdirs.pin().insert(prev_subdir.downgrade());
+                        sdir.subdirs.pin().insert(prev_subdir.downgraded());
 
                         prev_e.0.parent = Some(sdir_wref.id);
                         prev_subdir.parent.store(Some(sdir_wref.clone()).into());
@@ -1334,7 +1334,9 @@ impl Service<GetInitShelf> for FileSystem {
                     let Ok(s_data) = ShelfData::new(sdir, tx) else {
                         return Err(ReturnCode::ShelfCreationIOError);
                     };
-                    let s_data_ref: ImmutRef<ShelfData, FileId> = ImmutRef::new_ref(s_data);
+                    let file_id = get_file_id(s_data.path()).unwrap();
+                    let s_data_ref: ImmutRef<ShelfData, FileId> =
+                        ImmutRef::new_ref(file_id, s_data);
                     shelves.insert(s_data_ref.clone());
                     let write_txn = db
                         .begin_write()
@@ -1436,7 +1438,7 @@ impl Service<GetInitDir> for FileSystem {
                         let Ok(sdir) = ShelfDir::new(path.clone()) else {
                             return Err(ReturnCode::InternalStateError);
                         };
-                        let sdir_ref = ImmutRef::<ShelfDir, FileId>::new_ref_id(path_id, sdir);
+                        let sdir_ref = ImmutRef::<ShelfDir, FileId>::new_ref(path_id, sdir);
                         dirs.insert(sdir_ref.clone());
                         let write_txn = db
                             .begin_write()
@@ -1454,7 +1456,7 @@ impl Service<GetInitDir> for FileSystem {
                     }
                 };
 
-                let sdir_wref = sdir.downgrade();
+                let sdir_wref = sdir.downgraded();
 
                 // if we created a new subdir in previous loop
                 if let Some(prev_subdir) = prev_subdir {
@@ -1480,7 +1482,7 @@ impl Service<GetInitDir> for FileSystem {
                             .clone();
 
                         sdir_e.0.subdirs.push(prev_subdir.id);
-                        sdir.subdirs.pin().insert(prev_subdir.downgrade());
+                        sdir.subdirs.pin().insert(prev_subdir.downgraded());
 
                         prev_e.0.parent = Some(sdir_wref.id);
                         prev_subdir.parent.store(Some(sdir_wref.clone()).into());
@@ -1565,11 +1567,14 @@ mod tests {
             .await
             .unwrap();
 
-        let tag = SharedRef::new_ref(Tag {
-            priority: 0,
-            name: "test".to_string(),
-            parent: None,
-        });
+        let tag = SharedRef::new_ref(
+            Uuid::new_v4(),
+            Tag {
+                priority: 0,
+                name: "test".to_string(),
+                parent: None,
+            },
+        );
 
         let f_path = subdir_path.join("file.txt");
         let f_id = get_file_id(&f_path).unwrap();
@@ -1656,11 +1661,14 @@ mod tests {
         // filtering occurs at workspace (ebi-database) level
         assert_eq!((attach_shelf, attach_file), (false, false));
 
-        let other_tag_same_name = SharedRef::new_ref(Tag {
-            priority: 0,
-            name: "test".to_string(),
-            parent: None,
-        });
+        let other_tag_same_name = SharedRef::new_ref(
+            Uuid::new_v4(),
+            Tag {
+                priority: 0,
+                name: "test".to_string(),
+                parent: None,
+            },
+        );
         let (attach_shelf, attach_file) = fs
             .attach_tag(
                 ShelfDirKey::Id(s.id),
@@ -1718,11 +1726,14 @@ mod tests {
             .await
             .unwrap();
 
-        let tag = SharedRef::new_ref(Tag {
-            priority: 0,
-            name: "test".to_string(),
-            parent: None,
-        });
+        let tag = SharedRef::new_ref(
+            Uuid::new_v4(),
+            Tag {
+                priority: 0,
+                name: "test".to_string(),
+                parent: None,
+            },
+        );
 
         let f_path = subdir_path.join(PathBuf::from("file.txt"));
         let f_id = get_file_id(&f_path).unwrap();
@@ -1866,11 +1877,14 @@ mod tests {
             .await
             .unwrap();
 
-        let tag = SharedRef::new_ref(Tag {
-            priority: 0,
-            name: "test".to_string(),
-            parent: None,
-        });
+        let tag = SharedRef::new_ref(
+            Uuid::new_v4(),
+            Tag {
+                priority: 0,
+                name: "test".to_string(),
+                parent: None,
+            },
+        );
 
         let (attach_shelf, attach_dir) = fs
             .attach_dtag(ShelfDirKey::Id(s.id), shelf_path.clone(), tag.clone())
@@ -1937,11 +1951,14 @@ mod tests {
             .await
             .unwrap();
 
-        let tag = SharedRef::new_ref(Tag {
-            priority: 0,
-            name: "test".to_string(),
-            parent: None,
-        });
+        let tag = SharedRef::new_ref(
+            Uuid::new_v4(),
+            Tag {
+                priority: 0,
+                name: "test".to_string(),
+                parent: None,
+            },
+        );
 
         let _ = fs
             .attach_dtag(ShelfDirKey::Id(s.id), shelf_path.clone(), tag.clone())
@@ -2038,11 +2055,14 @@ mod tests {
             .await
             .unwrap();
 
-        let tag = SharedRef::new_ref(Tag {
-            priority: 0,
-            name: "test".to_string(),
-            parent: None,
-        });
+        let tag = SharedRef::new_ref(
+            Uuid::new_v4(),
+            Tag {
+                priority: 0,
+                name: "test".to_string(),
+                parent: None,
+            },
+        );
 
         let f_path = subdir_path.join("file.txt");
         let f_id = get_file_id(&f_path).unwrap();

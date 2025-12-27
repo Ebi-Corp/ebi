@@ -2,14 +2,14 @@ use crate::ModifiablePath;
 use crate::file::FileRef;
 use arc_swap::ArcSwap;
 use ebi_types::tag::TagRef;
-use ebi_types::{FileId, WeakRef, WithPath};
+use ebi_types::{FileId, Ref, ImmutRef, WithPath};
 use seize::Collector;
 use std::hash::RandomState;
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-pub type ShelfDirRef = WeakRef<ShelfDir, FileId>;
+pub type ShelfDirRef = <ImmutRef<ShelfDir, FileId> as Ref<ShelfDir, FileId>>::Weak;
 pub type ParentRef = ArcSwap<Option<ShelfDirRef>>;
 pub(crate) type HashSet<T> = papaya::HashSet<T, RandomState, Arc<Collector>>;
 pub(crate) type HashMap<K, V> = papaya::HashMap<K, V, RandomState, Arc<Collector>>;

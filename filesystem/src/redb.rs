@@ -215,16 +215,22 @@ mod tests {
             .await
             .unwrap();
 
-        let tag = SharedRef::new_ref(Tag {
-            priority: 0,
-            name: "test".to_string(),
-            parent: None,
-        });
-        let c_tag = SharedRef::new_ref(Tag {
-            priority: 0,
-            name: "test".to_string(),
-            parent: Some(tag.clone()),
-        });
+        let tag = SharedRef::new_ref(
+            Uuid::new_v4(),
+            Tag {
+                priority: 0,
+                name: "test".to_string(),
+                parent: None,
+            },
+        );
+        let c_tag = SharedRef::new_ref(
+            Uuid::new_v4(),
+            Tag {
+                priority: 0,
+                name: "test".to_string(),
+                parent: Some(tag.clone()),
+            },
+        );
 
         let _ = fs
             .attach_tag(ShelfDirKey::Id(s.id), test_subpath.join("file.txt"), c_tag)

@@ -73,7 +73,7 @@ fn setup_tags(raw_tags: HashMap<Uuid, TagStorable>) -> HashMap<Uuid, SharedRef<T
             priority: tag_raw.priority,
             parent,
         };
-        let s_ref = SharedRef::new_ref_id(id, tag);
+        let s_ref = SharedRef::new_ref(id, tag);
         tag_refs.insert(id, s_ref.clone());
         s_ref
     }
@@ -166,8 +166,8 @@ impl State {
                         shelf
                             .filter_tags
                             .store(raw_shelf.filter_tags.clone().into());
-                        let shelf: ImmutRef<Shelf> = ImmutRef::new_ref_id(raw_shelf.id, shelf);
-                        shelf_refs.insert(raw_shelf.id, shelf.downgrade());
+                        let shelf: ImmutRef<Shelf> = ImmutRef::new_ref(raw_shelf.id, shelf);
+                        shelf_refs.insert(raw_shelf.id, shelf.downgraded());
                         shelves.insert(raw_shelf.id, shelf);
                     }
                     let mut tags = im::HashMap::new();
@@ -179,20 +179,20 @@ impl State {
                     let w_info =
                         WorkspaceInfo::new(Some(wk.name.clone()), Some(wk.description.clone()));
                     let workspace = Workspace {
-                        info: StatefulRef::new_ref(w_info),
-                        shelves: StatefulMap::from_hmap(shelves, SwapRef::new_ref(())),
-                        tags: StatefulMap::from_hmap(tags, SwapRef::new_ref(())),
-                        lookup: StatefulMap::from_hmap(lookup, SwapRef::new_ref(())),
+                        info: StatefulRef::new_ref((), w_info),
+                        shelves: StatefulMap::from_hmap(shelves, SwapRef::new_ref((), ())),
+                        tags: StatefulMap::from_hmap(tags, SwapRef::new_ref((), ())),
+                        lookup: StatefulMap::from_hmap(lookup, SwapRef::new_ref((), ())),
                     };
-                    let workspace = StatefulRef::new_ref_id(wk.id, workspace);
+                    let workspace = StatefulRef::new_ref(wk.id, workspace);
                     workspaces.insert(wk.id, workspace.clone_inner().into());
                 }
             }
             let group_state = StateView {
-                workspaces: StatefulMap::from_hmap(workspaces, SwapRef::new_ref(())),
-                shelves: StatefulMap::from_hmap(shelf_refs, SwapRef::new_ref(())),
+                workspaces: StatefulMap::from_hmap(workspaces, SwapRef::new_ref((), ())),
+                shelves: StatefulMap::from_hmap(shelf_refs, SwapRef::new_ref((), ())),
             };
-            let group_state = StatefulRef::new_ref_id(*st_id, group_state);
+            let group_state = StatefulRef::new_ref(*st_id, group_state);
             states.insert(st_id, group_state);
         }
 

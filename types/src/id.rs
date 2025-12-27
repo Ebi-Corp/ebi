@@ -13,6 +13,12 @@ pub use file_id::FileId as RawFileId;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub struct Uuid(pub RawUuid);
 
+impl Default for Uuid {
+    fn default() -> Self {
+        Uuid::new_v4()
+    }
+}
+
 impl Uuid {
     // re-export UUID namespaces
     pub const NAMESPACE_DNS: Self = Uuid(RawUuid::NAMESPACE_DNS);

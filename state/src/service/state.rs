@@ -179,17 +179,17 @@ impl Service<CreateWorkspace> for State {
         let state = self.chain.load_full();
         let db = self.db.clone();
         Box::pin(async move {
-            let w_state = SwapRef::new_ref(()); // [TODO] Spawn bloom filters
+            let w_state = SwapRef::new_ref((), ()); // [TODO] Spawn bloom filters
             let workspace = Workspace {
-                info: StatefulRef::new_ref(WorkspaceInfo::new(
-                    Some(req.name),
-                    Some(req.description),
-                )),
+                info: StatefulRef::new_ref(
+                    (),
+                    WorkspaceInfo::new(Some(req.name), Some(req.description)),
+                ),
                 shelves: StatefulMap::new(w_state.clone()), // Placeholder for local shelves
                 tags: StatefulMap::new(w_state.clone()),
                 lookup: StatefulMap::new(w_state.clone()),
             };
-            let w_ref = StatefulRef::new_ref(workspace);
+            let w_ref = StatefulRef::new_ref(Uuid::new_v4(), workspace);
             let w_id = w_ref.id;
 
             state

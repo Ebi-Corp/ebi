@@ -141,7 +141,7 @@ impl Service<CreateTag> for WorkspaceState {
                 name: req.name.clone(),
                 parent,
             };
-            let tag_ref = SharedRef::<Tag>::new_ref(tag);
+            let tag_ref = SharedRef::<Tag>::new_ref(Uuid::new_v4(), tag);
             workspace_ref
                 .stateful_rcu(|w| {
                     let (u_l, _) = w.lookup.insert(req.name.clone(), tag_ref.id);
@@ -407,7 +407,7 @@ impl Service<AssignShelf> for WorkspaceState {
 
             match state.shelves.get(&shelf_id) {
                 Some(shelf_weak_ref) => {
-                    if let Some(shelf_up_ref) = shelf_weak_ref.to_upgraded() {
+                    if let Some(shelf_up_ref) = ImmutRef::<Shelf>::upgraded(shelf_weak_ref) {
                         new_shelf = false;
                         shelf_ref = Some(shelf_up_ref)
                     }
@@ -451,7 +451,7 @@ impl Service<AssignShelf> for WorkspaceState {
                     req.description.unwrap_or_default(),
                 );
 
-                shelf_ref = Some(ImmutRef::new_ref_id(shelf_id, shelf))
+                shelf_ref = Some(ImmutRef::new_ref(shelf_id, shelf))
             }
 
             let shelf_ref = shelf_ref.unwrap();
@@ -475,7 +475,7 @@ impl Service<AssignShelf> for WorkspaceState {
                 g_state
                     .staged
                     .stateful_rcu(|s| {
-                        let (u_m, u_s) = s.shelves.insert(shelf_id, shelf_ref.downgrade());
+                        let (u_m, u_s) = s.shelves.insert(shelf_id, shelf_ref.downgraded());
                         let u_g = StateView {
                             shelves: u_m,
                             workspaces: s.workspaces.clone(),
@@ -588,8 +588,10 @@ impl Service<EditShelf> for WorkspaceState {
                         .await;
                     workspace_ref
                         .stateful_rcu(|w| {
-                            let (u_m, u_s) =
-                                w.shelves.insert(shelf_ref.id, ImmutRef::new_ref(s.clone()));
+                            let (u_m, u_s) = w.shelves.insert(
+                                shelf_ref.id,
+                                ImmutRef::new_ref(Uuid::new_v4(), s.clone()),
+                            );
                             let u_w = Workspace {
                                 shelves: u_m,
                                 tags: w.tags.clone(),
@@ -914,7 +916,7 @@ mod tests {
 
         let s_ref = chain.shelves.get(&s_0_id).unwrap();
 
-        let s_ref = s_ref.to_upgraded().unwrap();
+        let s_ref = ImmutRef::<Shelf>::upgraded(&s_ref).unwrap();
         assert!(ptr_eq(s_ref.data_ref(), s.data_ref()));
         assert_eq!(s_ref.id, s.id);
     }
@@ -952,7 +954,7 @@ mod tests {
         let s = wk.shelves.get(&s_0_id);
         assert!(s.is_none());
         let s_ref = chain.shelves.get(&s_0_id).unwrap();
-        assert!(s_ref.to_upgraded().is_none());
+        assert!(ImmutRef::<Shelf>::upgraded(s_ref).is_none());
     }
 
     #[tokio::test]

@@ -3,7 +3,7 @@ use crate::file::FileRef;
 use crate::watcher::{ShelfWatcher, Signal};
 use crossbeam_channel::Sender;
 use ebi_types::tag::{Tag, TagId};
-use ebi_types::{FileId, ImmutRef, SharedRef, Uuid, WithPath};
+use ebi_types::{FileId, ImmutRef, Ref, SharedRef, Uuid, WithPath};
 use rand_chacha::rand_core::{CryptoRng, RngCore};
 use rand_chacha::{ChaCha12Rng, rand_core::SeedableRng};
 use scalable_cuckoo_filter::{ScalableCuckooFilter, ScalableCuckooFilterBuilder};
@@ -87,7 +87,7 @@ impl ShelfData {
         let dirs = papaya::HashSet::<ShelfDirRef>::builder()
             .shared_collector(collector)
             .build();
-        let downgraded_root = root_ref.downgrade();
+        let downgraded_root = root_ref.downgraded();
         dirs.pin().insert(downgraded_root);
         let _watcher = ShelfWatcher::new(root_ref.id, &path, tx);
         Ok(ShelfData {
@@ -137,34 +137,4 @@ pub fn merge<T: Clone + std::cmp::Eq + std::hash::Hash>(files: Vec<im::HashSet<T
         final_res.append(&mut to_append); // remainder chunk
     }
     final_res
-}
-
-#[cfg(test)] //[!] Check 
-mod tests {
-    use crate::file::File;
-    use ebi_types::Ref;
-    use jwalk::WalkDir;
-    use seize::Collector;
-    use std::path::PathBuf;
-    use std::sync::Arc;
-
-    use super::*;
-    fn _list_files(root: PathBuf) -> Vec<FileRef> {
-        WalkDir::new(root)
-            .into_iter()
-            .filter_map(|entry_res| {
-                let entry = entry_res.unwrap();
-                if entry.file_type().is_file() {
-                    Some(FileRef::new_ref(File::new(
-                        entry.path().clone(),
-                        papaya::HashSet::builder()
-                            .shared_collector(Arc::new(Collector::new()))
-                            .build(),
-                    )))
-                } else {
-                    None
-                }
-            })
-            .collect()
-    }
 }

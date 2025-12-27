@@ -11,11 +11,12 @@ use std::sync::Arc;
 
 pub type Workspace = ebi_types::workspace::Workspace<TagFilter>;
 pub type Shelf = ebi_types::shelf::Shelf<TagFilter>;
+pub type ShelfRef = <ImmutRef<Shelf> as Ref<Shelf, Uuid>>::Weak;
 
 #[derive(Debug)]
 pub struct StateView {
     pub workspaces: StatefulMap<WorkspaceId, Arc<StatefulRef<Workspace>>>,
-    pub shelves: StatefulMap<ShelfId, WeakRef<Shelf>>,
+    pub shelves: StatefulMap<ShelfId, ShelfRef>,
 }
 
 impl Default for StateView {
@@ -27,8 +28,8 @@ impl Default for StateView {
 impl StateView {
     pub fn new() -> Self {
         Self {
-            workspaces: StatefulMap::new(SwapRef::new_ref(())),
-            shelves: StatefulMap::new(SwapRef::new_ref(())),
+            workspaces: StatefulMap::new(SwapRef::new_ref((), ())),
+            shelves: StatefulMap::new(SwapRef::new_ref((), ())),
         }
     }
 }
@@ -49,7 +50,7 @@ const HIST_L: usize = 3;
 
 impl StateChain {
     pub fn new(new_state: StateView) -> Self {
-        let first = StatefulRef::new_ref(new_state);
+        let first = StatefulRef::new_ref(Uuid::new_v4(), new_state);
         StateChain {
             staged: first,
             committed: CRDT,

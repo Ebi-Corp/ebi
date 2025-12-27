@@ -6,7 +6,7 @@ use crate::shelf::ShelfData;
 use crossbeam_channel::{Receiver, RecvError, Sender, unbounded};
 use ebi_proto::rpc::ReturnCode;
 use ebi_types::redb::Storable;
-use ebi_types::{FileId, ImmutRef, get_file_id};
+use ebi_types::{FileId, ImmutRef, Ref, get_file_id};
 use notify::event::{CreateKind, ModifyKind, RemoveKind, RenameMode};
 use notify::{Error, Event, EventKind, RecommendedWatcher, Watcher};
 use redb::ReadableTable;
@@ -97,7 +97,7 @@ impl FileSystem {
             None => {
                 let new_p = dirs.get(p_id);
                 if let Some(new_p) = new_p {
-                    dir.parent.store(Some(new_p.downgrade()).into());
+                    dir.parent.store(Some(new_p.downgraded()).into());
                     new_p.data_ref().clone()
                 } else {
                     return;
@@ -117,7 +117,7 @@ impl FileSystem {
 
         dir.path.update(new_path);
         dir_table.insert(dir.id, dir.to_storable()).unwrap();
-        parent.subdirs.pin().insert(dir.downgrade());
+        parent.subdirs.pin().insert(dir.downgraded());
         let mut p_e = dir_table.get(p_id).unwrap().unwrap().value().clone();
         p_e.0.subdirs.push(dir.id);
         dir_table.insert(p_id, p_e).unwrap();
@@ -126,7 +126,7 @@ impl FileSystem {
         let mut shelf_e = shelf_table.get(shelf.id).unwrap().unwrap().value().clone();
         shelf_e.0.dirs.push(dir.id);
         shelf_table.insert(shelf.id, shelf_e).unwrap();
-        shelf.dirs.pin().insert(dir.downgrade());
+        shelf.dirs.pin().insert(dir.downgraded());
     }
 
     pub fn handle_del_file(&self, file: &ImmutRef<File, FileId>, p_id: &FileId) {
@@ -482,11 +482,14 @@ mod tests {
             .get_or_init_shelf(ShelfDirKey::Path(shelf_path.clone()))
             .await
             .unwrap();
-        let tag = SharedRef::new_ref(Tag {
-            priority: 0,
-            name: "test".to_string(),
-            parent: None,
-        });
+        let tag = SharedRef::new_ref(
+            Uuid::new_v4(),
+            Tag {
+                priority: 0,
+                name: "test".to_string(),
+                parent: None,
+            },
+        );
         let test_f_path = shelf_path.join("test_file");
         let _ = std::fs::File::create(test_f_path.clone()).unwrap();
 
@@ -534,11 +537,14 @@ mod tests {
             .get_or_init_shelf(ShelfDirKey::Path(shelf_path.clone()))
             .await
             .unwrap();
-        let tag = SharedRef::new_ref(Tag {
-            priority: 0,
-            name: "test".to_string(),
-            parent: None,
-        });
+        let tag = SharedRef::new_ref(
+            Uuid::new_v4(),
+            Tag {
+                priority: 0,
+                name: "test".to_string(),
+                parent: None,
+            },
+        );
         let test_f_path = dir_path.join("test_file");
         let _ = std::fs::File::create(test_f_path.clone()).unwrap();
 
@@ -577,11 +583,14 @@ mod tests {
             .get_or_init_shelf(ShelfDirKey::Path(shelf_path.clone()))
             .await
             .unwrap();
-        let tag = SharedRef::new_ref(Tag {
-            priority: 0,
-            name: "test".to_string(),
-            parent: None,
-        });
+        let tag = SharedRef::new_ref(
+            Uuid::new_v4(),
+            Tag {
+                priority: 0,
+                name: "test".to_string(),
+                parent: None,
+            },
+        );
         let test_f_path = shelf_path.join("file.txt");
         let _file = std::fs::File::create(test_f_path.clone()).unwrap();
 
@@ -657,11 +666,14 @@ mod tests {
             .get_or_init_shelf(ShelfDirKey::Path(shelf_path.clone()))
             .await
             .unwrap();
-        let tag = SharedRef::new_ref(Tag {
-            priority: 0,
-            name: "test".to_string(),
-            parent: None,
-        });
+        let tag = SharedRef::new_ref(
+            Uuid::new_v4(),
+            Tag {
+                priority: 0,
+                name: "test".to_string(),
+                parent: None,
+            },
+        );
         let test_f_path = subdir.join("file.txt");
         let _ = std::fs::File::create(test_f_path.clone()).unwrap();
 
@@ -712,11 +724,14 @@ mod tests {
             .get_or_init_shelf(ShelfDirKey::Path(shelf_path2.clone()))
             .await
             .unwrap();
-        let tag = SharedRef::new_ref(Tag {
-            priority: 0,
-            name: "test".to_string(),
-            parent: None,
-        });
+        let tag = SharedRef::new_ref(
+            Uuid::new_v4(),
+            Tag {
+                priority: 0,
+                name: "test".to_string(),
+                parent: None,
+            },
+        );
 
         let test_f_path1 = shelf_path1.join("file1.txt");
         let _ = std::fs::File::create(test_f_path1.clone()).unwrap();
@@ -816,11 +831,14 @@ mod tests {
             .get_or_init_shelf(ShelfDirKey::Path(shelf_path2.clone()))
             .await
             .unwrap();
-        let tag = SharedRef::new_ref(Tag {
-            priority: 0,
-            name: "test".to_string(),
-            parent: None,
-        });
+        let tag = SharedRef::new_ref(
+            Uuid::new_v4(),
+            Tag {
+                priority: 0,
+                name: "test".to_string(),
+                parent: None,
+            },
+        );
 
         let test_f_path1 = subdir1.join("file1.txt");
         let _ = std::fs::File::create(test_f_path1.clone()).unwrap();
@@ -916,11 +934,14 @@ mod tests {
             .await
             .unwrap();
 
-        let tag = SharedRef::new_ref(Tag {
-            priority: 0,
-            name: "test".to_string(),
-            parent: None,
-        });
+        let tag = SharedRef::new_ref(
+            Uuid::new_v4(),
+            Tag {
+                priority: 0,
+                name: "test".to_string(),
+                parent: None,
+            },
+        );
 
         let test_f_path1 = subdir_path1.join("file1.txt");
         let _ = std::fs::File::create(test_f_path1.clone()).unwrap();
@@ -992,11 +1013,14 @@ mod tests {
             .await
             .unwrap();
 
-        let tag = SharedRef::new_ref(Tag {
-            priority: 0,
-            name: "test".to_string(),
-            parent: None,
-        });
+        let tag = SharedRef::new_ref(
+            Uuid::new_v4(),
+            Tag {
+                priority: 0,
+                name: "test".to_string(),
+                parent: None,
+            },
+        );
 
         let test_f_path1 = subdir_path1.join("file1.txt");
         let _ = std::fs::File::create(test_f_path1.clone()).unwrap();

@@ -1,31 +1,29 @@
 use crate::Uuid;
-use arc_swap::{ArcSwap, AsRaw};
+use arc_swap::{ArcSwap, ArcSwapWeak, AsRaw};
 use std::borrow::Borrow;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Weak;
 use std::{future::Future, ops::Deref, pin::Pin, ptr, sync::Arc};
 
-pub type WeakRef<T, I = Uuid> = Inner<Weak<T>, I>;
 pub type ImmutRef<T, I = Uuid> = Inner<Arc<T>, I>;
 pub type SharedRef<T, I = Uuid> = Inner<Arc<ArcSwap<T>>, I>;
 pub type StatefulRef<T, I = Uuid> = Inner<ArcSwap<T>, I>;
 
 pub trait Ref<T, I> {
-    fn new_ref(data: T) -> Self;
-    fn new_ref_id(id: I, data: T) -> Self;
+    type Weak;
+    fn new_ref(id: I, data: T) -> Self;
     fn inner_ptr(&self) -> *const T;
+    fn downgraded(&self) -> Self::Weak;
+    fn upgraded(weak_ref: &Self::Weak) -> Option<Self>
+    where
+        Self: Sized;
 }
 
-impl<T> Ref<T, Uuid> for ImmutRef<T, Uuid> {
-    fn new_ref(data: T) -> Self {
-        let id = Uuid::new_v4();
-        Inner {
-            id,
-            data: Arc::new(data),
-        }
-    }
-    fn new_ref_id(id: Uuid, data: T) -> Self {
+impl<T, I: Copy> Ref<T, I> for ImmutRef<T, I> {
+    type Weak = Inner<Weak<T>, I>;
+
+    fn new_ref(id: I, data: T) -> Self {
         Inner {
             id,
             data: Arc::new(data),
@@ -35,17 +33,26 @@ impl<T> Ref<T, Uuid> for ImmutRef<T, Uuid> {
     fn inner_ptr(&self) -> *const T {
         Arc::as_ptr(&self.data)
     }
-}
 
-impl<T> Ref<T, Uuid> for StatefulRef<T, Uuid> {
-    fn new_ref(data: T) -> Self {
-        let id = Uuid::new_v4();
+    fn downgraded(&self) -> Self::Weak {
         Inner {
-            id,
-            data: ArcSwap::new(Arc::new(data)),
+            id: self.id,
+            data: Arc::downgrade(&self.data),
         }
     }
-    fn new_ref_id(id: Uuid, data: T) -> Self {
+    fn upgraded(weak_ref: &Self::Weak) -> Option<Self> {
+        let data = weak_ref.data.upgrade()?;
+        Some(Inner {
+            id: weak_ref.id,
+            data,
+        })
+    }
+}
+
+impl<T, I: Copy> Ref<T, I> for StatefulRef<T, I> {
+    type Weak = Inner<ArcSwapWeak<T>, I>;
+
+    fn new_ref(id: I, data: T) -> Self {
         Inner {
             id,
             data: ArcSwap::new(Arc::new(data)),
@@ -55,18 +62,26 @@ impl<T> Ref<T, Uuid> for StatefulRef<T, Uuid> {
     fn inner_ptr(&self) -> *const T {
         Arc::as_ptr(&self.data.load_full())
     }
-}
 
-impl<T> Ref<T, Uuid> for SharedRef<T, Uuid> {
-    fn new_ref(data: T) -> Self {
-        let id = Uuid::new_v4();
-        let data = ArcSwap::new(Arc::new(data));
+    fn downgraded(&self) -> Self::Weak {
         Inner {
-            id,
-            data: Arc::new(data),
+            id: self.id,
+            data: ArcSwapWeak::new(Arc::downgrade(&self.data.load())),
         }
     }
-    fn new_ref_id(id: Uuid, data: T) -> Self {
+    fn upgraded(weak_ref: &Self::Weak) -> Option<Self> {
+        let data = ArcSwap::new(weak_ref.data.load().upgrade()?);
+        Some(Inner {
+            id: weak_ref.id,
+            data,
+        })
+    }
+}
+
+impl<T, I: Copy> Ref<T, I> for SharedRef<T, I> {
+    type Weak = Inner<Weak<ArcSwap<T>>, I>;
+
+    fn new_ref(id: I, data: T) -> Self {
         let data = ArcSwap::new(Arc::new(data));
         Inner {
             id,
@@ -76,42 +91,19 @@ impl<T> Ref<T, Uuid> for SharedRef<T, Uuid> {
     fn inner_ptr(&self) -> *const T {
         Arc::as_ptr(&self.data.load())
     }
-}
 
-impl<T> Ref<T, ()> for SharedRef<T, ()> {
-    fn new_ref(data: T) -> Self {
-        let data = ArcSwap::new(Arc::new(data));
-        Inner {
-            id: (),
-            data: Arc::new(data),
-        }
-    }
-    fn new_ref_id(id: (), data: T) -> Self {
-        let data = ArcSwap::new(Arc::new(data));
-        Inner {
-            id,
-            data: Arc::new(data),
-        }
-    }
-
-    fn inner_ptr(&self) -> *const T {
-        Arc::as_ptr(&self.data.load_full())
-    }
-}
-
-impl<T, I: Copy> ImmutRef<T, I> {
-    pub fn downgrade(&self) -> WeakRef<T, I> {
+    fn downgraded(&self) -> Self::Weak {
         Inner {
             id: self.id,
             data: Arc::downgrade(&self.data),
         }
     }
-}
-
-impl<T, I: Copy> WeakRef<T, I> {
-    pub fn to_upgraded(&self) -> Option<ImmutRef<T, I>> {
-        let data = self.data.upgrade()?;
-        Some(Inner { id: self.id, data })
+    fn upgraded(weak_ref: &Self::Weak) -> Option<Self> {
+        let data = weak_ref.data.upgrade()?;
+        Some(Inner {
+            id: weak_ref.id,
+            data,
+        })
     }
 }
 
@@ -148,7 +140,7 @@ impl<T, I> Borrow<I> for ImmutRef<T, I> {
     }
 }
 
-impl<T, I> Borrow<I> for WeakRef<T, I> {
+impl<T, I> Borrow<I> for Inner<Weak<T>, I> {
     fn borrow(&self) -> &I {
         &self.id
     }
@@ -186,7 +178,7 @@ impl<T, I> Deref for Inner<T, I> {
     }
 }
 
-impl<T> StatefulRef<T> {
+impl<T, I> StatefulRef<T, I> {
     pub fn stateful_rcu<R, F, O>(&self, mut f: F) -> Pin<Box<dyn Future<Output = O> + Send>>
     where
         F: FnMut(&Arc<T>) -> (R, Pin<Box<dyn Future<Output = O> + Send>>),

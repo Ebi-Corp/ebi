@@ -51,7 +51,7 @@ pub struct Shelf<TagFilter> {
     pub shelf_owner: ShelfOwner,
     pub config: ShelfConfig,
     pub filter_tags: ArcSwap<TagFilter>,
-    pub info: StatefulRef<ShelfInfo>,
+    pub info: StatefulRef<ShelfInfo, ()>,
 }
 
 impl<TagFilter> Clone for Shelf<TagFilter> {
@@ -80,7 +80,7 @@ impl<TagFilter: Default> Shelf<TagFilter> {
             shelf_owner,
             config: config.unwrap_or_default(),
             filter_tags: ArcSwap::new(Arc::new(TagFilter::default())), // [TODO] Filter parameters (size, ...) should be configurable
-            info: StatefulRef::new_ref(ShelfInfo::new(Some(name), Some(description), path)),
+            info: StatefulRef::new_ref((), ShelfInfo::new(Some(name), Some(description), path)),
         }
     }
 }
