@@ -289,9 +289,6 @@ impl Service<DeleteTag> for WorkspaceStateService {
                 for tag_e in to_remove {
                     tags.retain(|tag| *tag != tag_e); // remove from T_ENTITY
                     entities.retain(|id| *id != tag_e); // remove from T_WORKSPACE_ENTITIES
-                    workspace_entities_t
-                        .remove(tag_e.0.id)
-                        .map_err(|_| ReturnCode::DbCommitError)?;
                     tag_t
                         .remove(tag_e.0.id)
                         .map_err(|_| ReturnCode::DbCommitError)?;
@@ -403,9 +400,6 @@ impl Service<UnassignShelf> for WorkspaceStateService {
                 for shelf_e in to_remove {
                     shelves.retain(|id| *id != shelf_e); // remove from T_ENTITY
                     entities.retain(|id| *id != shelf_e); // remove from T_WORKSPACE_ENTITIES
-                    workspace_entities_t
-                        .remove(shelf_e.0.id)
-                        .map_err(|_| ReturnCode::DbCommitError)?;
                     shelf_t
                         .remove(shelf_e.0.id)
                         .map_err(|_| ReturnCode::DbCommitError)?;
