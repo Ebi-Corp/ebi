@@ -117,9 +117,17 @@ impl Service<CreateTag> for WorkspaceStateService {
         let res_workspace_ref = self.set_workspace();
         let db = self.service.db.clone();
         Box::pin(async move {
+            if req.name.is_empty() {
+                return Err(ReturnCode::TagNameEmpty);
+            }
+
             let workspace_ref = &res_workspace_ref?.load_full().staged;
             let staged_id = workspace_ref.id;
             let workspace = workspace_ref.load();
+
+            if workspace.lookup.contains_key(&req.name) {
+                return Err(ReturnCode::TagNameDuplicate);
+            }
 
             let parent = match req.parent {
                 Some(p_id) => Some(
@@ -235,14 +243,17 @@ impl Service<DeleteTag> for WorkspaceStateService {
                 return Err(ReturnCode::TagNotFound);
             };
 
+            let tag_name = tag_ref.load().name.clone();
+
             workspace_ref
                 .stateful_rcu(|w| {
-                    let (u_m, u_s) = w.tags.remove(&req.tag_id);
+                    let (u_m, _) = w.tags.remove(&req.tag_id);
+                    let (u_l, u_s) = w.lookup.remove(&tag_name);
                     let u_w = Workspace {
                         tags: u_m,
                         info: w.info.clone_inner(),
                         shelves: w.shelves.clone(),
-                        lookup: w.lookup.clone(),
+                        lookup: u_l,
                     };
                     (u_w, u_s)
                 })
@@ -268,6 +279,7 @@ impl Service<DeleteTag> for WorkspaceStateService {
                 let mut wk = workspace_t.get(staged_id).unwrap().unwrap().value();
 
                 wk.0.tags.retain(|id| *id != tag_ref.id);
+                wk.0.lookup.remove(&tag_name);
 
                 workspace_t.insert(staged_id, wk).unwrap();
                 let mut entities = workspace_entities_t
@@ -868,6 +880,7 @@ mod tests {
 
         let parent = Some(t_id);
         let t_priority = 10;
+        let t_name = "child_tag_name".to_string();
         let mut state_service = state_service.clone();
         let t_id = state_service
             .workspace(wk_id)
