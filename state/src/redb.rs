@@ -129,43 +129,64 @@ impl StateService {
     pub fn full_load(db_path: &PathBuf) -> Result<Self, ReturnCode> {
         let db = Database::create(db_path).map_err(|_| ReturnCode::DbOpenError)?;
         let read_txn = db.begin_read().unwrap();
-        let sync_state_t = read_txn
-            .open_table(T_SYNC_STATE)
-            .map_err(|_| ReturnCode::DbTableOpenError)?;
-        let shelves_t = read_txn
-            .open_table(T_SHELF)
-            .map_err(|_| ReturnCode::DbTableOpenError)?;
-        let workspaces_t = read_txn
-            .open_table(T_WORKSPACE)
-            .map_err(|_| ReturnCode::DbTableOpenError)?;
-        let tags_t = read_txn
-            .open_table(T_TAG)
-            .map_err(|_| ReturnCode::DbTableOpenError)?;
-        let workspace_entities = read_txn
-            .open_table(T_WORKSPACE_ENTITIES)
-            .map_err(|_| ReturnCode::DbTableOpenError)?;
+        let tables = match (
+            read_txn.open_table(T_SYNC_STATE),
+            read_txn.open_table(T_WORKSPACE),
+            read_txn.open_table(T_WORKSPACE_ENTITIES),
+        ) {
+            (Ok(sync_state_t), Ok(workspaces_t), Ok(workspace_entities)) => {
+                Some((sync_state_t, workspaces_t, workspace_entities))
+            }
+            (
+                Err(redb::TableError::TableDoesNotExist(_)),
+                Err(redb::TableError::TableDoesNotExist(_)),
+                Err(redb::TableError::TableDoesNotExist(_)),
+            ) => None,
+            _ => return Err(ReturnCode::DbTableOpenError),
+        };
+        let Some((sync_state_t, workspaces_t, workspace_entities)) = tables else {
+            return Ok(Self {
+                sync_states: Arc::new(papaya::HashSet::new()),
+                shelves: Arc::new(papaya::HashSet::new()),
+                db: Arc::new(db),
+            });
+        };
 
         let mut raw_tags = HashMap::new();
-        for (k, v) in (tags_t
-            .range::<Uuid>(..)
-            .map_err(|_| ReturnCode::InternalStateError)?)
-        .flatten()
-        {
-            let v = v.value().0; // access TagStorable
-            let k = k.value();
-            raw_tags.insert(k, v);
+        // A workspace without tags (e.g., a new one) has no T_TAG table
+        match read_txn.open_table(T_TAG) {
+            Ok(tags_t) => {
+                for (k, v) in (tags_t
+                    .range::<Uuid>(..)
+                    .map_err(|_| ReturnCode::InternalStateError)?)
+                .flatten()
+                {
+                    let v = v.value().0; // access TagStorable
+                    let k = k.value();
+                    raw_tags.insert(k, v);
+                }
+            }
+            Err(redb::TableError::TableDoesNotExist(_)) => {}
+            Err(_) => return Err(ReturnCode::DbTableOpenError),
         }
         let all_tags = setup_tags(raw_tags);
 
         let mut raw_shelves = HashMap::new();
-        for (k, v) in (shelves_t
-            .range::<Uuid>(..)
-            .map_err(|_| ReturnCode::InternalStateError)?)
-        .flatten()
-        {
-            let v = v.value().0;
-            let k = k.value();
-            raw_shelves.insert(k, v);
+        // A workspace without shelves (e.g., a new one) has no T_SHELF table
+        match read_txn.open_table(T_SHELF) {
+            Ok(shelves_t) => {
+                for (k, v) in (shelves_t
+                    .range::<Uuid>(..)
+                    .map_err(|_| ReturnCode::InternalStateError)?)
+                .flatten()
+                {
+                    let v = v.value().0;
+                    let k = k.value();
+                    raw_shelves.insert(k, v);
+                }
+            }
+            Err(redb::TableError::TableDoesNotExist(_)) => {}
+            Err(_) => return Err(ReturnCode::DbTableOpenError),
         }
 
         let mut raw_workspaces = HashMap::new();
@@ -388,7 +409,7 @@ mod tests {
         let tag_name = "tag_name".to_string();
         let t_1 = wk_0.create_tag(12, tag_name.clone(), None).await.unwrap();
         let _ = wk_0
-            .create_tag(2, tag_name.clone(), Some(t_1))
+            .create_tag(2, "child_tag_name".to_string(), Some(t_1))
             .await
             .unwrap();
         let _ = wk_1.create_tag(0, tag_name.clone(), None).await.unwrap();
@@ -403,6 +424,7 @@ mod tests {
 
         assert_eq_sync_states(&saved_sync_states, &loaded_sync_states);
 
+        //[/] Edited Workspace 
         //state_service.sync_state(crate::CRDT).await;
         state_service.remove_workspace(wk_1_id).await.unwrap();
         state_service
@@ -424,6 +446,7 @@ mod tests {
 
         assert_eq_sync_states(&saved_sync_states, &loaded_sync_states);
 
+        //[/] No-Op 
         //state_service.sync_state(crate::CRDT).await;
         let saved_sync_states = state_service.sync_states.clone();
 
