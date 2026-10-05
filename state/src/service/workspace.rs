@@ -847,6 +847,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_tag_rejects_empty_name() {
+        let (mut state_service, wk_id) = setup_state_service("create-tag-empty").await;
+
+        assert_eq!(
+            state_service
+                .workspace(wk_id)
+                .create_tag(1, String::new(), None)
+                .await,
+            Err(ReturnCode::TagNameEmpty)
+        );
+    }
+
+    #[tokio::test]
+    async fn create_tag_rejects_duplicate_name() {
+        let (mut state_service, wk_id) = setup_state_service("create-tag-duplicate").await;
+
+        let t_id = state_service
+            .workspace(wk_id)
+            .create_tag(1, "dup".to_string(), None)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            state_service
+                .workspace(wk_id)
+                .create_tag(2, "dup".to_string(), None)
+                .await,
+            Err(ReturnCode::TagNameDuplicate)
+        );
+
+        let wk = state_service
+            .sync_states
+            .pin()
+            .get(&wk_id)
+            .unwrap()
+            .load()
+            .staged
+            .load();
+        assert_eq!(wk.tags.len(), 1);
+        assert_eq!(wk.lookup.get("dup"), Some(&t_id));
+    }
+
+    #[tokio::test]
     async fn create_tag() {
         let (mut state_service, wk_id) = setup_state_service("create-tag").await;
 
