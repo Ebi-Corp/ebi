@@ -1,4 +1,5 @@
 use bincode::serde::encode_to_vec;
+use chrono::Utc;
 use ebi_filesystem::service::{FileSystem, ShelfDirKey};
 use ebi_network::service::Network;
 use ebi_proto::rpc::*;
@@ -39,30 +40,17 @@ pub enum Notification {
     PeerConnected(NodeId),
 }
 
-#[derive(Debug, Clone, Hash, Eq, PartialEq)]
-pub enum DaemonInfoField {
-    Name,
-}
-
 #[derive(Debug)]
 pub struct DaemonInfo {
     pub id: Arc<NodeId>,
-    pub name: StatefulField<DaemonInfoField, String>,
+    pub name: Stamped<String>,
 }
 
 impl DaemonInfo {
     pub fn new(id: NodeId, name: String) -> Self {
         DaemonInfo {
             id: Arc::new(id),
-            name: {
-                let field = StatefulField::<DaemonInfoField, String>::new(
-                    DaemonInfoField::Name,
-                    InfoState::new(),
-                );
-                let (field, updater) = field.set(&name);
-                drop(updater); // No State Update required for Info Creation
-                field
-            },
+            name: Stamped::new(name, Utc::now()),
         }
     }
 }
@@ -776,9 +764,9 @@ impl Service<GetShelves> for RpcService {
                 shelves.push(Shelf {
                     shelf_id: id.as_bytes().to_vec(),
                     owner: Some(owner_data),
-                    name: shelf.info.load().name.get(),
-                    description: shelf.info.load().description.get(),
-                    path: shelf.info.load().root.get().to_string_lossy().into_owned(),
+                    name: shelf.info.load().name.get().clone(),
+                    description: shelf.info.load().description.get().clone(),
+                    path: shelf.info.load().root.to_string_lossy().into_owned(),
                 });
             }
             let metadata = Status {

@@ -25,3 +25,4 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 arc-swap = { workspace = true }
 papaya = { workspace = true }
+chrono = { workspace = true }

@@ -7,6 +7,7 @@ use crate::service::StateService;
 use crate::{Shelf, SyncState, Workspace};
 use ebi_proto::rpc::ReturnCode;
 use ebi_types::redb::*;
+use ebi_types::shelf::ShelfInfo;
 use ebi_types::tag::{Tag, TagId};
 use ebi_types::workspace::WorkspaceInfo;
 use ebi_types::{ImmutRef, SharedRef, StatefulRef};
@@ -231,12 +232,17 @@ impl StateService {
                             let raw_shelf = raw_shelves.get(&entity.id).unwrap().clone();
                             let shelf = Shelf::new(
                                 raw_shelf.root,
-                                raw_shelf.name,
+                                raw_shelf.name.get().clone(),
                                 raw_shelf.shelf_type,
                                 raw_shelf.shelf_owner,
                                 Some(raw_shelf.config),
-                                raw_shelf.description,
+                                raw_shelf.description.get().clone(),
                             );
+                            shelf.info.rcu(|info| ShelfInfo {
+                                name: raw_shelf.name.clone(),
+                                description: raw_shelf.description.clone(),
+                                root: info.root.clone(),
+                            });
                             shelf
                                 .filter_tags
                                 .store(raw_shelf.filter_tags.clone().into());
@@ -251,8 +257,10 @@ impl StateService {
                     }
                 }
                 let lookup: im::HashMap<String, TagId> = raw_wk.lookup.clone().into();
-                let w_info =
-                    WorkspaceInfo::new(Some(raw_wk.name.clone()), Some(raw_wk.description.clone()));
+                let w_info = WorkspaceInfo {
+                    name: raw_wk.name.clone(),
+                    description: raw_wk.description.clone(),
+                };
                 let workspace = Workspace {
                     info: StatefulRef::new_ref((), w_info),
                     shelves: StatefulMap::from_hmap(shelves, SwapRef::new_ref((), ())),

@@ -1,3 +1,4 @@
+use crate::Stamped;
 use crate::shelf::{Shelf, ShelfConfig, ShelfOwner, ShelfType};
 use crate::tag::Tag;
 use crate::workspace::Workspace;
@@ -223,8 +224,8 @@ where
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct WorkspaceStorable {
     pub id: Uuid,
-    pub name: String,
-    pub description: String,
+    pub name: Stamped<String>,
+    pub description: Stamped<String>,
     pub shelves: Vec<Uuid>,
     pub tags: Vec<Uuid>,
     pub lookup: HashMap<String, Uuid>,
@@ -237,8 +238,8 @@ impl<F> Storable for StatefulRef<Workspace<F>> {
         let info_data = workspace.info.load();
         Bincode(Self::Storable {
             id: self.id,
-            name: info_data.name.get(),
-            description: info_data.description.get(),
+            name: info_data.name.clone(),
+            description: info_data.description.clone(),
             shelves: workspace.shelves.keys().cloned().collect(),
             tags: workspace.tags.keys().cloned().collect(),
             lookup: workspace
@@ -253,8 +254,8 @@ impl<F> Storable for StatefulRef<Workspace<F>> {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ShelfStorable<F> {
     pub id: Uuid,
-    pub name: String,
-    pub description: String,
+    pub name: Stamped<String>,
+    pub description: Stamped<String>,
     pub root: PathBuf,
     pub shelf_type: ShelfType,
     pub shelf_owner: ShelfOwner,
@@ -273,9 +274,9 @@ where
 
         Bincode(Self::Storable {
             id: self.id,
-            name: info_data.name.get(),
-            description: info_data.description.get(),
-            root: info_data.root.get(),
+            name: info_data.name.clone(),
+            description: info_data.description.clone(),
+            root: info_data.root.clone(),
             shelf_type: self.shelf_type.clone(),
             shelf_owner: self.shelf_owner.clone(),
             config: self.config.clone(),

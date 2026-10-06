@@ -1,141 +1,61 @@
 use chrono::{DateTime, Utc};
 use im::HashMap;
+use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::future::Future;
+use std::hash::Hash;
 use std::ops::Deref;
 use std::pin::Pin;
-use std::sync::Arc;
-use std::{any::Any, hash::Hash};
 
-use crate::{Ref, SharedRef};
+use crate::SharedRef;
 
 pub type SwapRef<T> = SharedRef<T, ()>;
 
-pub trait GenericValue: Any + Send + Sync + Debug {
-    fn clone_box(&self) -> Box<dyn GenericValue>;
+//[!] "Wall Time" may not be trustworthy, maybe use a Hybrid Logical Clock ?? 
+pub type Revision = DateTime<Utc>;
+
+// A value with a last-edit timestamp, used for LWW 
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize)]
+pub struct Stamped<T> {
+    value: T,
+    rev: Revision,
 }
 
-impl<T> GenericValue for T
-where
-    T: Any + Send + Sync + Debug + Clone + 'static,
-{
-    fn clone_box(&self) -> Box<dyn GenericValue> {
-        Box::new(self.clone())
-    }
-}
+impl<T> Stamped<T> {
+    pub fn new(value: T, at: Revision) -> Self {
 
-type TimedFieldValue = (Arc<dyn GenericValue>, DateTime<Utc>);
-
-#[derive(Debug, Clone)]
-pub struct InfoState<K>
-where
-    K: Clone + Send + Sync + Hash + Eq,
-{
-    state: SharedRef<HashMap<K, TimedFieldValue>, ()>,
-}
-
-impl<K> InfoState<K>
-where
-    K: Clone + Send + Sync + Hash + Eq,
-{
-    pub fn new() -> Self {
-        InfoState {
-            state: SharedRef::new_ref((), HashMap::new()),
-        }
+        Stamped { value, rev: at }
     }
 
-    pub fn rcu<F>(&self, mut f: F) -> Arc<HashMap<K, TimedFieldValue>>
-    where
-        F: FnMut(&HashMap<K, TimedFieldValue>) -> HashMap<K, TimedFieldValue>,
-    {
-        self.state.rcu(|curr| f(&**curr))
-    }
-
-    pub fn entries(&self) -> Vec<(K, TimedFieldValue)> {
-        self.state
-            .load()
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect()
-    }
-}
-
-impl<K> Default for InfoState<K>
-where
-    K: Clone + Send + Sync + Hash + Eq,
-{
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct StatefulField<K, V>
-where
-    K: Clone + Send + Sync + Hash + Eq,
-    V: Clone + Send + Sync + Default,
-{
-    field: Arc<K>,
-    value: V,
-    state: InfoState<K>,
-}
-
-impl<K, V> Deref for StatefulField<K, V>
-where
-    K: Clone + Send + Sync + Hash + Eq,
-    V: Clone + Send + Sync + Default,
-{
-    type Target = V;
-
-    fn deref(&self) -> &Self::Target {
+    pub fn get(&self) -> &T {
         &self.value
     }
+
+    pub fn rev(&self) -> Revision {
+        self.rev
+    }
 }
 
-impl<K, V> StatefulField<K, V>
-where
-    K: Clone + Send + Sync + Hash + Eq,
-    V: Clone + Send + Sync + Default + GenericValue,
-{
-    pub fn new(field: K, state: InfoState<K>) -> Self {
-        StatefulField {
-            field: Arc::new(field),
-            value: V::default(),
-            state: state.clone(),
+impl<T: PartialEq> Stamped<T> {
+    pub fn set(&self, value: T, at: Revision) -> Self {
+        let rev = if value != self.value { at } else { self.rev };
+        Stamped { value, rev }
+    }
+}
+
+impl<T: Clone + Ord> Stamped<T> {
+    pub fn merge(&self, other: &Self) -> Self {
+        match other.rev.cmp(&self.rev) {
+            std::cmp::Ordering::Greater => other.clone(),
+            std::cmp::Ordering::Less => self.clone(),
+            std::cmp::Ordering::Equal => {
+                if other.value > self.value {
+                    other.clone()
+                } else {
+                    self.clone()
+                }
+            }
         }
-    }
-
-    pub fn set<'a>(&self, value: &V) -> (Self, Pin<Box<dyn Future<Output = ()> + Send + 'a>>)
-    where
-        K: 'a,
-        V: 'a,
-    {
-        let field = self.field.clone();
-        let state = self.state.clone();
-        let updated_value = value.clone();
-
-        let update_state = Box::pin(async move {
-            state.rcu(|update_map| {
-                let mut update_map = update_map.clone();
-                update_map.insert(
-                    (*field).clone(),
-                    (Arc::new(updated_value.clone()), Utc::now()),
-                );
-                update_map
-            });
-        });
-
-        let updated_field = StatefulField {
-            field: self.field.clone(),
-            value: value.clone(),
-            state: self.state.clone(),
-        };
-
-        (updated_field, update_state)
-    }
-
-    pub fn get(&self) -> V {
-        self.value.clone()
     }
 }
 

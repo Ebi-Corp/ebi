@@ -5,10 +5,11 @@ use std::sync::Arc;
 use crate::NodeId;
 use crate::Ref;
 use crate::Uuid;
+use crate::stateful::Revision;
 use crate::tag::Tag;
-use crate::{InfoState, SharedRef, StatefulField, StatefulRef};
+use crate::{SharedRef, Stamped, StatefulRef};
 use arc_swap::ArcSwap;
-use chrono::Duration;
+use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
 
 pub type ShelfId = Uuid;
@@ -85,25 +86,19 @@ impl<TagFilter: Default> Shelf<TagFilter> {
     }
 }
 
-#[derive(Clone, Hash, Eq, PartialEq, Debug)]
-pub enum ShelfInfoField {
-    Name,
-    Description,
-    Root,
-}
-
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ShelfInfo {
-    pub name: StatefulField<ShelfInfoField, String>,
-    pub description: StatefulField<ShelfInfoField, String>,
-    pub root: StatefulField<ShelfInfoField, PathBuf>,
+    pub name: Stamped<String>,
+    pub description: Stamped<String>,
+    pub root: PathBuf, //[?] Immutable ??
 }
 
+// Does not compare timestamps 
 impl PartialEq for ShelfInfo {
     fn eq(&self, other: &Self) -> bool {
         self.name.get() == other.name.get()
             && self.description.get() == other.description.get()
-            && self.root.get() == other.root.get()
+            && self.root == other.root
     }
 }
 
@@ -116,38 +111,28 @@ impl ShelfInfo {
             .unwrap_or_else(|| OsStr::new("Unnamed"))
             .to_string_lossy()
             .to_string();
-        let default_description = "".to_string();
-        let name = name.unwrap_or(default_name);
-        let description = description.unwrap_or(default_description);
-        let info_state: InfoState<ShelfInfoField> = InfoState::new();
+        let at = Utc::now();
         ShelfInfo {
-            name: {
-                let field = StatefulField::<ShelfInfoField, String>::new(
-                    ShelfInfoField::Name,
-                    info_state.clone(),
-                );
-                let (field, updater) = field.set(&name);
-                drop(updater); // No State Update required for Info Creation
-                field
-            },
-            description: {
-                let field = StatefulField::<ShelfInfoField, String>::new(
-                    ShelfInfoField::Description,
-                    info_state.clone(),
-                );
-                let (field, updater) = field.set(&description);
-                drop(updater); // No State Update required for Info Creation
-                field
-            },
-            root: {
-                let field = StatefulField::<ShelfInfoField, PathBuf>::new(
-                    ShelfInfoField::Root,
-                    info_state.clone(),
-                );
-                let (field, updater) = field.set(&root_path);
-                drop(updater); // No State Update required for Info Creation
-                field
-            },
+            name: Stamped::new(name.unwrap_or(default_name), at),
+            description: Stamped::new(description.unwrap_or_default(), at),
+            root: root_path,
+        }
+    }
+
+    pub fn edited(&self, name: String, description: String, at: Revision) -> Self {
+        ShelfInfo {
+            name: self.name.set(name, at),
+            description: self.description.set(description, at),
+            root: self.root.clone(),
+        }
+    }
+
+    // Idempotency allows merging without tracking applied edits
+    pub fn merge(&self, other: &Self) -> Self {
+        ShelfInfo {
+            name: self.name.merge(&other.name),
+            description: self.description.merge(&other.description),
+            root: self.root.clone() // `root` is immutable, so it is not merged
         }
     }
 }

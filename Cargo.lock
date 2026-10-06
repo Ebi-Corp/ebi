@@ -913,6 +913,7 @@ dependencies = [
  "anyhow",
  "arc-swap",
  "bincode",
+ "chrono",
  "ebi-filesystem",
  "ebi-network",
  "ebi-proto",

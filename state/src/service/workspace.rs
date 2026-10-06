@@ -1,12 +1,14 @@
 use crate::service::state::StateService;
 use crate::{Shelf, Workspace};
+use chrono::Utc;
+
 use crate::{SyncState, redb::*};
 use ebi_proto::rpc::ReturnCode;
 use ebi_types::redb::Storable;
 use ebi_types::sharedref::*;
 use ebi_types::shelf::*;
 use ebi_types::tag::TagId;
-use ebi_types::workspace::{WorkspaceId, WorkspaceInfo};
+use ebi_types::workspace::WorkspaceId;
 use ebi_types::{NodeId, Uuid, tag::Tag};
 use redb::ReadableTable;
 use std::path::PathBuf;
@@ -643,28 +645,10 @@ impl Service<EditShelf> for WorkspaceStateService {
             match shelf_ref.shelf_type {
                 ShelfType::Local => {
                     let s = (***shelf_ref).clone();
-                    s.info
-                        .stateful_rcu(|info| {
-                            let (u_f, u_s) = info.name.set(&req.name);
-                            let u_i = ShelfInfo {
-                                name: u_f,
-                                description: info.description.clone(),
-                                root: info.root.clone(),
-                            };
-                            (u_i, u_s)
-                        })
-                        .await;
-                    s.info
-                        .stateful_rcu(|info| {
-                            let (u_f, u_s) = info.description.set(&req.description);
-                            let u_i = ShelfInfo {
-                                name: info.name.clone(),
-                                description: u_f,
-                                root: info.root.clone(),
-                            };
-                            (u_i, u_s)
-                        })
-                        .await;
+                    let edited_at = Utc::now();
+                    s.info.rcu(|info| {
+                        info.edited(req.name.clone(), req.description.clone(), edited_at)
+                    });
                     workspace_ref
                         .stateful_rcu(|w| {
                             let (u_m, u_s) = w
@@ -772,28 +756,10 @@ impl Service<EditWorkspace> for WorkspaceStateService {
             let staged_id = workspace_ref.id;
             let workspace = workspace_ref.load();
 
+            let edited_at = Utc::now();
             workspace
                 .info
-                .stateful_rcu(|info| {
-                    let (u_f, u_s) = info.name.set(&req.name);
-                    let u_i = WorkspaceInfo {
-                        name: u_f,
-                        description: info.description.clone(),
-                    };
-                    (u_i, u_s)
-                })
-                .await;
-            workspace
-                .info
-                .stateful_rcu(|info| {
-                    let (u_f, u_s) = info.description.set(&req.description);
-                    let u_i = WorkspaceInfo {
-                        name: info.name.clone(),
-                        description: u_f,
-                    };
-                    (u_i, u_s)
-                })
-                .await;
+                .rcu(|info| info.edited(req.name.clone(), req.description.clone(), edited_at));
             let write_txn = db.begin_write().map_err(|_| ReturnCode::DbOpenError)?;
             {
                 let mut workspace_t = write_txn
@@ -806,8 +772,8 @@ impl Service<EditWorkspace> for WorkspaceStateService {
                     .ok_or(ReturnCode::InternalStateError)?
                     .value();
                 let info = workspace_ref.load().info.load();
-                wk.0.name = info.name.get();
-                wk.0.description = info.description.get();
+                wk.0.name = info.name.clone();
+                wk.0.description = info.description.clone();
 
                 workspace_t
                     .insert(staged_id, wk)
@@ -1008,8 +974,8 @@ mod tests {
 
         assert!(s.is_some());
         let s = s.unwrap();
-        assert_eq!(s.info.load().name.get(), shelf_name);
-        assert_eq!(s.info.load().description.get(), shelf_description);
+        assert_eq!(s.info.load().name.get(), &shelf_name);
+        assert_eq!(s.info.load().description.get(), &shelf_description);
         assert_eq!(s.shelf_type, ShelfType::Local);
         assert_eq!(s.shelf_owner, ShelfOwner::Node(node_id));
 
@@ -1073,8 +1039,8 @@ mod tests {
         let wk_pin = state_service.sync_states.pin().get(&wk_id).unwrap().load();
         let wk = wk_pin.staged.load();
 
-        assert_eq!(wk.info.load().name.get(), up_name);
-        assert_eq!(wk.info.load().description.get(), up_desc);
+        assert_eq!(wk.info.load().name.get(), &up_name);
+        assert_eq!(wk.info.load().description.get(), &up_desc);
     }
 
     #[tokio::test]
@@ -1110,7 +1076,7 @@ mod tests {
         let wk_pin = state_service.sync_states.pin().get(&wk_id).unwrap().load();
         let wk = wk_pin.staged.load();
         let s = wk.shelves.get(&s_id).unwrap();
-        assert_eq!(s.info.load().name.get(), up_name);
-        assert_eq!(s.info.load().description.get(), up_desc);
+        assert_eq!(s.info.load().name.get(), &up_name);
+        assert_eq!(s.info.load().description.get(), &up_desc);
     }
 }

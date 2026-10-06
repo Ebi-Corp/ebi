@@ -1,7 +1,9 @@
 use crate::Uuid;
 use crate::shelf::{Shelf, ShelfId};
+use crate::stateful::Revision;
 use crate::tag::{Tag, TagId};
-use crate::{ImmutRef, InfoState, SharedRef, StatefulField, StatefulMap, StatefulRef};
+use crate::{ImmutRef, SharedRef, Stamped, StatefulMap, StatefulRef};
+use chrono::Utc;
 
 pub type WorkspaceId = Uuid;
 
@@ -16,12 +18,13 @@ pub struct Workspace<TagFilter> {
     pub lookup: StatefulMap<String, TagId>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct WorkspaceInfo {
-    pub name: StatefulField<WorkspaceInfoField, String>,
-    pub description: StatefulField<WorkspaceInfoField, String>,
+    pub name: Stamped<String>,
+    pub description: Stamped<String>,
 }
 
+// Values only 
 impl PartialEq for WorkspaceInfo {
     fn eq(&self, other: &Self) -> bool {
         self.name.get() == other.name.get() && self.description.get() == other.description.get()
@@ -32,38 +35,26 @@ impl Eq for WorkspaceInfo {}
 
 impl WorkspaceInfo {
     pub fn new(name: Option<String>, description: Option<String>) -> Self {
-        let default_name = "Workspace".to_string();
-        let default_description = "".to_string();
-        let name = name.unwrap_or(default_name);
-        let description = description.unwrap_or(default_description);
-        let info_state: InfoState<WorkspaceInfoField> = InfoState::new();
+        let at = Utc::now();
         WorkspaceInfo {
-            name: {
-                let field = StatefulField::<WorkspaceInfoField, String>::new(
-                    WorkspaceInfoField::Name,
-                    info_state.clone(),
-                );
-                let (field, updater) = field.set(&name);
-                drop(updater); // No State Update required for Info Creation
-                field
-            },
-            description: {
-                let field = StatefulField::<WorkspaceInfoField, String>::new(
-                    WorkspaceInfoField::Description,
-                    info_state.clone(),
-                );
-                let (field, updater) = field.set(&description);
-                drop(updater); // No State Update required for Info Creation
-                field
-            },
+            name: Stamped::new(name.unwrap_or_else(|| "Workspace".to_string()), at),
+            description: Stamped::new(description.unwrap_or_default(), at),
         }
     }
-}
 
-#[derive(Clone, Hash, Eq, PartialEq, Debug)]
-pub enum WorkspaceInfoField {
-    Name,
-    Description,
+    pub fn edited(&self, name: String, description: String, at: Revision) -> Self {
+        WorkspaceInfo {
+            name: self.name.set(name, at),
+            description: self.description.set(description, at),
+        }
+    }
+
+    pub fn merge(&self, other: &Self) -> Self {
+        WorkspaceInfo {
+            name: self.name.merge(&other.name),
+            description: self.description.merge(&other.description),
+        }
+    }
 }
 
 impl<TagFilter> Clone for Workspace<TagFilter> {
