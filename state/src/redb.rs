@@ -373,12 +373,37 @@ mod tests {
         let _ = std::fs::create_dir_all(test_path.clone());
         let db_path = test_path.join("database.redb");
         let _ = std::fs::remove_file(&db_path);
-        let mut state_service = StateService::new(&db_path).unwrap();
+        let state_service = StateService::new(&db_path).unwrap();
 
         let node_id = NodeId::from_str(TEST_PKEY).unwrap();
-        let wk_0_name = "workspace0".to_string();
         let wk_desc = "none".to_string();
 
+        //[/] Empty Database (No Workspaces)
+        let saved_sync_states = state_service.sync_states.clone();
+        drop(state_service);
+
+        let mut state_service = StateService::full_load(&db_path).unwrap();
+        let loaded_sync_states = state_service.sync_states.clone();
+
+        assert_eq_sync_states(&saved_sync_states, &loaded_sync_states);
+
+        //[/] Empty Workspace (No Tags & No Shelves) 
+        let wk_e_name = "workspace_empty".to_string();
+        let _ = state_service
+            .create_workspace(wk_e_name, wk_desc.clone())
+            .await
+            .unwrap();
+
+        let saved_sync_states = state_service.sync_states.clone();
+        drop(state_service);
+
+        let mut state_service = StateService::full_load(&db_path).unwrap();
+        let loaded_sync_states = state_service.sync_states.clone();
+
+        assert_eq_sync_states(&saved_sync_states, &loaded_sync_states);
+
+        //[/] Nominal Case 
+        let wk_0_name = "workspace0".to_string();
         let wk_0_id = state_service
             .create_workspace(wk_0_name, wk_desc.clone())
             .await
