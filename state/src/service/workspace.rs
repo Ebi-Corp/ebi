@@ -1140,6 +1140,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn deleting_clears_children() {
+        let (db_path, wk_id, a_id, b_id, c_id) = {
+            let (mut state_service, wk_id) = setup_state_service("tag-orphans").await;
+
+            let a_id = state_service
+                .workspace(wk_id)
+                .create_tag(1, "a".to_string(), None)
+                .await
+                .unwrap();
+            let b_id = state_service
+                .workspace(wk_id)
+                .create_tag(1, "b".to_string(), Some(a_id))
+                .await
+                .unwrap();
+            let c_id = state_service
+                .workspace(wk_id)
+                .create_tag(1, "c".to_string(), Some(a_id))
+                .await
+                .unwrap();
+
+            let before = revisions_of(&state_service, b_id).len();
+            let stamp_before = stamps_of(&state_service, wk_id, b_id);
+
+            state_service
+                .workspace(wk_id)
+                .delete_tag(a_id)
+                .await
+                .unwrap();
+
+            {
+                let pin = state_service.sync_states.pin();
+                let wk = pin.get(&wk_id).unwrap().load().staged.load();
+
+                assert!(wk.tags.get(&a_id).is_none());
+                assert!(wk.lookup.get("a").is_none());
+
+                for (id, name) in [(b_id, "b"), (c_id, "c")] {
+                    let child = wk.tags.get(&id).unwrap().load();
+                    assert_eq!(child.name.get(), name);
+                    assert_eq!(*child.parent.get(), None);
+                }
+
+                let after = revisions_of(&state_service, b_id).len();
+                assert_eq!(after, before + 1);
+
+                let child = wk.tags.get(&b_id).unwrap().load();
+                assert!(child.parent.rev() > stamp_before.2);
+                assert_eq!(child.name.rev(), stamp_before.0);
+                assert_eq!(child.priority.rev(), stamp_before.1);
+            }
+
+            (
+                std::env::temp_dir()
+                    .join("ebi-state")
+                    .join("tag-orphans")
+                    .join("database.redb"),
+                wk_id,
+                a_id,
+                b_id,
+                c_id,
+            )
+        };
+
+        let reloaded = StateService::full_load(&db_path).unwrap();
+        let r_pin = reloaded.sync_states.pin();
+        let wk = r_pin.get(&wk_id).unwrap().load().staged.load();
+
+        assert!(wk.tags.get(&a_id).is_none());
+        for id in [b_id, c_id] {
+            let child = wk.tags.get(&id).unwrap().load();
+            assert_eq!(*child.parent.get(), None);
+        }
+    }
+
+    #[tokio::test]
     async fn create_tag_rejects_empty_name() {
         let (mut state_service, wk_id) = setup_state_service("create-tag-empty").await;
 
@@ -1266,8 +1341,78 @@ mod tests {
         let tag = wk.tags.get(&t_id);
 
         assert!(tag.is_none());
+    }
 
-        // [TODO] handle parents
+    #[tokio::test]
+    async fn delete_tag_purges_all_revisions() {
+        let (db_path, wk_id, t_id) = {
+            let (mut state_service, wk_id) = setup_state_service("delete-tag-revisions").await;
+
+            let t_id = state_service
+                .workspace(wk_id)
+                .create_tag(1, "first".to_string(), None)
+                .await
+                .unwrap();
+
+            for (name, priority) in [("second", 2u64), ("third", 3u64)] {
+                state_service
+                    .workspace(wk_id)
+                    .edit_tag(t_id, name.to_string(), priority, None)
+                    .await
+                    .unwrap();
+            }
+
+            let revs = revisions_of(&state_service, t_id);
+            assert_eq!(revs.len(), 3);
+
+            let staged_id = staged_id_of(&state_service, wk_id);
+            state_service
+                .workspace(wk_id)
+                .delete_tag(t_id)
+                .await
+                .unwrap();
+
+            {
+                let read_txn = state_service.db.begin_read().unwrap();
+                let tag_t = read_txn.open_table(T_TAG).unwrap();
+                let entity_t = read_txn.open_table(T_ENTITY).unwrap();
+                let entity_workspaces_t = read_txn.open_table(T_ENTITY_WORKSPACES).unwrap();
+                let workspace_entities_t = read_txn.open_table(T_WORKSPACE_ENTITIES).unwrap();
+
+                for rev in &revs {
+                    assert!(tag_t.get(rev.id).unwrap().is_none());
+                    assert!(entity_workspaces_t.get(rev.id).unwrap().is_none());
+                }
+
+                assert!(entity_t.get(t_id).unwrap().is_none());
+
+                let entities = workspace_entities_t
+                    .get(staged_id)
+                    .unwrap()
+                    .unwrap()
+                    .value();
+                assert!(
+                    entities
+                        .iter()
+                        .all(|e| !revs.iter().any(|r| r.id == e.0.id))
+                );
+            }
+
+            (
+                std::env::temp_dir()
+                    .join("ebi-state")
+                    .join("delete-tag-revisions")
+                    .join("database.redb"),
+                wk_id,
+                t_id,
+            )
+        };
+
+        let reloaded = StateService::full_load(&db_path).unwrap();
+        let r_pin = reloaded.sync_states.pin();
+        let wk = r_pin.get(&wk_id).unwrap().load().staged.load();
+        assert!(wk.tags.get(&t_id).is_none());
+        assert!(wk.lookup.get("third").is_none());
     }
 
     fn staged_id_of(state_service: &StateService, wk_id: Uuid) -> Uuid {
