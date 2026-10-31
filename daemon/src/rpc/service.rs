@@ -659,11 +659,10 @@ impl Service<EditTag> for RpcService {
             let parent = {
                 if let Some(id) = req.parent_id.clone() {
                     let p_id = uuid(&id)?;
-                    let parent_tag = workspace
-                        .tags
-                        .get(&p_id)
-                        .ok_or(ReturnCode::ParentNotFound)?;
-                    Some(parent_tag.clone())
+                    if !workspace.tags.contains_key(&p_id) {
+                        return Err(ReturnCode::ParentNotFound.into());
+                    }
+                    Some(p_id)
                 } else {
                     None
                 }
@@ -675,13 +674,8 @@ impl Service<EditTag> for RpcService {
             }
 
             let return_code = {
-                tag.rcu(|t| {
-                    let mut u_t = (**t).clone();
-                    u_t.name = req.name.clone();
-                    u_t.priority = req.priority;
-                    u_t.parent = parent.clone();
-                    u_t
-                });
+                let edited_at = Utc::now();
+                tag.rcu(|t| t.edited(req.name.clone(), req.priority, parent, edited_at));
                 ReturnCode::Success
             };
 

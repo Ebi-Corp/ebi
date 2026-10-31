@@ -54,38 +54,19 @@ pub enum ShelfDirKey {
 struct GetInitDir(ShelfDirKey, PathBuf);
 
 fn setup_tags(raw_tags: HashMap<Uuid, TagStorable>) -> HashSet<SharedRef<Tag>> {
-    let tag_refs = Arc::new(HashSet::new());
-    let raw_tags = Arc::new(raw_tags);
-    fn setup_tag(
-        raw_tags: Arc<HashMap<Uuid, TagStorable>>,
-        tag_refs: Arc<HashSet<SharedRef<Tag>>>,
-        id: Uuid,
-        tag_raw: TagStorable,
-    ) -> SharedRef<Tag> {
-        let parent = if let Some(p_id) = tag_raw.parent {
-            match tag_refs.pin().get(&p_id) {
-                Some(p) => Some(p.clone()),
-                None => {
-                    let tag_raw = raw_tags.pin().get(&p_id).unwrap().clone();
-                    Some(setup_tag(raw_tags.clone(), tag_refs.clone(), p_id, tag_raw))
-                }
-            }
-        } else {
-            None
-        };
-        let tag = Tag {
-            name: tag_raw.name,
-            priority: tag_raw.priority,
-            parent,
-        };
-        let s_ref = SharedRef::new_ref(id, tag);
-        tag_refs.pin().insert(s_ref.clone());
-        s_ref
+    let tag_refs = HashSet::new();
+    {
+        let refs = tag_refs.pin();
+        for (id, tag_raw) in raw_tags.pin().iter() {
+            let tag = Tag {
+                name: tag_raw.name.clone(),
+                priority: tag_raw.priority,
+                parent: tag_raw.parent,
+            };
+            refs.insert(SharedRef::new_ref(*id, tag));
+        }
     }
-    for (id, tag_raw) in raw_tags.pin().iter() {
-        setup_tag(raw_tags.clone(), tag_refs.clone(), *id, tag_raw.clone());
-    }
-    Arc::into_inner(tag_refs).unwrap()
+    tag_refs
 }
 
 impl FileSystem {
@@ -1543,6 +1524,7 @@ impl Service<GetInitDir> for FileSystem {
 mod tests {
     use crate::service::FileSystem;
     use crate::service::ShelfDirKey;
+    use ebi_types::Revision;
 
     use super::*;
 
@@ -1569,11 +1551,7 @@ mod tests {
 
         let tag = SharedRef::new_ref(
             Uuid::new_v4(),
-            Tag {
-                priority: 0,
-                name: "test".to_string(),
-                parent: None,
-            },
+            Tag::created("test".to_string(), 0, None, Revision::UNIX_EPOCH),
         );
 
         let f_path = subdir_path.join("file.txt");
@@ -1663,11 +1641,7 @@ mod tests {
 
         let other_tag_same_name = SharedRef::new_ref(
             Uuid::new_v4(),
-            Tag {
-                priority: 0,
-                name: "test".to_string(),
-                parent: None,
-            },
+            Tag::created("test".to_string(), 0, None, Revision::UNIX_EPOCH),
         );
         let (attach_shelf, attach_file) = fs
             .attach_tag(
@@ -1728,11 +1702,7 @@ mod tests {
 
         let tag = SharedRef::new_ref(
             Uuid::new_v4(),
-            Tag {
-                priority: 0,
-                name: "test".to_string(),
-                parent: None,
-            },
+            Tag::created("test".to_string(), 0, None, Revision::UNIX_EPOCH),
         );
 
         let f_path = subdir_path.join(PathBuf::from("file.txt"));
@@ -1879,11 +1849,7 @@ mod tests {
 
         let tag = SharedRef::new_ref(
             Uuid::new_v4(),
-            Tag {
-                priority: 0,
-                name: "test".to_string(),
-                parent: None,
-            },
+            Tag::created("test".to_string(), 0, None, Revision::UNIX_EPOCH),
         );
 
         let (attach_shelf, attach_dir) = fs
@@ -1953,11 +1919,7 @@ mod tests {
 
         let tag = SharedRef::new_ref(
             Uuid::new_v4(),
-            Tag {
-                priority: 0,
-                name: "test".to_string(),
-                parent: None,
-            },
+            Tag::created("test".to_string(), 0, None, Revision::UNIX_EPOCH),
         );
 
         let _ = fs
@@ -2057,11 +2019,7 @@ mod tests {
 
         let tag = SharedRef::new_ref(
             Uuid::new_v4(),
-            Tag {
-                priority: 0,
-                name: "test".to_string(),
-                parent: None,
-            },
+            Tag::created("test".to_string(), 0, None, Revision::UNIX_EPOCH),
         );
 
         let f_path = subdir_path.join("file.txt");

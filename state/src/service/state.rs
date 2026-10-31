@@ -191,12 +191,9 @@ impl Service<GetWorkspaces> for StateService {
                 for tag in workspace.tags.values() {
                     let tag_id = tag.id;
                     let tag = tag.load();
-                    let name = tag.name.clone();
-                    let priority = tag.priority;
-                    let parent_id = tag
-                        .parent
-                        .clone()
-                        .map(|parent| parent.id.as_bytes().to_vec());
+                    let name = tag.name.get().clone();
+                    let priority = *tag.priority.get();
+                    let parent_id = tag.parent.get().map(|parent| parent.as_bytes().to_vec());
                     tag_ls.push(ebi_proto::rpc::Tag {
                         tag_id: tag_id.as_bytes().to_vec(),
                         name,

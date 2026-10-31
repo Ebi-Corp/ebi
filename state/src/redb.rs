@@ -93,37 +93,17 @@ impl Storable for Entity {
 }
 
 fn setup_tags(raw_tags: HashMap<Uuid, TagStorable>) -> HashMap<Uuid, SharedRef<Tag>> {
-    let mut tag_refs = HashMap::new();
-    fn setup_tag(
-        raw_tags: &HashMap<Uuid, TagStorable>,
-        tag_refs: &mut HashMap<Uuid, SharedRef<Tag>>,
-        id: Uuid,
-        tag_raw: TagStorable,
-    ) -> SharedRef<Tag> {
-        let parent = if let Some(p_id) = tag_raw.parent {
-            match tag_refs.get(&p_id) {
-                Some(p) => Some(p.clone()),
-                None => {
-                    let tag_raw = raw_tags.get(&p_id).unwrap().clone();
-                    Some(setup_tag(raw_tags, tag_refs, p_id, tag_raw))
-                }
-            }
-        } else {
-            None
-        };
-        let tag = Tag {
-            name: tag_raw.name,
-            priority: tag_raw.priority,
-            parent,
-        };
-        let s_ref = SharedRef::new_ref(id, tag);
-        tag_refs.insert(id, s_ref.clone());
-        s_ref
-    }
-    for (id, tag_raw) in raw_tags.iter() {
-        setup_tag(&raw_tags, &mut tag_refs, *id, tag_raw.clone());
-    }
-    tag_refs
+    raw_tags
+        .into_iter()
+        .map(|(id, tag_raw)| {
+            let tag = Tag {
+                name: tag_raw.name,
+                priority: tag_raw.priority,
+                parent: tag_raw.parent,
+            };
+            (id, SharedRef::new_ref(id, tag))
+        })
+        .collect()
 }
 
 impl StateService {

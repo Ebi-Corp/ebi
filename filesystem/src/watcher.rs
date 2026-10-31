@@ -457,6 +457,7 @@ impl FileSystem {
 
 #[cfg(test)]
 mod tests {
+    use ebi_types::Revision;
     use std::time::Duration;
 
     use crate::service::FileSystem;
@@ -484,11 +485,7 @@ mod tests {
             .unwrap();
         let tag = SharedRef::new_ref(
             Uuid::new_v4(),
-            Tag {
-                priority: 0,
-                name: "test".to_string(),
-                parent: None,
-            },
+            Tag::created("test".to_string(), 0, None, Revision::UNIX_EPOCH),
         );
         let test_f_path = shelf_path.join("test_file");
         let _ = std::fs::File::create(test_f_path.clone()).unwrap();
@@ -539,11 +536,7 @@ mod tests {
             .unwrap();
         let tag = SharedRef::new_ref(
             Uuid::new_v4(),
-            Tag {
-                priority: 0,
-                name: "test".to_string(),
-                parent: None,
-            },
+            Tag::created("test".to_string(), 0, None, Revision::UNIX_EPOCH),
         );
         let test_f_path = dir_path.join("test_file");
         let _ = std::fs::File::create(test_f_path.clone()).unwrap();
@@ -585,11 +578,7 @@ mod tests {
             .unwrap();
         let tag = SharedRef::new_ref(
             Uuid::new_v4(),
-            Tag {
-                priority: 0,
-                name: "test".to_string(),
-                parent: None,
-            },
+            Tag::created("test".to_string(), 0, None, Revision::UNIX_EPOCH),
         );
         let test_f_path = shelf_path.join("file.txt");
         let _file = std::fs::File::create(test_f_path.clone()).unwrap();
@@ -668,11 +657,7 @@ mod tests {
             .unwrap();
         let tag = SharedRef::new_ref(
             Uuid::new_v4(),
-            Tag {
-                priority: 0,
-                name: "test".to_string(),
-                parent: None,
-            },
+            Tag::created("test".to_string(), 0, None, Revision::UNIX_EPOCH),
         );
         let test_f_path = subdir.join("file.txt");
         let _ = std::fs::File::create(test_f_path.clone()).unwrap();
@@ -726,11 +711,7 @@ mod tests {
             .unwrap();
         let tag = SharedRef::new_ref(
             Uuid::new_v4(),
-            Tag {
-                priority: 0,
-                name: "test".to_string(),
-                parent: None,
-            },
+            Tag::created("test".to_string(), 0, None, Revision::UNIX_EPOCH),
         );
 
         let test_f_path1 = shelf_path1.join("file1.txt");
@@ -833,11 +814,7 @@ mod tests {
             .unwrap();
         let tag = SharedRef::new_ref(
             Uuid::new_v4(),
-            Tag {
-                priority: 0,
-                name: "test".to_string(),
-                parent: None,
-            },
+            Tag::created("test".to_string(), 0, None, Revision::UNIX_EPOCH),
         );
 
         let test_f_path1 = subdir1.join("file1.txt");
@@ -936,11 +913,7 @@ mod tests {
 
         let tag = SharedRef::new_ref(
             Uuid::new_v4(),
-            Tag {
-                priority: 0,
-                name: "test".to_string(),
-                parent: None,
-            },
+            Tag::created("test".to_string(), 0, None, Revision::UNIX_EPOCH),
         );
 
         let test_f_path1 = subdir_path1.join("file1.txt");
@@ -1015,11 +988,7 @@ mod tests {
 
         let tag = SharedRef::new_ref(
             Uuid::new_v4(),
-            Tag {
-                priority: 0,
-                name: "test".to_string(),
-                parent: None,
-            },
+            Tag::created("test".to_string(), 0, None, Revision::UNIX_EPOCH),
         );
 
         let test_f_path1 = subdir_path1.join("file1.txt");

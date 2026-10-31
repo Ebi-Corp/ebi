@@ -132,20 +132,15 @@ impl Service<CreateTag> for WorkspaceStateService {
             }
 
             let parent = match req.parent {
-                Some(p_id) => Some(
-                    workspace
-                        .tags
-                        .get(&p_id)
-                        .ok_or(ReturnCode::ParentNotFound)?
-                        .clone(),
-                ),
+                Some(p_id) => {
+                    if !workspace.tags.contains_key(&p_id) {
+                        return Err(ReturnCode::ParentNotFound);
+                    }
+                    Some(p_id)
+                }
                 None => None,
             };
-            let tag = Tag {
-                priority: req.priority,
-                name: req.name.clone(),
-                parent,
-            };
+            let tag = Tag::created(req.name.clone(), req.priority, parent, Utc::now());
             // should tag id be generated from workspace name/id + tag name ?
             let tag_ref = SharedRef::<Tag>::new_ref(Uuid::new_v4(), tag);
             workspace_ref
@@ -245,7 +240,7 @@ impl Service<DeleteTag> for WorkspaceStateService {
                 return Err(ReturnCode::TagNotFound);
             };
 
-            let tag_name = tag_ref.load().name.clone();
+            let tag_name = tag_ref.load().name.get().clone();
 
             workspace_ref
                 .stateful_rcu(|w| {
@@ -885,9 +880,9 @@ mod tests {
         assert!(tag.is_some());
 
         let tag = tag.unwrap().load();
-        assert_eq!(tag.name.as_str(), t_name.as_str());
-        assert_eq!(tag.priority, t_priority);
-        assert_eq!(tag.parent, None);
+        assert_eq!(tag.name.get().as_str(), t_name.as_str());
+        assert_eq!(*tag.priority.get(), t_priority);
+        assert_eq!(*tag.parent.get(), None);
         let prev_tag = tag;
 
         let parent = Some(t_id);
@@ -910,15 +905,12 @@ mod tests {
         let tag = wk.tags.get(&t_id);
         assert!(tag.is_some());
         let tag = tag.unwrap().load();
-        assert_eq!(tag.name.as_str(), t_name.as_str());
-        assert_eq!(tag.priority, t_priority);
-        assert!(tag.parent.is_some());
-        let tag_p_id = tag.parent.as_ref().unwrap().id;
-        assert_eq!(Some(tag_p_id), parent);
-        assert_eq!(
-            tag.parent.as_ref().unwrap().load().as_ref(),
-            prev_tag.as_ref()
-        );
+        assert_eq!(tag.name.get().as_str(), t_name.as_str());
+        assert_eq!(*tag.priority.get(), t_priority);
+        assert_eq!(*tag.parent.get(), parent);
+
+        let parent_tag = wk.tags.get(&tag.parent.get().unwrap()).unwrap().load();
+        assert_eq!(parent_tag.as_ref(), prev_tag.as_ref());
     }
 
     #[tokio::test]

@@ -89,6 +89,7 @@ impl Storable for File {
 
 #[cfg(test)] //[!] Check 
 mod tests {
+    use ebi_types::Revision;
     use std::time::Duration;
 
     use crate::service::FileSystem;
@@ -217,19 +218,11 @@ mod tests {
 
         let tag = SharedRef::new_ref(
             Uuid::new_v4(),
-            Tag {
-                priority: 0,
-                name: "test".to_string(),
-                parent: None,
-            },
+            Tag::created("test".to_string(), 0, None, Revision::UNIX_EPOCH),
         );
         let c_tag = SharedRef::new_ref(
             Uuid::new_v4(),
-            Tag {
-                priority: 0,
-                name: "test".to_string(),
-                parent: Some(tag.clone()),
-            },
+            Tag::created("test".to_string(), 0, Some(tag.id), Revision::UNIX_EPOCH),
         );
 
         let _ = fs
