@@ -1893,10 +1893,43 @@ mod tests {
             .await
             .unwrap();
 
-        let wk_pin = state_service.sync_states.pin().get(&wk_id).unwrap().load();
-        let wk = wk_pin.staged.load();
-        let s = wk.shelves.get(&s_id).unwrap();
-        assert_eq!(s.info.load().name.get(), &up_name);
-        assert_eq!(s.info.load().description.get(), &up_desc);
+        {
+            let wk_pin = state_service.sync_states.pin().get(&wk_id).unwrap().load();
+            let wk = wk_pin.staged.load();
+            let s = wk.shelves.get(&s_id).unwrap();
+            assert_eq!(s.info.load().name.get(), &up_name);
+            assert_eq!(s.info.load().description.get(), &up_desc);
+
+            assert_eq!(s.id, s_id);
+        }
+
+        let revs = {
+            let read_txn = state_service.db.begin_read().unwrap();
+            let entity_t = read_txn.open_table(T_ENTITY).unwrap();
+            let mut revs: Vec<Entity> = entity_t
+                .get(s_id)
+                .unwrap()
+                .unwrap()
+                .value()
+                .iter()
+                .map(|e| e.0.clone())
+                .collect();
+            revs.sort_by_key(|e| e.seq);
+            revs
+        };
+        assert_eq!(revs.len(), 2);
+        assert_eq!(revs.iter().map(|e| e.seq).collect::<Vec<_>>(), vec![0, 1]);
+
+        drop(state_service);
+        let db_path = std::env::temp_dir()
+            .join("ebi-state")
+            .join("edit-shelf-info")
+            .join("database.redb");
+        let reloaded = StateService::full_load(&db_path).unwrap();
+        let r_pin = reloaded.sync_states.pin();
+        let r_wk = r_pin.get(&wk_id).unwrap().load().staged.load();
+        let r_s = r_wk.shelves.get(&s_id).unwrap();
+        assert_eq!(r_s.info.load().name.get(), &up_name);
+        assert_eq!(r_s.info.load().description.get(), &up_desc);
     }
 }
