@@ -406,6 +406,20 @@ impl Service<DeleteTag> for WorkspaceStateService {
 
             let tag_name = tag_ref.load().name.get().clone();
 
+            let orphaned: Vec<TagRef> = workspace
+                .tags
+                .iter()
+                .filter(|(id, tag)| {
+                    **id != req.tag_id && *tag.load().parent.get() == Some(req.tag_id)
+                })
+                .map(|(_, tag)| tag.clone())
+                .collect();
+
+            let cleared_at = Utc::now();
+            for child in &orphaned {
+                child.rcu(|t| t.edited(t.name.get().clone(), *t.priority.get(), None, cleared_at));
+            }
+
             workspace_ref
                 .stateful_rcu(|w| {
                     let (u_m, _) = w.tags.remove(&req.tag_id);
@@ -474,6 +488,31 @@ impl Service<DeleteTag> for WorkspaceStateService {
                 if tags.is_empty() {
                     entity_t
                         .remove(tag_ref.id)
+                        .map_err(|_| ReturnCode::DbCommitError)?;
+                }
+
+                for child in &orphaned {
+                    let mut revisions = entity_t
+                        .get(child.id)
+                        .unwrap()
+                        .ok_or(ReturnCode::InternalStateError)?
+                        .value();
+
+                    let child_e = Entity::next(Uuid::new_v4(), EntityKind::Tag, &revisions);
+
+                    tag_t
+                        .insert(child_e.id, child.to_storable())
+                        .map_err(|_| ReturnCode::DbCommitError)?;
+
+                    revisions.push(child_e.to_storable());
+                    entity_t
+                        .insert(child.id, revisions)
+                        .map_err(|_| ReturnCode::DbCommitError)?;
+
+                    entities.push(child_e.to_storable());
+
+                    entity_workspaces_t
+                        .insert(child_e.id, vec![staged_id])
                         .map_err(|_| ReturnCode::DbCommitError)?;
                 }
 
