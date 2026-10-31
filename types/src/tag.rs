@@ -71,3 +71,72 @@ impl Serialize for Tag {
         state.end()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{DateTime, Utc};
+
+    fn at(secs: i64) -> Revision {
+        DateTime::<Utc>::UNIX_EPOCH + chrono::Duration::seconds(secs)
+    }
+
+    fn tag(name: &str, priority: u64, base: i64) -> Tag {
+        Tag {
+            name: Stamped::new(name.to_string(), at(base)),
+            priority: Stamped::new(priority, at(base)),
+            parent: Stamped::new(None, at(base)),
+        }
+    }
+
+    #[test]
+    fn tag_field_independence() {
+        let original = tag("first", 1, 10);
+
+        let renamed = original.edited("second".to_string(), 1, None, at(20));
+        assert_eq!(renamed.name.rev(), at(20));
+        assert_eq!(renamed.priority.rev(), at(10));
+        assert_eq!(renamed.parent.rev(), at(10));
+
+        let no_op = renamed.edited("second".to_string(), 1, None, at(30));
+        assert_eq!(no_op.name.rev(), renamed.name.rev());
+        assert_eq!(no_op.priority.rev(), renamed.priority.rev());
+        assert_eq!(no_op.parent.rev(), renamed.parent.rev());
+    }
+
+    #[test]
+    fn merge_concurrent_edits() {
+        let renamed = tag("first", 1, 10).edited("renamed".to_string(), 1, None, at(20));
+        let reprioritised = tag("first", 1, 10).edited("first".to_string(), 9, None, at(21));
+
+        let merged = renamed.merge(&reprioritised);
+        assert_eq!(merged.name.get(), "renamed");
+        assert_eq!(*merged.priority.get(), 9);
+        assert_eq!(merged.name.rev(), at(20));
+        assert_eq!(merged.priority.rev(), at(21));
+    }
+
+    #[test]
+    fn merge_idempotent() {
+        let a = tag("a", 1, 10).edited("a2".to_string(), 1, None, at(20));
+        assert_eq!(a.merge(&a), a);
+        assert_eq!(a.merge(&a).merge(&a), a);
+    }
+
+    #[test]
+    fn merge_commutative() {
+        let a = tag("a", 1, 10).edited("a".to_string(), 1, None, at(20));
+        let b = tag("b", 9, 10).edited("b".to_string(), 9, None, at(21));
+        assert_eq!(a.merge(&b), b.merge(&a));
+    }
+
+    #[test]
+    fn merge_associative() {
+        let a = tag("a", 1, 10).edited("a".to_string(), 1, None, at(20));
+        let b = tag("b", 9, 10).edited("b".to_string(), 9, None, at(21));
+        let c = tag("c", 5, 10).edited("c".to_string(), 5, None, at(25));
+
+        assert_eq!(a.merge(&b).merge(&c), a.merge(&b.merge(&c)));
+        assert_eq!(c.merge(&a).merge(&b), b.merge(&c.merge(&a)));
+    }
+}
