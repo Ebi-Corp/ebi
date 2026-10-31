@@ -75,3 +75,69 @@ pub enum TagErr {
     DuplicateTag((String, WorkspaceId)),
     InconsistentTagManager((TagId, WorkspaceId)),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{DateTime, Duration};
+
+    fn at(secs: i64) -> Revision {
+        DateTime::<Utc>::UNIX_EPOCH + Duration::seconds(secs)
+    }
+
+    fn info(name: &str, description: &str, base: i64) -> WorkspaceInfo {
+        WorkspaceInfo {
+            name: Stamped::new(name.to_string(), at(base)),
+            description: Stamped::new(description.to_string(), at(base)),
+        }
+    }
+
+    // Future behaviour being equal requires equal timestamps, but `PartialEq` only compares values
+    fn full(i: &WorkspaceInfo) -> (String, String, Revision, Revision) {
+        (
+            i.name.get().clone(),
+            i.description.get().clone(),
+            i.name.rev(),
+            i.description.rev(),
+        )
+    }
+
+    #[test]
+    fn merge_concurrent_edits() {
+        let base = info("n", "d", 10);
+        let renamed = base.edited("renamed".to_string(), "d".to_string(), at(20));
+        let redescribed = base.edited("n".to_string(), "redescribed".to_string(), at(21));
+
+        let merged = renamed.merge(&redescribed);
+        assert_eq!(merged.name.get(), "renamed");
+        assert_eq!(merged.description.get(), "redescribed");
+    }
+
+    #[test]
+    fn merge_idempotent() {
+        let base = info("n", "d", 10);
+        let a = base.edited("a".to_string(), "d".to_string(), at(20));
+        assert_eq!(full(&a.merge(&a)), full(&a), "Merge is not idempotent");
+    }
+
+    #[test]
+    fn merge_commutative() {
+        let base = info("n", "d", 10);
+        let a = base.edited("a".to_string(), "d".to_string(), at(20));
+        let b = base.edited("n".to_string(), "b".to_string(), at(21));
+        assert_eq!(full(&a.merge(&b)), full(&b.merge(&a)), "Merge is not commutative");
+    }
+
+    #[test]
+    fn merge_associative() {
+        let base = info("n", "d", 10);
+        let a = base.edited("a".to_string(), "d".to_string(), at(20));
+        let b = base.edited("n".to_string(), "b".to_string(), at(21));
+        let c = base.edited("c".to_string(), "c".to_string(), at(25));
+        assert_eq!(
+            full(&a.merge(&b).merge(&c)),
+            full(&a.merge(&b.merge(&c))),
+            "Merge is not associative"
+        );
+    }
+}

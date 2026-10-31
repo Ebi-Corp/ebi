@@ -1046,6 +1046,135 @@ mod tests {
         assert_eq!(wk.info.load().description.get(), &up_desc);
     }
 
+    // `ShelfInfo`'s `PartialEq` compares values only, so `save_restore_db` doesn't check if the stamps survived
+
+    #[tokio::test]
+    async fn workspace_info_field_independence() {
+        let (db_path, wk_id, before) = {
+            let (mut state_service, wk_id) = setup_state_service("wk-info-stamps").await;
+
+            let revs_of = |ss: &StateService| {
+                let i = ss
+                    .sync_states
+                    .pin()
+                    .get(&wk_id)
+                    .unwrap()
+                    .load()
+                    .staged
+                    .load()
+                    .info
+                    .load();
+                (i.name.rev(), i.description.rev())
+            };
+
+            let before = revs_of(&state_service);
+
+            state_service
+                .workspace(wk_id)
+                .edit_workspace_info("renamed".to_string(), "none".to_string())
+                .await
+                .unwrap();
+
+            let after = revs_of(&state_service);
+            assert!(
+                after.0 > before.0
+            );
+            assert_eq!(
+                after.1, before.1
+            );
+
+            (
+                std::env::temp_dir()
+                    .join("ebi-state")
+                    .join("wk-info-stamps")
+                    .join("database.redb"),
+                wk_id,
+                after,
+            )
+        };
+
+        let reloaded = StateService::full_load(&db_path).unwrap();
+        let pin = reloaded.sync_states.pin();
+        let wk = pin.get(&wk_id).unwrap().load().staged.load();
+        let info = wk.info.load();
+
+        assert_eq!(info.name.get(), "renamed");
+        assert_eq!(
+            (info.name.rev(), info.description.rev()),
+            before
+        );
+    }
+
+    #[tokio::test]
+    async fn shelf_info_field_independence() {
+        let (db_path, wk_id, s_id, before) = {
+            let (mut state_service, wk_id) = setup_state_service("shelf-info-stamps").await;
+            let node_id = NodeId::from_str(TEST_PKEY).unwrap();
+            let root = std::env::temp_dir().join("ebi-state");
+
+            let s_id = state_service
+                .workspace(wk_id)
+                .assign_shelf(
+                    root.clone(),
+                    node_id,
+                    false,
+                    Some("shelf".to_string()),
+                    Some("desc".to_string()),
+                )
+                .await
+                .unwrap();
+
+            let revs_of = |ss: &StateService| {
+                let i = ss
+                    .sync_states
+                    .pin()
+                    .get(&wk_id)
+                    .unwrap()
+                    .load()
+                    .staged
+                    .load()
+                    .shelves
+                    .get(&s_id)
+                    .unwrap()
+                    .info
+                    .load();
+                (i.name.rev(), i.description.rev())
+            };
+
+            let start = revs_of(&state_service);
+
+            state_service
+                .workspace(wk_id)
+                .edit_shelf_info(s_id, "shelf".to_string(), "new desc".to_string())
+                .await
+                .unwrap();
+
+            let after = revs_of(&state_service);
+            assert!(after.1 > start.1);
+            assert_eq!(after.0, start.0);
+
+            (
+                std::env::temp_dir()
+                    .join("ebi-state")
+                    .join("shelf-info-stamps")
+                    .join("database.redb"),
+                wk_id,
+                s_id,
+                after,
+            )
+        };
+
+        let reloaded = StateService::full_load(&db_path).unwrap();
+        let pin = reloaded.sync_states.pin();
+        let wk = pin.get(&wk_id).unwrap().load().staged.load();
+        let shelf = wk.shelves.get(&s_id).unwrap();
+        let info = shelf.info.load();
+
+        assert_eq!(info.description.get(), "new desc");
+        assert_eq!((info.name.rev(), info.description.rev()), before);
+        assert_eq!(info.root, std::env::temp_dir().join("ebi-state"));
+    }
+
     #[tokio::test]
     async fn edit_shelf_info() {
         let (mut state_service, wk_id) = setup_state_service("edit-shelf-info").await;
