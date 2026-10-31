@@ -642,6 +642,8 @@ impl Service<EditShelf> for WorkspaceStateService {
             let Some(shelf_ref) = workspace.shelves.get(&req.shelf_id) else {
                 return Err(ReturnCode::ShelfNotFound);
             };
+            let edited: Shelf;
+
             match shelf_ref.shelf_type {
                 ShelfType::Local => {
                     let s = (***shelf_ref).clone();
@@ -653,7 +655,7 @@ impl Service<EditShelf> for WorkspaceStateService {
                         .stateful_rcu(|w| {
                             let (u_m, u_s) = w
                                 .shelves
-                                .insert(shelf_ref.id, ImmutRef::new_ref(Uuid::new_v4(), s.clone()));
+                                .insert(shelf_ref.id, ImmutRef::new_ref(shelf_ref.id, s.clone()));
                             let u_w = Workspace {
                                 shelves: u_m,
                                 tags: w.tags.clone(),
@@ -666,6 +668,7 @@ impl Service<EditShelf> for WorkspaceStateService {
                     if let ShelfOwner::Sync(_sync_id) = shelf_ref.shelf_owner {
                         todo!();
                     }
+                    edited = s;
                 }
                 ShelfType::Remote => match shelf_ref.shelf_owner {
                     ShelfOwner::Node(_peer_id) => {
@@ -712,10 +715,10 @@ impl Service<EditShelf> for WorkspaceStateService {
                 entity_t
                     .insert(&req.shelf_id, shelf_entities)
                     .map_err(|_| ReturnCode::DbCommitError)?;
+                let edited_ref: ImmutRef<Shelf> = ImmutRef::new_ref(shelf_ref.id, edited);
                 shelf_t
-                    .insert(s_entity.id, shelf_ref.to_storable())
+                    .insert(s_entity.id, edited_ref.to_storable())
                     .map_err(|_| ReturnCode::DbCommitError)?;
-
 
                 entities.push(s_entity.to_storable());
 
