@@ -443,6 +443,10 @@ mod tests {
             .unwrap();
         let _ = wk_1.create_tag(0, tag_name.clone(), None).await.unwrap();
 
+        wk_0.edit_tag(t_1, "renamed_tag".to_string(), 21, None)
+            .await
+            .unwrap();
+
         let saved_sync_states = state_service.sync_states.clone();
         drop(state_service);
         drop(wk_0);
