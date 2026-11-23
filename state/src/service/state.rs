@@ -1,4 +1,3 @@
-use crate::Shelf;
 use crate::SyncState;
 use crate::Workspace;
 use crate::redb::*;
@@ -19,12 +18,9 @@ use std::{
 };
 use tower::Service;
 
-pub type ShelfRef = <ImmutRef<Shelf> as Ref<Shelf, Uuid>>::Weak;
-
 #[derive(Clone)]
 pub struct StateService {
     pub sync_states: Arc<HashSet<SharedRef<SyncState<Workspace>>>>,
-    pub shelves: Arc<HashSet<ShelfRef>>,
     pub db: Arc<Database>,
 }
 
@@ -32,11 +28,9 @@ impl StateService {
     pub fn new(db_path: &PathBuf) -> Result<Self, Error> {
         let db = Database::create(db_path)?;
         let sync_states = Arc::new(HashSet::new().into());
-        let shelves = Arc::new(HashSet::new());
 
         Ok(Self {
             sync_states,
-            shelves,
             db: Arc::new(db),
         })
     }

@@ -122,7 +122,6 @@ impl StateService {
         let Some((sync_state_t, workspaces_t, workspace_entities)) = tables else {
             return Ok(Self {
                 sync_states: Arc::new(papaya::HashSet::new()),
-                shelves: Arc::new(papaya::HashSet::new()),
                 db: Arc::new(db),
             });
         };
@@ -174,7 +173,6 @@ impl StateService {
             raw_workspaces.insert(k, v);
         }
 
-        let shelf_refs = papaya::HashSet::new();
         let sync_states = papaya::HashSet::new();
         for (st_id, wks) in (sync_state_t
             .range::<Uuid>(..)
@@ -237,7 +235,6 @@ impl StateService {
                                 .filter_tags
                                 .store(raw_shelf.filter_tags.clone().into());
                             let shelf: ImmutRef<Shelf> = ImmutRef::new_ref(*permanent_id, shelf);
-                            shelf_refs.pin().insert(shelf.downgraded());
                             shelves.insert(*permanent_id, shelf);
                         }
                         EntityKind::Tag => {
@@ -286,7 +283,6 @@ impl StateService {
 
         Ok(Self {
             sync_states: Arc::new(sync_states),
-            shelves: Arc::new(shelf_refs),
             db: Arc::new(db),
         })
     }

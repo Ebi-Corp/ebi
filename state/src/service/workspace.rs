@@ -543,15 +543,14 @@ impl Service<UnassignShelf> for WorkspaceStateService {
 
     fn call(&mut self, req: UnassignShelf) -> Self::Future {
         let res_workspace_ref = self.set_workspace();
-        let shelves = self.service.shelves.clone();
         let db = self.service.db.clone();
 
         Box::pin(async move {
             let workspace_ref = &res_workspace_ref?.load_full().staged;
             let staged_id = workspace_ref.id;
-            let Some(_) = shelves.pin().get(&req.shelf_id) else {
+            if workspace_ref.load().shelves.get(&req.shelf_id).is_none() {
                 return Err(ReturnCode::ShelfNotFound);
-            };
+            }
 
             workspace_ref
                 .stateful_rcu(|w| {
@@ -660,67 +659,49 @@ impl Service<AssignShelf> for WorkspaceStateService {
 
     fn call(&mut self, req: AssignShelf) -> Self::Future {
         let res_workspace_ref = self.set_workspace();
-        let shelves = self.service.shelves.clone();
+        let workspace_id = self.scope;
         let db = self.service.db.clone();
 
         Box::pin(async move {
             let workspace_ref = &res_workspace_ref?.load_full().staged;
             let staged_id = workspace_ref.id;
-            let shelves = shelves.pin_owned();
 
-            // The ID is deterministically created on node + path
+            // The ID is deterministically created on workspace + node + path
             let bytes = [
+                workspace_id.as_bytes(),
                 &req.node_id.as_bytes()[0..8],
                 req.path.to_str().unwrap().as_bytes(),
             ]
             .concat();
             let shelf_id = Uuid::new_v5(&Uuid::NAMESPACE_DNS, &bytes);
 
-            let mut new_shelf: bool = true;
-            let mut shelf_ref: Option<ImmutRef<Shelf>> = None;
-
-            match shelves.get(&shelf_id) {
-                Some(shelf_weak_ref) => {
-                    if let Some(shelf_up_ref) = ImmutRef::<Shelf>::upgraded(shelf_weak_ref) {
-                        new_shelf = false;
-                        shelf_ref = Some(shelf_up_ref)
-                    }
-                }
-                None => {
-                    shelves.remove(&shelf_id);
-                }
+            if workspace_ref.load().shelves.get(&shelf_id).is_some() {
+                return Ok(shelf_id);
             }
 
-            if new_shelf {
-                let path = req.path.clone();
-                let shelf_type = if !req.remote {
-                    ShelfType::Local
-                } else {
-                    ShelfType::Remote
-                };
-                let shelf = Shelf::new(
-                    path,
-                    req.name.unwrap_or_else(|| {
-                        req.path
-                            .clone()
-                            .components()
-                            .next_back()
-                            .and_then(|comp| comp.as_os_str().to_str())
-                            .unwrap_or_default()
-                            .to_string()
-                    }),
-                    shelf_type,
-                    ShelfOwner::Node(req.node_id),
-                    None,
-                    req.description.unwrap_or_default(),
-                );
-
-                shelf_ref = Some(ImmutRef::new_ref(shelf_id, shelf))
-            }
-
-            let shelf_ref = shelf_ref.unwrap();
-
-            let shelf_id = shelf_ref.id;
+            let path = req.path.clone();
+            let shelf_type = if !req.remote {
+                ShelfType::Local
+            } else {
+                ShelfType::Remote
+            };
+            let shelf = Shelf::new(
+                path,
+                req.name.unwrap_or_else(|| {
+                    req.path
+                        .clone()
+                        .components()
+                        .next_back()
+                        .and_then(|comp| comp.as_os_str().to_str())
+                        .unwrap_or_default()
+                        .to_string()
+                }),
+                shelf_type,
+                ShelfOwner::Node(req.node_id),
+                None,
+                req.description.unwrap_or_default(),
+            );
+            let shelf_ref: ImmutRef<Shelf> = ImmutRef::new_ref(shelf_id, shelf);
 
             workspace_ref
                 .stateful_rcu(|w| {
@@ -734,10 +715,6 @@ impl Service<AssignShelf> for WorkspaceStateService {
                     (u_w, u_s)
                 })
                 .await;
-
-            if new_shelf {
-                shelves.insert(shelf_ref.downgraded());
-            }
 
             let write_txn = db.begin_write().map_err(|_| ReturnCode::DbOpenError)?;
             {
@@ -769,27 +746,20 @@ impl Service<AssignShelf> for WorkspaceStateService {
                     .ok_or(ReturnCode::InternalStateError)?
                     .value();
 
-                let s_entity;
-                if new_shelf {
-                    s_entity = Entity::next(Uuid::new_v4(), EntityKind::Shelf, &[]);
-                    shelf_t
-                        .insert(s_entity.id, shelf_ref.to_storable())
-                        .map_err(|_| ReturnCode::DbCommitError)?;
-                    entity_t
-                        .insert(shelf_id, vec![s_entity.to_storable()])
-                        .map_err(|_| ReturnCode::DbCommitError)?;
-                } else {
-                    let mut shelf_entities = entity_t
-                        .get(shelf_id)
-                        .unwrap()
-                        .ok_or(ReturnCode::InternalStateError)?
-                        .value();
-                    s_entity = Entity::next(Uuid::new_v4(), EntityKind::Shelf, &shelf_entities);
-                    shelf_entities.push(s_entity.to_storable());
-                    entity_t
-                        .insert(shelf_id, shelf_entities)
-                        .map_err(|_| ReturnCode::DbCommitError)?;
-                }
+                // A previously unassigned shelf may still have revisions
+                let mut shelf_entities = entity_t
+                    .get(shelf_id)
+                    .unwrap()
+                    .map(|e| e.value())
+                    .unwrap_or_default();
+                let s_entity = Entity::next(Uuid::new_v4(), EntityKind::Shelf, &shelf_entities);
+                shelf_t
+                    .insert(s_entity.id, shelf_ref.to_storable())
+                    .map_err(|_| ReturnCode::DbCommitError)?;
+                shelf_entities.push(s_entity.to_storable());
+                entity_t
+                    .insert(shelf_id, shelf_entities)
+                    .map_err(|_| ReturnCode::DbCommitError)?;
 
                 entities.push(s_entity.to_storable());
 
@@ -1669,13 +1639,7 @@ mod tests {
         assert_eq!(s.info.load().description.get(), &shelf_description);
         assert_eq!(s.shelf_type, ShelfType::Local);
         assert_eq!(s.shelf_owner, ShelfOwner::Node(node_id));
-
-        let shelves_pin = state_service.shelves.pin();
-        let s_ref = shelves_pin.get(&s_0_id).unwrap();
-
-        let s_ref = ImmutRef::<Shelf>::upgraded(&s_ref).unwrap();
-        assert!(ptr_eq(s_ref.data_ref(), s.data_ref()));
-        assert_eq!(s_ref.id, s.id);
+        assert_eq!(s.id, s_0_id);
     }
 
     #[tokio::test]
@@ -1710,10 +1674,6 @@ mod tests {
         let wk = wk_pin.staged.load();
         let s = wk.shelves.get(&s_0_id);
         assert!(s.is_none());
-
-        let shelves_pin = state_service.shelves.pin();
-        let s_ref = shelves_pin.get(&s_0_id).unwrap();
-        assert!(ImmutRef::<Shelf>::upgraded(s_ref).is_none());
     }
 
     #[tokio::test]
