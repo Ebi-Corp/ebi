@@ -1676,6 +1676,121 @@ mod tests {
         assert!(s.is_none());
     }
 
+    async fn shared_folder(test_name: &str) -> (StateService, [Uuid; 2], [ShelfId; 2]) {
+        let (mut state_service, wk_a) = setup_state_service(test_name).await;
+        let wk_b = state_service
+            .create_workspace("workspace_b".to_string(), "none".to_string())
+            .await
+            .unwrap();
+        let node_id = NodeId::from_str(TEST_PKEY).unwrap();
+        let path = std::env::temp_dir().join("ebi-state");
+
+        let mut s_ids = Vec::new();
+        for wk_id in [wk_a, wk_b] {
+            let s_id = state_service
+                .workspace(wk_id)
+                .assign_shelf(path.clone(), node_id, false, Some("shelf".to_string()), None)
+                .await
+                .unwrap();
+            s_ids.push(s_id);
+        }
+        (state_service, [wk_a, wk_b], [s_ids[0], s_ids[1]])
+    }
+
+    #[tokio::test]
+    async fn shelf_separation() {
+        let (state_service, [wk_a, wk_b], [a_id, b_id]) =
+            shared_folder("shelf-separation").await;
+        assert_ne!(a_id, b_id);
+
+        let read_txn = state_service.db.begin_read().unwrap();
+        let shelf_t = read_txn.open_table(T_SHELF).unwrap();
+        for s_id in [a_id, b_id] {
+            let revs = revisions_of(&state_service, s_id);
+            assert_eq!(revs.len(), 1);
+            assert_eq!(shelf_t.get(revs[0].id).unwrap().unwrap().value().0.id, s_id);
+        }
+
+        let pin = state_service.sync_states.pin();
+        let a = pin.get(&wk_a).unwrap().load().staged.load();
+        let b = pin.get(&wk_b).unwrap().load().staged.load();
+        assert!(a.shelves.get(&b_id).is_none());
+        assert!(b.shelves.get(&a_id).is_none());
+    }
+
+    #[tokio::test]
+    async fn shelf_edit_independence() {
+        let (mut state_service, [wk_a, wk_b], [a_id, b_id]) =
+            shared_folder("shelf-edit-independence").await;
+
+        state_service
+            .workspace(wk_a)
+            .edit_shelf_info(a_id, "renamed".to_string(), "desc".to_string())
+            .await
+            .unwrap();
+
+        let pin = state_service.sync_states.pin();
+        let b = pin.get(&wk_b).unwrap().load().staged.load();
+        assert_eq!(b.shelves.get(&b_id).unwrap().info.load().name.get(), "shelf");
+        assert_eq!(revisions_of(&state_service, a_id).len(), 2);
+        assert_eq!(revisions_of(&state_service, b_id).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn shelf_reassign() {
+        let (mut state_service, wk_id) = setup_state_service("shelf-reassign").await;
+        let node_id = NodeId::from_str(TEST_PKEY).unwrap();
+        let path = std::env::temp_dir().join("ebi-state");
+
+        let mut s_ids = Vec::new();
+        for _ in 0..2 {
+            let s_id = state_service
+                .workspace(wk_id)
+                .assign_shelf(path.clone(), node_id, false, None, None)
+                .await
+                .unwrap();
+            s_ids.push(s_id);
+        }
+        assert_eq!(s_ids[0], s_ids[1]);
+        assert_eq!(revisions_of(&state_service, s_ids[0]).len(), 1);
+
+        let read_txn = state_service.db.begin_read().unwrap();
+        let workspace_t = read_txn.open_table(T_WORKSPACE).unwrap();
+        let staged_id = staged_id_of(&state_service, wk_id);
+        let wk = workspace_t.get(staged_id).unwrap().unwrap().value().0;
+        assert_eq!(wk.shelves, vec![s_ids[0]]);
+    }
+
+    #[tokio::test]
+    async fn shelf_reload() {
+        let (db_path, [wk_a, wk_b], [a_id, b_id]) = {
+            let (mut state_service, wk_ids, s_ids) =
+                shared_folder("shelf-reload").await;
+
+            state_service
+                .workspace(wk_ids[0])
+                .edit_shelf_info(s_ids[0], "renamed".to_string(), "desc".to_string())
+                .await
+                .unwrap();
+
+            (
+                std::env::temp_dir()
+                    .join("ebi-state")
+                    .join("shelf-reload")
+                    .join("database.redb"),
+                wk_ids,
+                s_ids,
+            )
+        };
+
+        let reloaded = StateService::full_load(&db_path).unwrap();
+        let pin = reloaded.sync_states.pin();
+        let a = pin.get(&wk_a).unwrap().load().staged.load();
+        let b = pin.get(&wk_b).unwrap().load().staged.load();
+        assert_eq!(a.shelves.get(&a_id).unwrap().info.load().name.get(), "renamed");
+        assert_eq!(b.shelves.get(&b_id).unwrap().info.load().name.get(), "shelf");
+    }
+
     #[tokio::test]
     async fn edit_workspace_info() {
         let (mut state_service, wk_id) = setup_state_service("edit-workspace-info").await;
