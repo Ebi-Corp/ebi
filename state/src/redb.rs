@@ -50,6 +50,14 @@ pub const T_ENTITY: TableDefinition<Uuid, Vec<Bincode<Entity>>> = TableDefinitio
 pub struct Entity {
     pub id: EntityId,
     pub kind: EntityKind,
+    pub seq: u64, // Sequence counter, incremented for every edit
+}
+
+impl Entity {
+    pub fn next(id: EntityId, kind: EntityKind, history: &[Bincode<Entity>]) -> Self {
+        let seq = history.iter().map(|e| e.0.seq).max().map_or(0, |m| m + 1);
+        Entity { id, kind, seq }
+    }
 }
 
 #[derive(PartialEq, Eq, Debug, Clone, Serialize, Deserialize)]
@@ -90,20 +98,6 @@ impl Storable for Entity {
     fn to_storable(&self) -> Bincode<Self> {
         Bincode(self.clone())
     }
-}
-
-fn setup_tags(raw_tags: HashMap<Uuid, TagStorable>) -> HashMap<Uuid, SharedRef<Tag>> {
-    raw_tags
-        .into_iter()
-        .map(|(id, tag_raw)| {
-            let tag = Tag {
-                name: tag_raw.name,
-                priority: tag_raw.priority,
-                parent: tag_raw.parent,
-            };
-            (id, SharedRef::new_ref(id, tag))
-        })
-        .collect()
 }
 
 impl StateService {
@@ -150,7 +144,6 @@ impl StateService {
             Err(redb::TableError::TableDoesNotExist(_)) => {}
             Err(_) => return Err(ReturnCode::DbTableOpenError),
         }
-        let all_tags = setup_tags(raw_tags);
 
         let mut raw_shelves = HashMap::new();
         // A workspace without shelves (e.g., a new one) has no T_SHELF table
@@ -205,8 +198,25 @@ impl StateService {
                 let mut shelves = im::HashMap::new();
 
                 let entities = workspace_entities.get(wk_s_id).unwrap().unwrap().value();
+
+                let mut newest: HashMap<Uuid, &Entity> = HashMap::new();
                 for entity in entities.iter() {
                     let entity = &entity.0;
+                    let permanent_id = match entity.kind {
+                        EntityKind::Shelf => raw_shelves.get(&entity.id).unwrap().id,
+                        EntityKind::Tag => raw_tags.get(&entity.id).unwrap().id,
+                    };
+                    newest
+                        .entry(permanent_id)
+                        .and_modify(|cur| {
+                            if entity.seq > cur.seq {
+                                *cur = entity;
+                            }
+                        })
+                        .or_insert(entity);
+                }
+
+                for (permanent_id, entity) in newest.iter() {
                     match entity.kind {
                         EntityKind::Shelf => {
                             let raw_shelf = raw_shelves.get(&entity.id).unwrap().clone();
@@ -226,16 +236,22 @@ impl StateService {
                             shelf
                                 .filter_tags
                                 .store(raw_shelf.filter_tags.clone().into());
-                            let shelf: ImmutRef<Shelf> = ImmutRef::new_ref(raw_shelf.id, shelf);
+                            let shelf: ImmutRef<Shelf> = ImmutRef::new_ref(*permanent_id, shelf);
                             shelf_refs.pin().insert(shelf.downgraded());
-                            shelves.insert(raw_shelf.id, shelf);
+                            shelves.insert(*permanent_id, shelf);
                         }
                         EntityKind::Tag => {
-                            let tag = all_tags.get(&entity.id).unwrap();
-                            tags.insert(Uuid(*entity.id), tag.clone());
+                            let raw_tag = raw_tags.get(&entity.id).unwrap().clone();
+                            let tag = Tag {
+                                name: raw_tag.name,
+                                priority: raw_tag.priority,
+                                parent: raw_tag.parent,
+                            };
+                            tags.insert(*permanent_id, SharedRef::new_ref(*permanent_id, tag));
                         }
                     }
                 }
+
                 let lookup: im::HashMap<String, TagId> = raw_wk.lookup.clone().into();
                 let w_info = WorkspaceInfo {
                     name: raw_wk.name.clone(),

@@ -180,6 +180,7 @@ where
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct TagStorable {
+    pub id: Uuid, // Permanent ID
     pub name: Stamped<String>,
     pub priority: Stamped<u64>,
     pub parent: Stamped<Option<Uuid>>, // Permanent ID of the parent, if any
@@ -191,6 +192,7 @@ impl Storable for SharedRef<Tag> {
     fn to_storable(&self) -> Bincode<Self> {
         let tag = self.load();
         Bincode(Self::Storable {
+            id: self.id,
             name: tag.name.clone(),
             priority: tag.priority,
             parent: tag.parent,

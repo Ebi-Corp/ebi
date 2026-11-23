@@ -40,6 +40,22 @@ impl WorkspaceStateService {
         .await
     }
 
+    pub async fn edit_tag(
+        &mut self,
+        tag_id: TagId,
+        name: String,
+        priority: u64,
+        parent: Option<TagId>,
+    ) -> Result<(), ReturnCode> {
+        self.call(EditTag {
+            tag_id,
+            name,
+            priority,
+            parent,
+        })
+        .await
+    }
+
     pub async fn delete_tag(&mut self, tag_id: Uuid) -> Result<TagRef, ReturnCode> {
         self.call(DeleteTag { tag_id }).await
     }
@@ -186,23 +202,24 @@ impl Service<CreateTag> for WorkspaceStateService {
                     .ok_or(ReturnCode::InternalStateError)?
                     .value();
 
+                let tag_e = Entity {
+                    id: Uuid::new_v4(),
+                    kind: EntityKind::Tag,
+                    seq: 0,
+                };
+
                 tag_t
-                    .insert(tag_ref.id, tag_ref.to_storable())
+                    .insert(tag_e.id, tag_ref.to_storable())
                     .map_err(|_| ReturnCode::DbCommitError)?;
                 wk.0.tags.push(tag_ref.id);
                 wk.0.lookup.insert(req.name.clone(), tag_ref.id);
-                let t_entity_id = Uuid::new_v4();
                 workspace_t
                     .insert(staged_id, wk)
                     .map_err(|_| ReturnCode::DbCommitError)?;
-                let tag_e = Entity {
-                    id: tag_ref.id,
-                    kind: EntityKind::Tag,
-                };
                 entities.push(tag_e.to_storable());
                 workspace_entities_t.insert(staged_id, entities).unwrap();
                 entity_workspaces_t
-                    .insert(t_entity_id, vec![staged_id])
+                    .insert(tag_e.id, vec![staged_id])
                     .map_err(|_| ReturnCode::DbCommitError)?;
                 entity_t
                     .insert(tag_ref.id, vec![tag_e.to_storable()])
@@ -211,6 +228,153 @@ impl Service<CreateTag> for WorkspaceStateService {
             write_txn.commit().map_err(|_| ReturnCode::DbCommitError)?;
 
             Ok(tag_ref.id)
+        })
+    }
+}
+
+struct EditTag {
+    pub tag_id: TagId,
+    pub name: String,
+    pub priority: u64,
+    pub parent: Option<TagId>,
+}
+
+impl Service<EditTag> for WorkspaceStateService {
+    type Response = ();
+    type Error = ReturnCode;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, req: EditTag) -> Self::Future {
+        let res_workspace_ref = self.set_workspace();
+        let db = self.service.db.clone();
+        Box::pin(async move {
+            if req.name.is_empty() {
+                return Err(ReturnCode::TagNameEmpty);
+            }
+
+            let workspace_ref = &res_workspace_ref?.load_full().staged;
+            let staged_id = workspace_ref.id;
+            let workspace = workspace_ref.load();
+
+            let tag_ref = workspace
+                .tags
+                .get(&req.tag_id)
+                .ok_or(ReturnCode::TagNotFound)?
+                .clone();
+
+            // A tag can't be its own parent; longer loops are allowed
+            let parent = match req.parent {
+                Some(parent_id) => {
+                    if parent_id == req.tag_id {
+                        return Err(ReturnCode::TagSelfParent);
+                    }
+                    if !workspace.tags.contains_key(&parent_id) {
+                        return Err(ReturnCode::ParentNotFound);
+                    }
+                    Some(parent_id)
+                }
+                None => None,
+            };
+
+            let prev_name = tag_ref.load().name.get().clone();
+            let renamed = prev_name != req.name;
+
+            if renamed && workspace.lookup.contains_key(&req.name) {
+                return Err(ReturnCode::TagNameDuplicate);
+            }
+
+            let edited_at = Utc::now();
+            tag_ref.rcu(|t| t.edited(req.name.clone(), req.priority, parent, edited_at));
+
+            if renamed {
+                workspace_ref
+                    .stateful_rcu(|w| {
+                        let (u_l, _) = w.lookup.remove(&prev_name);
+                        let (u_l, u_s) = u_l.insert(req.name.clone(), req.tag_id);
+                        let u_w = Workspace {
+                            info: w.info.clone_inner(),
+                            shelves: w.shelves.clone(),
+                            tags: w.tags.clone(),
+                            lookup: u_l,
+                        };
+                        (u_w, u_s)
+                    })
+                    .await;
+            }
+
+            let write_txn = db.begin_write().map_err(|_| ReturnCode::DbOpenError)?;
+            {
+                let mut tag_t = write_txn
+                    .open_table(T_TAG)
+                    .map_err(|_| ReturnCode::DbTableOpenError)?;
+                let mut workspace_entities_t = write_txn
+                    .open_table(T_WORKSPACE_ENTITIES)
+                    .map_err(|_| ReturnCode::DbTableOpenError)?;
+                let mut entity_workspaces_t = write_txn
+                    .open_table(T_ENTITY_WORKSPACES)
+                    .map_err(|_| ReturnCode::DbTableOpenError)?;
+                let mut entity_t = write_txn
+                    .open_table(T_ENTITY)
+                    .map_err(|_| ReturnCode::DbTableOpenError)?;
+
+                // An edit appends a revision; superseded rows stay as history
+                let mut revisions = entity_t
+                    .get(req.tag_id)
+                    .unwrap()
+                    .ok_or(ReturnCode::InternalStateError)?
+                    .value();
+
+                let tag_e = Entity::next(Uuid::new_v4(), EntityKind::Tag, &revisions);
+
+                tag_t
+                    .insert(tag_e.id, tag_ref.to_storable())
+                    .map_err(|_| ReturnCode::DbCommitError)?;
+
+                revisions.push(tag_e.to_storable());
+                entity_t
+                    .insert(req.tag_id, revisions)
+                    .map_err(|_| ReturnCode::DbCommitError)?;
+
+                let mut entities = workspace_entities_t
+                    .get(staged_id)
+                    .unwrap()
+                    .ok_or(ReturnCode::InternalStateError)?
+                    .value();
+                entities.push(tag_e.to_storable());
+                workspace_entities_t
+                    .insert(staged_id, entities)
+                    .map_err(|_| ReturnCode::DbCommitError)?;
+
+                entity_workspaces_t
+                    .insert(tag_e.id, vec![staged_id])
+                    .map_err(|_| ReturnCode::DbCommitError)?;
+
+                if renamed {
+                    let mut workspace_t = write_txn
+                        .open_table(T_WORKSPACE)
+                        .map_err(|_| ReturnCode::DbTableOpenError)?;
+
+                    let mut wk = workspace_t
+                        .get(staged_id)
+                        .unwrap()
+                        .ok_or(ReturnCode::InternalStateError)?
+                        .value();
+
+                    wk.0.lookup.remove(&prev_name);
+                    wk.0.lookup.insert(req.name.clone(), req.tag_id);
+
+                    workspace_t
+                        .insert(staged_id, wk)
+                        .map_err(|_| ReturnCode::DbCommitError)?;
+                }
+            }
+            write_txn.commit().map_err(|_| ReturnCode::DbCommitError)?;
+
+            Ok(())
         })
     }
 }
@@ -566,11 +730,9 @@ impl Service<AssignShelf> for WorkspaceStateService {
                     .ok_or(ReturnCode::InternalStateError)?
                     .value();
 
-                let s_entity = Entity {
-                    id: Uuid::new_v4(),
-                    kind: EntityKind::Shelf,
-                };
+                let s_entity;
                 if new_shelf {
+                    s_entity = Entity::next(Uuid::new_v4(), EntityKind::Shelf, &[]);
                     shelf_t
                         .insert(s_entity.id, shelf_ref.to_storable())
                         .map_err(|_| ReturnCode::DbCommitError)?;
@@ -583,6 +745,7 @@ impl Service<AssignShelf> for WorkspaceStateService {
                         .unwrap()
                         .ok_or(ReturnCode::InternalStateError)?
                         .value();
+                    s_entity = Entity::next(Uuid::new_v4(), EntityKind::Shelf, &shelf_entities);
                     shelf_entities.push(s_entity.to_storable());
                     entity_t
                         .insert(shelf_id, shelf_entities)
@@ -696,16 +859,14 @@ impl Service<EditShelf> for WorkspaceStateService {
                     .unwrap()
                     .value();
 
-                let s_entity = Entity {
-                    id: Uuid::new_v4(),
-                    kind: EntityKind::Shelf,
-                };
-
                 let mut shelf_entities = entity_t
                     .get(&req.shelf_id)
                     .unwrap()
                     .ok_or(ReturnCode::InternalStateError)?
                     .value();
+
+                let s_entity = Entity::next(Uuid::new_v4(), EntityKind::Shelf, &shelf_entities);
+
                 shelf_entities.push(s_entity.to_storable());
                 entity_t
                     .insert(&req.shelf_id, shelf_entities)

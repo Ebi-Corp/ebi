@@ -652,36 +652,19 @@ impl Service<EditTag> for RpcService {
         Box::pin(async move {
             let (tag_id, workspace_id) = (uuid(&req.tag_id)?, uuid(&req.workspace_id)?);
 
-            let workspace = state.get_workspace(workspace_id).await?;
-
-            let tag = workspace.tags.get(&tag_id).ok_or(ReturnCode::TagNotFound)?;
-
-            let parent = {
-                if let Some(id) = req.parent_id.clone() {
-                    let p_id = uuid(&id)?;
-                    if !workspace.tags.contains_key(&p_id) {
-                        return Err(ReturnCode::ParentNotFound.into());
-                    }
-                    Some(p_id)
-                } else {
-                    None
-                }
+            let parent_id = match req.parent_id {
+                Some(parent_id) => Some(uuid(&parent_id)?),
+                None => None,
             };
 
-            //[/] Tag Name Validation
-            if req.name.clone().is_empty() {
-                return Err(ReturnCode::TagNameEmpty.into());
-            }
-
-            let return_code = {
-                let edited_at = Utc::now();
-                tag.rcu(|t| t.edited(req.name.clone(), req.priority, parent, edited_at));
-                ReturnCode::Success
-            };
+            state
+                .workspace(workspace_id)
+                .edit_tag(tag_id, req.name, req.priority, parent_id)
+                .await?;
 
             let metadata = Status {
                 request_uuid: metadata.request_uuid,
-                return_code: return_code as u32,
+                return_code: ReturnCode::Success as u32,
                 error_data: None,
             };
             Ok(EditTagResponse {
